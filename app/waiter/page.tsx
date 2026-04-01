@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import { Suspense } from "react";
+
 
 type OrderItemInput = {
   item_name: string;
@@ -71,7 +73,7 @@ type GroupedTableOrder = {
   sourceOrders: OrderRow[];
 };
 
-export default function WaiterPage() {
+function WaiterPageContent() {
   const searchParams = useSearchParams();
   const restaurantId = Number(searchParams.get("id"));
 
@@ -2148,5 +2150,12 @@ export default function WaiterPage() {
         </div>
       </main>
     </>
+  );
+}
+export default function WaiterPage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <WaiterPageContent />
+    </Suspense>
   );
 }
