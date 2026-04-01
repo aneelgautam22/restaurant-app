@@ -75,7 +75,8 @@ type GroupedTableOrder = {
 
 function OwnerPageContent() {
   const searchParams = useSearchParams();
-  const restaurantId = Number(searchParams.get("id") || 1);
+  const restaurantIdParam = searchParams.get("id");
+  const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
 
   const [ownerView, setOwnerView] = useState<OwnerView>("dashboard");
 
@@ -84,6 +85,15 @@ function OwnerPageContent() {
   const [ownerPasswordFromDB, setOwnerPasswordFromDB] = useState("");
 
   const [restaurantName, setRestaurantName] = useState("");
+  const [restaurantExists, setRestaurantExists] = useState(true);
+  const [isSetupDone, setIsSetupDone] = useState(false);
+  const [checkingRestaurant, setCheckingRestaurant] = useState(true);
+
+  const [setupRestaurantName, setSetupRestaurantName] = useState("");
+  const [setupOwnerPassword, setSetupOwnerPassword] = useState("");
+  const [setupWaiterPassword, setSetupWaiterPassword] = useState("");
+  const [setupKitchenPassword, setSetupKitchenPassword] = useState("");
+  const [settingUpRestaurant, setSettingUpRestaurant] = useState(false);
 
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
@@ -123,6 +133,7 @@ function OwnerPageContent() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (!restaurantId) return;
 
     const savedOwnerLogin = localStorage.getItem(`owner_logged_in_${restaurantId}`);
     if (savedOwnerLogin === "true") {
@@ -130,32 +141,83 @@ function OwnerPageContent() {
     }
   }, [restaurantId]);
 
-  async function fetchRestaurant() {
+  async function fetchRestaurant(showLoader = false) {
+    if (!restaurantId) {
+      setRestaurantExists(false);
+      setCheckingRestaurant(false);
+      return;
+    }
+
+    if (showLoader) {
+      setCheckingRestaurant(true);
+    }
+
     const { data, error } = await supabase
       .from("restaurants")
       .select("*")
       .eq("id", restaurantId)
       .single();
 
-    if (!error && data) {
-      const restaurantData = data as Record<string, any>;
-
-      setOwnerPasswordFromDB(restaurantData.owner_password || "");
-      setNewOwnerPassword(restaurantData.owner_password || "");
-      setNewWaiterPassword(restaurantData.waiter_password || "");
-      setNewKitchenPassword(restaurantData.kitchen_password || "");
-
-      setRestaurantName(
-        restaurantData.name ||
-          restaurantData.restaurant_name ||
-          restaurantData.restaurant ||
-          restaurantData.title ||
-          "Restaurant"
-      );
+    if (error || !data) {
+      setRestaurantExists(false);
+      setCheckingRestaurant(false);
+      return;
     }
+
+    const restaurantData = data as Record<string, any>;
+
+    setRestaurantExists(true);
+
+    const fetchedRestaurantName =
+      restaurantData.name ||
+      restaurantData.restaurant_name ||
+      restaurantData.restaurant ||
+      restaurantData.title ||
+      "";
+
+    const fetchedOwnerPassword = restaurantData.owner_password || "";
+    const fetchedWaiterPassword = restaurantData.waiter_password || "";
+    const fetchedKitchenPassword = restaurantData.kitchen_password || "";
+
+    const setupComplete =
+      restaurantData.is_setup_done === true ||
+      (!!fetchedRestaurantName &&
+        fetchedOwnerPassword !== "setup_pending" &&
+        fetchedWaiterPassword !== "setup_pending" &&
+        fetchedKitchenPassword !== "setup_pending");
+
+    setIsSetupDone(setupComplete);
+
+    setRestaurantName(fetchedRestaurantName || "Restaurant");
+    setOwnerPasswordFromDB(fetchedOwnerPassword);
+    setNewOwnerPassword(fetchedOwnerPassword);
+    setNewWaiterPassword(fetchedWaiterPassword);
+    setNewKitchenPassword(fetchedKitchenPassword);
+
+    if (!setupComplete) {
+      setSetupRestaurantName(fetchedRestaurantName || "");
+      setSetupOwnerPassword(
+        fetchedOwnerPassword === "setup_pending" ? "" : fetchedOwnerPassword
+      );
+      setSetupWaiterPassword(
+        fetchedWaiterPassword === "setup_pending" ? "" : fetchedWaiterPassword
+      );
+      setSetupKitchenPassword(
+        fetchedKitchenPassword === "setup_pending" ? "" : fetchedKitchenPassword
+      );
+      setOwnerUnlocked(false);
+
+      if (typeof window !== "undefined") {
+        localStorage.removeItem(`owner_logged_in_${restaurantId}`);
+      }
+    }
+
+    setCheckingRestaurant(false);
   }
 
   async function fetchOrders() {
+    if (!restaurantId || !isSetupDone) return;
+
     const { data, error } = await supabase
       .from("orders")
       .select("*, order_items(*)")
@@ -168,6 +230,8 @@ function OwnerPageContent() {
   }
 
   async function fetchMenu() {
+    if (!restaurantId || !isSetupDone) return;
+
     const { data, error } = await supabase
       .from("menu_items")
       .select("*")
@@ -180,7 +244,12 @@ function OwnerPageContent() {
   }
 
   useEffect(() => {
-    fetchRestaurant();
+    fetchRestaurant(true);
+  }, [restaurantId]);
+
+  useEffect(() => {
+    if (!restaurantId || !isSetupDone) return;
+
     fetchOrders();
     fetchMenu();
 
@@ -239,14 +308,81 @@ function OwnerPageContent() {
       supabase.removeChannel(orderItemsChannel);
       clearInterval(interval);
     };
-  }, [restaurantId]);
+  }, [restaurantId, isSetupDone]);
+
+  async function handleInitialSetup(e: React.FormEvent) {
+    e.preventDefault();
+
+    if (!restaurantId) {
+      alert("Invalid restaurant link");
+      return;
+    }
+
+    if (!setupRestaurantName.trim()) {
+      alert("Please enter restaurant name");
+      return;
+    }
+
+    if (!setupOwnerPassword.trim()) {
+      alert("Please enter owner password");
+      return;
+    }
+
+    if (!setupWaiterPassword.trim()) {
+      alert("Please enter waiter password");
+      return;
+    }
+
+    if (!setupKitchenPassword.trim()) {
+      alert("Please enter kitchen password");
+      return;
+    }
+
+    setSettingUpRestaurant(true);
+
+    const { error } = await supabase
+      .from("restaurants")
+      .update({
+        name: setupRestaurantName.trim(),
+        owner_password: setupOwnerPassword.trim(),
+        waiter_password: setupWaiterPassword.trim(),
+        kitchen_password: setupKitchenPassword.trim(),
+        is_setup_done: true,
+      })
+      .eq("id", restaurantId);
+
+    setSettingUpRestaurant(false);
+
+    if (error) {
+      alert("Failed to complete restaurant setup");
+      return;
+    }
+
+    setRestaurantName(setupRestaurantName.trim());
+    setOwnerPasswordFromDB(setupOwnerPassword.trim());
+    setNewOwnerPassword(setupOwnerPassword.trim());
+    setNewWaiterPassword(setupWaiterPassword.trim());
+    setNewKitchenPassword(setupKitchenPassword.trim());
+    setIsSetupDone(true);
+    alert("Restaurant setup completed");
+    fetchRestaurant();
+  }
 
   function unlockOwner() {
+    if (!ownerPasswordFromDB || ownerPasswordFromDB === "setup_pending") {
+      alert("Owner password not found. Please complete setup first.");
+      return;
+    }
+
     if (ownerPasswordInput === ownerPasswordFromDB) {
       setOwnerUnlocked(true);
       setOwnerPasswordInput("");
       setOwnerView("dashboard");
-      localStorage.setItem(`owner_logged_in_${restaurantId}`, "true");
+
+      if (restaurantId) {
+        localStorage.setItem(`owner_logged_in_${restaurantId}`, "true");
+      }
+
       alert("Owner access granted");
     } else {
       alert("Wrong password");
@@ -254,7 +390,10 @@ function OwnerPageContent() {
   }
 
   function logoutOwner() {
-    localStorage.removeItem(`owner_logged_in_${restaurantId}`);
+    if (restaurantId) {
+      localStorage.removeItem(`owner_logged_in_${restaurantId}`);
+    }
+
     setOwnerUnlocked(false);
     setOwnerView("dashboard");
     setEditingMenuId(null);
@@ -271,6 +410,11 @@ function OwnerPageContent() {
 
   async function handleAddMenuItem(e: React.FormEvent) {
     e.preventDefault();
+
+    if (!restaurantId) {
+      alert("Invalid restaurant link");
+      return;
+    }
 
     if (!newItemName.trim()) {
       alert("Please enter item name");
@@ -314,6 +458,11 @@ function OwnerPageContent() {
   }
 
   async function saveEditMenuItem(id: number) {
+    if (!restaurantId) {
+      alert("Invalid restaurant link");
+      return;
+    }
+
     if (!editingItemName.trim()) {
       alert("Please enter item name");
       return;
@@ -344,6 +493,11 @@ function OwnerPageContent() {
   }
 
   async function deleteMenuItem(id: number) {
+    if (!restaurantId) {
+      alert("Invalid restaurant link");
+      return;
+    }
+
     const confirmDelete = confirm("Delete this menu item?");
     if (!confirmDelete) return;
 
@@ -743,6 +897,11 @@ function OwnerPageContent() {
     tableNo: string,
     paymentMethod: "cash" | "qr" | "card"
   ) {
+    if (!restaurantId) {
+      alert("Invalid restaurant link");
+      return;
+    }
+
     const normalizedTableNo = tableNo.trim();
 
     if (!normalizedTableNo) {
@@ -792,6 +951,11 @@ function OwnerPageContent() {
   }
 
   async function savePasswords() {
+    if (!restaurantId) {
+      alert("Invalid restaurant link");
+      return;
+    }
+
     if (!newOwnerPassword.trim() || !newWaiterPassword.trim() || !newKitchenPassword.trim()) {
       alert("Please fill all passwords");
       return;
@@ -871,6 +1035,117 @@ function OwnerPageContent() {
       month: "short",
       day: "numeric",
     });
+  }
+
+  if (!restaurantId) {
+    return (
+      <main className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+        <div className="bg-white shadow rounded-2xl p-4 text-center text-sm text-red-600 font-medium">
+          Invalid restaurant link. Please use the correct restaurant URL.
+        </div>
+      </main>
+    );
+  }
+
+  if (checkingRestaurant) {
+    return (
+      <main className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+        <div className="bg-white shadow rounded-2xl p-4 text-center text-sm font-medium">
+          Loading...
+        </div>
+      </main>
+    );
+  }
+
+  if (!restaurantExists) {
+    return (
+      <main className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+        <div className="bg-white shadow rounded-2xl p-4 text-center text-sm text-red-600 font-medium">
+          Restaurant link not found. Please use the correct restaurant URL.
+        </div>
+      </main>
+    );
+  }
+
+  if (!isSetupDone) {
+    return (
+      <main className="min-h-screen bg-gray-100 p-3">
+        <div className="max-w-md mx-auto">
+          <div className="bg-white rounded-3xl shadow p-5 space-y-4 border">
+            <div className="text-center">
+              <h1 className="text-2xl font-bold text-gray-900">
+                Owner Setup
+              </h1>
+              <p className="text-sm text-gray-500 mt-1">
+                Complete first-time setup for this restaurant
+              </p>
+            </div>
+
+            <form onSubmit={handleInitialSetup} className="space-y-4">
+              <div className="space-y-2">
+                <label className="block text-sm font-semibold">
+                  Restaurant Name
+                </label>
+                <input
+                  type="text"
+                  value={setupRestaurantName}
+                  onChange={(e) => setSetupRestaurantName(e.target.value)}
+                  placeholder="Enter restaurant name"
+                  className="w-full border rounded-2xl px-4 py-3"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-sm font-semibold">
+                  Owner Password
+                </label>
+                <input
+                  type="text"
+                  value={setupOwnerPassword}
+                  onChange={(e) => setSetupOwnerPassword(e.target.value)}
+                  placeholder="Create owner password"
+                  className="w-full border rounded-2xl px-4 py-3"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-sm font-semibold">
+                  Waiter Password
+                </label>
+                <input
+                  type="text"
+                  value={setupWaiterPassword}
+                  onChange={(e) => setSetupWaiterPassword(e.target.value)}
+                  placeholder="Create waiter password"
+                  className="w-full border rounded-2xl px-4 py-3"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-sm font-semibold">
+                  Kitchen Password
+                </label>
+                <input
+                  type="text"
+                  value={setupKitchenPassword}
+                  onChange={(e) => setSetupKitchenPassword(e.target.value)}
+                  placeholder="Create kitchen password"
+                  className="w-full border rounded-2xl px-4 py-3"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={settingUpRestaurant}
+                className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold"
+              >
+                {settingUpRestaurant ? "Setting up..." : "Complete Setup"}
+              </button>
+            </form>
+          </div>
+        </div>
+      </main>
+    );
   }
 
   if (!ownerUnlocked) {

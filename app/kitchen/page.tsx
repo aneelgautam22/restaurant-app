@@ -1,12 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
-
-const RESTAURANT_ID =
-  typeof window !== "undefined"
-    ? Number(new URLSearchParams(window.location.search).get("id") || 1)
-    : 1;
 
 type OrderItem = {
   id: number;
@@ -25,6 +21,9 @@ type Order = {
 };
 
 export default function KitchenPage() {
+  const searchParams = useSearchParams();
+  const restaurantId = Number(searchParams.get("id"));
+
   const [orders, setOrders] = useState<Order[]>([]);
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [restaurantName, setRestaurantName] = useState("");
@@ -38,29 +37,33 @@ export default function KitchenPage() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (!restaurantId) return;
 
-    const savedLogin = localStorage.getItem(`kitchen_logged_in_${RESTAURANT_ID}`);
+    const savedLogin = localStorage.getItem(`kitchen_logged_in_${restaurantId}`);
     if (savedLogin === "true") {
       setUnlocked(true);
     }
 
     const savedSound = localStorage.getItem(
-      `kitchen_sound_enabled_${RESTAURANT_ID}`
+      `kitchen_sound_enabled_${restaurantId}`
     );
     if (savedSound === "true") {
       setSoundEnabled(true);
     }
-  }, []);
+  }, [restaurantId]);
 
   useEffect(() => {
+    if (!restaurantId) return;
     fetchRestaurant();
-  }, []);
+  }, [restaurantId]);
 
   async function fetchRestaurant() {
+    if (!restaurantId) return;
+
     const { data, error } = await supabase
       .from("restaurants")
       .select("*")
-      .eq("id", RESTAURANT_ID)
+      .eq("id", restaurantId)
       .single();
 
     if (!error && data) {
@@ -76,10 +79,15 @@ export default function KitchenPage() {
   }
 
   async function handleUnlock() {
+    if (!restaurantId) {
+      alert("Invalid restaurant link");
+      return;
+    }
+
     const { data, error } = await supabase
       .from("restaurants")
       .select("kitchen_password")
-      .eq("id", RESTAURANT_ID)
+      .eq("id", restaurantId)
       .single();
 
     if (error || !data) {
@@ -89,23 +97,27 @@ export default function KitchenPage() {
 
     if (password === data.kitchen_password) {
       setUnlocked(true);
-      localStorage.setItem(`kitchen_logged_in_${RESTAURANT_ID}`, "true");
+      localStorage.setItem(`kitchen_logged_in_${restaurantId}`, "true");
     } else {
       alert("Wrong password");
     }
   }
 
   function handleLogout() {
-    localStorage.removeItem(`kitchen_logged_in_${RESTAURANT_ID}`);
+    if (restaurantId) {
+      localStorage.removeItem(`kitchen_logged_in_${restaurantId}`);
+    }
     setUnlocked(false);
     setPassword("");
   }
 
   async function fetchOrders() {
+    if (!restaurantId) return;
+
     const { data, error } = await supabase
       .from("orders")
       .select("*, order_items(*)")
-      .eq("restaurant_id", RESTAURANT_ID)
+      .eq("restaurant_id", restaurantId)
       .in("status", ["pending", "preparing"])
       .order("created_at", { ascending: true })
       .order("id", { ascending: true });
@@ -141,6 +153,8 @@ export default function KitchenPage() {
   }
 
   async function updateOrderStatusFromItems(orderId: number) {
+    if (!restaurantId) return;
+
     const { data: items, error: itemsError } = await supabase
       .from("order_items")
       .select("status")
@@ -171,7 +185,7 @@ export default function KitchenPage() {
       .from("orders")
       .update({ status: orderStatus })
       .eq("id", orderId)
-      .eq("restaurant_id", RESTAURANT_ID);
+      .eq("restaurant_id", restaurantId);
 
     if (orderError) {
       alert("Failed to update overall order status");
@@ -199,6 +213,11 @@ export default function KitchenPage() {
   }
 
   async function enableSound() {
+    if (!restaurantId) {
+      alert("Invalid restaurant link");
+      return;
+    }
+
     try {
       if (audioRef.current) {
         audioRef.current.volume = 0;
@@ -209,7 +228,7 @@ export default function KitchenPage() {
       }
 
       setSoundEnabled(true);
-      localStorage.setItem(`kitchen_sound_enabled_${RESTAURANT_ID}`, "true");
+      localStorage.setItem(`kitchen_sound_enabled_${restaurantId}`, "true");
       alert("Kitchen sound enabled");
     } catch {
       alert("Could not enable sound. Please tap again.");
@@ -217,7 +236,7 @@ export default function KitchenPage() {
   }
 
   useEffect(() => {
-    if (!unlocked) return;
+    if (!unlocked || !restaurantId) return;
 
     fetchOrders();
 
@@ -226,7 +245,7 @@ export default function KitchenPage() {
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [unlocked, soundEnabled]);
+  }, [unlocked, soundEnabled, restaurantId]);
 
   const oldestPendingOrderId = useMemo(() => {
     const pendingOnly = orders.filter((order) =>
@@ -243,6 +262,16 @@ export default function KitchenPage() {
 
     return sorted[0]?.id ?? null;
   }, [orders]);
+
+  if (!restaurantId) {
+    return (
+      <main className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+        <div className="bg-white shadow rounded-2xl p-4 text-center text-sm text-red-600 font-medium">
+          Invalid restaurant link. Please use the correct restaurant URL.
+        </div>
+      </main>
+    );
+  }
 
   if (!unlocked) {
     return (

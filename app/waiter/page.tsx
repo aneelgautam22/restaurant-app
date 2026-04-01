@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
 type OrderItemInput = {
@@ -70,12 +71,10 @@ type GroupedTableOrder = {
   sourceOrders: OrderRow[];
 };
 
-const RESTAURANT_ID =
-  typeof window !== "undefined"
-    ? Number(new URLSearchParams(window.location.search).get("id") || 1)
-    : 1;
-
 export default function WaiterPage() {
+  const searchParams = useSearchParams();
+  const restaurantId = Number(searchParams.get("id"));
+
   const [restaurantName, setRestaurantName] = useState("");
 
   const [tableNumber, setTableNumber] = useState("");
@@ -137,25 +136,28 @@ export default function WaiterPage() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (!restaurantId) return;
 
-    const savedLogin = localStorage.getItem(`waiter_logged_in_${RESTAURANT_ID}`);
+    const savedLogin = localStorage.getItem(`waiter_logged_in_${restaurantId}`);
     if (savedLogin === "true") {
       setUnlocked(true);
     }
 
     const savedSound = localStorage.getItem(
-      `waiter_sound_enabled_${RESTAURANT_ID}`
+      `waiter_sound_enabled_${restaurantId}`
     );
     if (savedSound === "true") {
       setSoundEnabled(true);
     }
-  }, []);
+  }, [restaurantId]);
 
   async function fetchRestaurant() {
+    if (!restaurantId) return;
+
     const { data, error } = await supabase
       .from("restaurants")
       .select("*")
-      .eq("id", RESTAURANT_ID)
+      .eq("id", restaurantId)
       .single();
 
     if (!error && data) {
@@ -172,10 +174,12 @@ export default function WaiterPage() {
   }
 
   async function fetchWaiterPassword() {
+    if (!restaurantId) return;
+
     const { data, error } = await supabase
       .from("restaurants")
       .select("waiter_password")
-      .eq("id", RESTAURANT_ID)
+      .eq("id", restaurantId)
       .single();
 
     if (!error && data) {
@@ -184,10 +188,15 @@ export default function WaiterPage() {
   }
 
   async function handleUnlock() {
+    if (!restaurantId) {
+      alert("Invalid restaurant link");
+      return;
+    }
+
     const { data, error } = await supabase
       .from("restaurants")
       .select("waiter_password")
-      .eq("id", RESTAURANT_ID)
+      .eq("id", restaurantId)
       .single();
 
     if (error || !data) {
@@ -198,7 +207,7 @@ export default function WaiterPage() {
     if (password === (data.waiter_password || "")) {
       setDbPassword(data.waiter_password || "");
       setUnlocked(true);
-      localStorage.setItem(`waiter_logged_in_${RESTAURANT_ID}`, "true");
+      localStorage.setItem(`waiter_logged_in_${restaurantId}`, "true");
       showToast("Welcome back!");
     } else {
       alert("Wrong password");
@@ -206,16 +215,20 @@ export default function WaiterPage() {
   }
 
   function handleLogout() {
-    localStorage.removeItem(`waiter_logged_in_${RESTAURANT_ID}`);
+    if (restaurantId) {
+      localStorage.removeItem(`waiter_logged_in_${restaurantId}`);
+    }
     setUnlocked(false);
     setPassword("");
   }
 
   async function fetchOrders() {
+    if (!restaurantId) return;
+
     const { data, error } = await supabase
       .from("orders")
       .select("*, order_items(*)")
-      .eq("restaurant_id", RESTAURANT_ID)
+      .eq("restaurant_id", restaurantId)
       .order("created_at", { ascending: false });
 
     if (!error && data) {
@@ -224,10 +237,12 @@ export default function WaiterPage() {
   }
 
   async function fetchMenu() {
+    if (!restaurantId) return;
+
     const { data, error } = await supabase
       .from("menu_items")
       .select("*")
-      .eq("restaurant_id", RESTAURANT_ID)
+      .eq("restaurant_id", restaurantId)
       .order("item_name", { ascending: true });
 
     if (!error && data) {
@@ -236,10 +251,12 @@ export default function WaiterPage() {
   }
 
   async function fetchPopularItems() {
+    if (!restaurantId) return;
+
     const { data, error } = await supabase
       .from("order_items")
       .select("item_name, quantity, orders!inner(restaurant_id)")
-      .eq("orders.restaurant_id", RESTAURANT_ID);
+      .eq("orders.restaurant_id", restaurantId);
 
     if (error || !data) return;
 
@@ -271,6 +288,11 @@ export default function WaiterPage() {
   }
 
   async function enableSound() {
+    if (!restaurantId) {
+      alert("Invalid restaurant link");
+      return;
+    }
+
     try {
       if (audioRef.current) {
         audioRef.current.volume = 0;
@@ -281,7 +303,7 @@ export default function WaiterPage() {
       }
 
       setSoundEnabled(true);
-      localStorage.setItem(`waiter_sound_enabled_${RESTAURANT_ID}`, "true");
+      localStorage.setItem(`waiter_sound_enabled_${restaurantId}`, "true");
       showToast("Waiter sound enabled");
     } catch {
       alert("Could not enable sound. Please tap again.");
@@ -289,6 +311,8 @@ export default function WaiterPage() {
   }
 
   useEffect(() => {
+    if (!restaurantId) return;
+
     fetchRestaurant();
     fetchOrders();
     fetchMenu();
@@ -296,14 +320,14 @@ export default function WaiterPage() {
     fetchWaiterPassword();
 
     const ordersChannel = supabase
-      .channel(`waiter-orders-realtime-${RESTAURANT_ID}`)
+      .channel(`waiter-orders-realtime-${restaurantId}`)
       .on(
         "postgres_changes",
         {
           event: "*",
           schema: "public",
           table: "orders",
-          filter: `restaurant_id=eq.${RESTAURANT_ID}`,
+          filter: `restaurant_id=eq.${restaurantId}`,
         },
         () => {
           fetchOrders();
@@ -313,7 +337,7 @@ export default function WaiterPage() {
       .subscribe();
 
     const orderItemsChannel = supabase
-      .channel(`waiter-order-items-realtime-${RESTAURANT_ID}`)
+      .channel(`waiter-order-items-realtime-${restaurantId}`)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "order_items" },
@@ -325,14 +349,14 @@ export default function WaiterPage() {
       .subscribe();
 
     const menuItemsChannel = supabase
-      .channel(`waiter-menu-items-realtime-${RESTAURANT_ID}`)
+      .channel(`waiter-menu-items-realtime-${restaurantId}`)
       .on(
         "postgres_changes",
         {
           event: "*",
           schema: "public",
           table: "menu_items",
-          filter: `restaurant_id=eq.${RESTAURANT_ID}`,
+          filter: `restaurant_id=eq.${restaurantId}`,
         },
         () => {
           fetchMenu();
@@ -353,7 +377,7 @@ export default function WaiterPage() {
       supabase.removeChannel(menuItemsChannel);
       clearInterval(interval);
     };
-  }, []);
+  }, [restaurantId]);
 
   useEffect(() => {
     const newNotifications: ReadyNotification[] = [];
@@ -538,6 +562,10 @@ export default function WaiterPage() {
 
   async function saveEditedOrder() {
     if (!editingOrderId) return;
+    if (!restaurantId) {
+      alert("Invalid restaurant link");
+      return;
+    }
 
     if (!editOrderTableNumber.trim()) {
       alert("Please enter table number");
@@ -570,7 +598,7 @@ export default function WaiterPage() {
         remarks: editRemarks.trim() || null,
       })
       .eq("id", editingOrderId)
-      .eq("restaurant_id", RESTAURANT_ID);
+      .eq("restaurant_id", restaurantId);
 
     if (updateOrderError) {
       setSavingEditOrder(false);
@@ -615,6 +643,11 @@ export default function WaiterPage() {
   }
 
   async function handleCancelOrder(orderId: number) {
+    if (!restaurantId) {
+      alert("Invalid restaurant link");
+      return;
+    }
+
     const targetOrder = orders.find((order) => order.id === orderId);
 
     if (!targetOrder) {
@@ -649,7 +682,7 @@ export default function WaiterPage() {
       .from("orders")
       .delete()
       .eq("id", orderId)
-      .eq("restaurant_id", RESTAURANT_ID);
+      .eq("restaurant_id", restaurantId);
 
     setCancelingOrderId(null);
 
@@ -698,6 +731,11 @@ export default function WaiterPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
 
+    if (!restaurantId) {
+      alert("Invalid restaurant link");
+      return;
+    }
+
     if (!tableNumber.trim()) {
       alert("Please enter table number");
       return;
@@ -714,7 +752,7 @@ export default function WaiterPage() {
       .from("orders")
       .insert([
         {
-          restaurant_id: RESTAURANT_ID,
+          restaurant_id: restaurantId,
           table_number: tableNumber,
           status: "pending",
           waiter_cleared: false,
@@ -765,6 +803,11 @@ export default function WaiterPage() {
   async function handleAddMenuItem(e: React.FormEvent) {
     e.preventDefault();
 
+    if (!restaurantId) {
+      alert("Invalid restaurant link");
+      return;
+    }
+
     if (!newItemName.trim()) {
       alert("Please enter item name");
       return;
@@ -777,7 +820,7 @@ export default function WaiterPage() {
 
     const { error } = await supabase.from("menu_items").insert([
       {
-        restaurant_id: RESTAURANT_ID,
+        restaurant_id: restaurantId,
         item_name: newItemName.trim(),
         price: Number(newItemPrice),
       },
@@ -902,6 +945,11 @@ export default function WaiterPage() {
     tableNo: string,
     paymentMethod: "cash" | "qr" | "card"
   ) {
+    if (!restaurantId) {
+      alert("Invalid restaurant link");
+      return;
+    }
+
     const normalizedTableNo = tableNo.trim();
 
     if (!normalizedTableNo) {
@@ -937,7 +985,7 @@ export default function WaiterPage() {
         paid_at: new Date().toISOString(),
       })
       .in("id", orderIds)
-      .eq("restaurant_id", RESTAURANT_ID);
+      .eq("restaurant_id", restaurantId);
 
     setMarkingPaidTable(null);
 
@@ -957,6 +1005,11 @@ export default function WaiterPage() {
   }
 
   async function handleTableMove() {
+    if (!restaurantId) {
+      alert("Invalid restaurant link");
+      return;
+    }
+
     const oldTable = moveFromTable.trim();
     const newTable = moveToTable.trim();
 
@@ -993,7 +1046,7 @@ export default function WaiterPage() {
       .from("orders")
       .update({ table_number: newTable })
       .in("id", orderIds)
-      .eq("restaurant_id", RESTAURANT_ID);
+      .eq("restaurant_id", restaurantId);
 
     setMovingTable(false);
 
@@ -1044,6 +1097,16 @@ export default function WaiterPage() {
       order.order_items?.reduce((sum, item) => {
         return sum + Number(item.quantity || 0) * Number(item.unit_price || 0);
       }, 0) || 0
+    );
+  }
+
+  if (!restaurantId) {
+    return (
+      <main className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+        <div className="bg-white shadow rounded-2xl p-4 text-center text-sm text-red-600 font-medium">
+          Invalid restaurant link. Please use the correct restaurant URL.
+        </div>
+      </main>
     );
   }
 
