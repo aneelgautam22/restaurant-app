@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
 type OrderItemInput = {
@@ -21,6 +21,14 @@ type PopularItem = {
   total_sold: number;
 };
 
+type OrderItemRow = {
+  id: number;
+  item_name: string;
+  quantity: number;
+  unit_price?: number | null;
+  status?: "pending" | "preparing" | "ready";
+};
+
 type OrderRow = {
   id: number;
   table_number: string;
@@ -30,24 +38,36 @@ type OrderRow = {
   is_paid?: boolean | null;
   payment_method?: string | null;
   paid_at?: string | null;
-  order_items?: {
+  remarks?: string | null;
+  order_items?: OrderItemRow[];
+};
+
+type ReadyNotification = {
+  uniqueKey: string;
+  orderId: number;
+  tableNumber: string;
+  items: {
     id: number;
     item_name: string;
     quantity: number;
-    unit_price?: number | null;
   }[];
 };
 
-type SalesItem = {
-  item_name: string;
-  total_quantity: number;
-  total_revenue: number;
-};
-
-type BillItem = {
+type GroupedTableItem = {
   item_name: string;
   quantity: number;
   total: number;
+  statuses: string[];
+};
+
+type GroupedTableOrder = {
+  table_number: string;
+  order_ids: number[];
+  remarks: string[];
+  items: GroupedTableItem[];
+  total: number;
+  unpaid_orders_count: number;
+  sourceOrders: OrderRow[];
 };
 
 const RESTAURANT_ID =
@@ -56,6 +76,8 @@ const RESTAURANT_ID =
     : 1;
 
 export default function WaiterPage() {
+  const [restaurantName, setRestaurantName] = useState("");
+
   const [tableNumber, setTableNumber] = useState("");
   const [items, setItems] = useState<OrderItemInput[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
@@ -64,23 +86,36 @@ export default function WaiterPage() {
   const [popularItems, setPopularItems] = useState<PopularItem[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const [readyPopupOrder, setReadyPopupOrder] = useState<OrderRow | null>(null);
-  const [lastReadyAlertIds, setLastReadyAlertIds] = useState<number[]>([]);
+  const [remarksOpen, setRemarksOpen] = useState(false);
+  const [remarks, setRemarks] = useState("");
 
-  const [waiterBillTableNumber, setWaiterBillTableNumber] = useState("");
-  const [waiterPaymentMethod, setWaiterPaymentMethod] = useState<
-    "cash" | "qr" | "card"
-  >("cash");
-  const [markingPaidWaiter, setMarkingPaidWaiter] = useState(false);
+  const [readyNotifications, setReadyNotifications] = useState<ReadyNotification[]>([]);
+  const [seenReadyItemIds, setSeenReadyItemIds] = useState<number[]>([]);
+
+  const [tableSearch, setTableSearch] = useState("");
+  const [tableOrdersOpen, setTableOrdersOpen] = useState(false);
+  const [paidHistoryOpen, setPaidHistoryOpen] = useState(false);
+
+  const [tablePaymentMethods, setTablePaymentMethods] = useState<
+    Record<string, "cash" | "qr" | "card">
+  >({});
+  const [markingPaidTable, setMarkingPaidTable] = useState<string | null>(null);
+
   const [moveFromTable, setMoveFromTable] = useState("");
   const [moveToTable, setMoveToTable] = useState("");
   const [movingTable, setMovingTable] = useState(false);
+  const [tableChangeOpen, setTableChangeOpen] = useState(false);
 
-  // Waiter order edit states
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [newItemName, setNewItemName] = useState("");
+  const [newItemPrice, setNewItemPrice] = useState("");
+
   const [editingOrderId, setEditingOrderId] = useState<number | null>(null);
   const [editOrderTableNumber, setEditOrderTableNumber] = useState("");
   const [editItems, setEditItems] = useState<OrderItemInput[]>([]);
   const [editSearchTerm, setEditSearchTerm] = useState("");
+  const [editRemarksOpen, setEditRemarksOpen] = useState(false);
+  const [editRemarks, setEditRemarks] = useState("");
   const [savingEditOrder, setSavingEditOrder] = useState(false);
   const [cancelingOrderId, setCancelingOrderId] = useState<number | null>(null);
 
@@ -88,7 +123,53 @@ export default function WaiterPage() {
   const [unlocked, setUnlocked] = useState(false);
   const [dbPassword, setDbPassword] = useState("");
 
+  const [soundEnabled, setSoundEnabled] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
+  const [toast, setToast] = useState("");
+
+  function showToast(message: string) {
+    setToast(message);
+    setTimeout(() => {
+      setToast("");
+    }, 2000);
+  }
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const savedLogin = localStorage.getItem(`waiter_logged_in_${RESTAURANT_ID}`);
+    if (savedLogin === "true") {
+      setUnlocked(true);
+    }
+
+    const savedSound = localStorage.getItem(
+      `waiter_sound_enabled_${RESTAURANT_ID}`
+    );
+    if (savedSound === "true") {
+      setSoundEnabled(true);
+    }
+  }, []);
+
+  async function fetchRestaurant() {
+    const { data, error } = await supabase
+      .from("restaurants")
+      .select("*")
+      .eq("id", RESTAURANT_ID)
+      .single();
+
+    if (!error && data) {
+      const restaurantData = data as Record<string, any>;
+      setRestaurantName(
+        restaurantData.name ||
+          restaurantData.restaurant_name ||
+          restaurantData.restaurant ||
+          restaurantData.title ||
+          "Restaurant"
+      );
+      setDbPassword(restaurantData.waiter_password || "");
+    }
+  }
 
   async function fetchWaiterPassword() {
     const { data, error } = await supabase
@@ -117,9 +198,17 @@ export default function WaiterPage() {
     if (password === (data.waiter_password || "")) {
       setDbPassword(data.waiter_password || "");
       setUnlocked(true);
+      localStorage.setItem(`waiter_logged_in_${RESTAURANT_ID}`, "true");
+      showToast("Welcome back!");
     } else {
       alert("Wrong password");
     }
+  }
+
+  function handleLogout() {
+    localStorage.removeItem(`waiter_logged_in_${RESTAURANT_ID}`);
+    setUnlocked(false);
+    setPassword("");
   }
 
   async function fetchOrders() {
@@ -147,10 +236,10 @@ export default function WaiterPage() {
   }
 
   async function fetchPopularItems() {
-  const { data, error } = await supabase
-    .from("order_items")
-    .select("item_name, quantity, orders!inner(restaurant_id)")
-    .eq("orders.restaurant_id", RESTAURANT_ID);
+    const { data, error } = await supabase
+      .from("order_items")
+      .select("item_name, quantity, orders!inner(restaurant_id)")
+      .eq("orders.restaurant_id", RESTAURANT_ID);
 
     if (error || !data) return;
 
@@ -161,7 +250,6 @@ export default function WaiterPage() {
       const qty = Number(item.quantity || 0);
 
       if (!name) return;
-
       totals[name] = (totals[name] || 0) + qty;
     });
 
@@ -176,22 +264,39 @@ export default function WaiterPage() {
     setPopularItems(sorted);
   }
 
+  function playNotificationBeep() {
+    if (typeof window === "undefined") return;
+    if (!soundEnabled) return;
+    audioRef.current?.play().catch(() => {});
+  }
 
- function playNotificationBeep() {
-  if (typeof window === "undefined") return;
+  async function enableSound() {
+    try {
+      if (audioRef.current) {
+        audioRef.current.volume = 0;
+        await audioRef.current.play();
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+        audioRef.current.volume = 1;
+      }
 
-  const audio = new Audio("/bell.mp3");
-  audio.play().catch(() => {});
-}
+      setSoundEnabled(true);
+      localStorage.setItem(`waiter_sound_enabled_${RESTAURANT_ID}`, "true");
+      showToast("Waiter sound enabled");
+    } catch {
+      alert("Could not enable sound. Please tap again.");
+    }
+  }
 
   useEffect(() => {
+    fetchRestaurant();
     fetchOrders();
     fetchMenu();
     fetchPopularItems();
     fetchWaiterPassword();
 
     const ordersChannel = supabase
-      .channel("waiter-orders-realtime")
+      .channel(`waiter-orders-realtime-${RESTAURANT_ID}`)
       .on(
         "postgres_changes",
         {
@@ -208,7 +313,7 @@ export default function WaiterPage() {
       .subscribe();
 
     const orderItemsChannel = supabase
-      .channel("waiter-order-items-realtime")
+      .channel(`waiter-order-items-realtime-${RESTAURANT_ID}`)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "order_items" },
@@ -220,10 +325,15 @@ export default function WaiterPage() {
       .subscribe();
 
     const menuItemsChannel = supabase
-      .channel("waiter-menu-items-realtime")
+      .channel(`waiter-menu-items-realtime-${RESTAURANT_ID}`)
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "menu_items", filter: `restaurant_id=eq.${RESTAURANT_ID}` },
+        {
+          event: "*",
+          schema: "public",
+          table: "menu_items",
+          filter: `restaurant_id=eq.${RESTAURANT_ID}`,
+        },
         () => {
           fetchMenu();
         }
@@ -231,6 +341,7 @@ export default function WaiterPage() {
       .subscribe();
 
     const interval = setInterval(() => {
+      fetchRestaurant();
       fetchOrders();
       fetchMenu();
       fetchPopularItems();
@@ -244,32 +355,53 @@ export default function WaiterPage() {
     };
   }, []);
 
+  useEffect(() => {
+    const newNotifications: ReadyNotification[] = [];
+
+    orders.forEach((order) => {
+      if (order.is_paid === true) return;
+
+      const newlyReadyItems = (order.order_items || []).filter(
+        (item) => item.status === "ready" && !seenReadyItemIds.includes(item.id)
+      );
+
+      if (newlyReadyItems.length > 0) {
+        newlyReadyItems.forEach((item) => {
+          newNotifications.push({
+            uniqueKey: `${order.id}-${item.id}`,
+            orderId: order.id,
+            tableNumber: String(order.table_number),
+            items: [
+              {
+                id: item.id,
+                item_name: item.item_name,
+                quantity: Number(item.quantity || 0),
+              },
+            ],
+          });
+        });
+      }
+    });
+
+    if (newNotifications.length === 0) return;
+
+    setReadyNotifications((prev) => [...prev, ...newNotifications]);
+    setSeenReadyItemIds((prev) => [
+      ...prev,
+      ...newNotifications.flatMap((notification) =>
+        notification.items.map((item) => item.id)
+      ),
+    ]);
+  }, [orders, seenReadyItemIds]);
 
   useEffect(() => {
-    const currentReadyOrders = orders.filter(
-      (order) =>
-        order.is_paid !== true &&
-        order.status === "ready" &&
-        order.waiter_cleared !== true
-    );
-
-    if (currentReadyOrders.length === 0) return;
-
-    const newReadyOrders = currentReadyOrders.filter(
-      (order) => !lastReadyAlertIds.includes(order.id)
-    );
-
-    if (newReadyOrders.length === 0) return;
-
-    const latestReadyOrder = [...newReadyOrders].sort((a, b) => b.id - a.id)[0];
-
+    if (readyNotifications.length === 0) return;
     playNotificationBeep();
-    setReadyPopupOrder(latestReadyOrder);
-    setLastReadyAlertIds((prev) => [
-      ...prev,
-      ...newReadyOrders.map((order) => order.id),
-    ]);
-  }, [orders, lastReadyAlertIds]);
+  }, [readyNotifications.length, soundEnabled]);
+
+  function closeCurrentReadyNotification() {
+    setReadyNotifications((prev) => prev.slice(1));
+  }
 
   function addMenuItemToOrder(menu: MenuItem) {
     const existing = items.find((i) => i.item_name === menu.item_name);
@@ -316,7 +448,6 @@ export default function WaiterPage() {
     setItems((prev) => prev.filter((_, i) => i !== index));
   }
 
-  // Edit order helper functions
   function startEditOrder(order: OrderRow) {
     if (order.status !== "pending" || order.is_paid === true) {
       alert("Only pending unpaid orders can be edited");
@@ -333,6 +464,8 @@ export default function WaiterPage() {
       }))
     );
     setEditSearchTerm("");
+    setEditRemarks(order.remarks || "");
+    setEditRemarksOpen(!!order.remarks);
   }
 
   function cancelEditOrder() {
@@ -340,6 +473,8 @@ export default function WaiterPage() {
     setEditOrderTableNumber("");
     setEditItems([]);
     setEditSearchTerm("");
+    setEditRemarks("");
+    setEditRemarksOpen(false);
   }
 
   function addMenuItemToEditOrder(menu: MenuItem) {
@@ -432,6 +567,7 @@ export default function WaiterPage() {
       .from("orders")
       .update({
         table_number: editOrderTableNumber.trim(),
+        remarks: editRemarks.trim() || null,
       })
       .eq("id", editingOrderId)
       .eq("restaurant_id", RESTAURANT_ID);
@@ -458,6 +594,7 @@ export default function WaiterPage() {
       item_name: item.item_name,
       quantity: item.quantity,
       unit_price: item.price,
+      status: "pending",
     }));
 
     const { error: insertItemsError } = await supabase
@@ -474,7 +611,7 @@ export default function WaiterPage() {
     await fetchOrders();
     fetchPopularItems();
     cancelEditOrder();
-    alert("Order updated successfully");
+    showToast("Order updated successfully");
   }
 
   async function handleCancelOrder(orderId: number) {
@@ -527,7 +664,7 @@ export default function WaiterPage() {
 
     await fetchOrders();
     fetchPopularItems();
-    alert("Order cancelled successfully");
+    showToast("Order cancelled successfully");
   }
 
   const totalAmount = useMemo(() => {
@@ -584,6 +721,7 @@ export default function WaiterPage() {
           is_paid: false,
           payment_method: null,
           paid_at: null,
+          remarks: remarks.trim() || null,
         },
       ])
       .select()
@@ -600,6 +738,7 @@ export default function WaiterPage() {
       item_name: item.item_name,
       quantity: item.quantity,
       unit_price: item.price,
+      status: "pending",
     }));
 
     const { error: itemsError } = await supabase
@@ -616,101 +755,150 @@ export default function WaiterPage() {
     setTableNumber("");
     setItems([]);
     setSearchTerm("");
+    setRemarks("");
+    setRemarksOpen(false);
     fetchOrders();
     fetchPopularItems();
-    alert("Order sent to kitchen");
+    showToast("Order sent to kitchen");
   }
 
-  async function handleWaiterOk(orderId: number) {
-    const { error } = await supabase
-      .from("orders")
-      .update({ waiter_cleared: true })
-      .eq("id", orderId)
-      .eq("restaurant_id", RESTAURANT_ID);
+  async function handleAddMenuItem(e: React.FormEvent) {
+    e.preventDefault();
 
-    if (error) {
-      alert("Failed to clear order");
+    if (!newItemName.trim()) {
+      alert("Please enter item name");
       return;
     }
 
-    fetchOrders();
-  }
-
-
-
-
-
-
-
-
-  const waiterVisibleOrders = useMemo(() => {
-    return orders.filter((order) => {
-      if (order.is_paid === true) return false;
-      if (order.status === "ready") {
-        return !order.waiter_cleared;
-      }
-      return true;
-    });
-  }, [orders]);
-
-
-  function buildBillData(tableNo: string) {
-    const normalizedTableNo = tableNo.trim();
-
-    if (!normalizedTableNo) {
-      return {
-        matchedOrders: [] as OrderRow[],
-        billItems: [] as BillItem[],
-        grandTotal: 0,
-      };
+    if (!newItemPrice.trim() || Number(newItemPrice) <= 0) {
+      alert("Please enter valid price");
+      return;
     }
 
-    const matchedOrders = orders.filter(
-      (order) =>
-        String(order.table_number).trim() === normalizedTableNo &&
-        order.is_paid !== true
-    );
+    const { error } = await supabase.from("menu_items").insert([
+      {
+        restaurant_id: RESTAURANT_ID,
+        item_name: newItemName.trim(),
+        price: Number(newItemPrice),
+      },
+    ]);
 
-    const billMap: Record<string, BillItem> = {};
+    if (error) {
+      alert("Failed to add menu item");
+      return;
+    }
 
-    matchedOrders.forEach((order) => {
+    setNewItemName("");
+    setNewItemPrice("");
+    await fetchMenu();
+    showToast("Menu item added successfully");
+  }
+
+  const groupedTableOrders = useMemo(() => {
+    const unpaidOrders = orders.filter((order) => order.is_paid !== true);
+    const map: Record<string, GroupedTableOrder> = {};
+
+    unpaidOrders.forEach((order) => {
+      const tableNo = String(order.table_number || "").trim();
+      if (!tableNo) return;
+
+      if (!map[tableNo]) {
+        map[tableNo] = {
+          table_number: tableNo,
+          order_ids: [],
+          remarks: [],
+          items: [],
+          total: 0,
+          unpaid_orders_count: 0,
+          sourceOrders: [],
+        };
+      }
+
+      map[tableNo].order_ids.push(order.id);
+      map[tableNo].unpaid_orders_count += 1;
+      map[tableNo].sourceOrders.push(order);
+
+      if (order.remarks && order.remarks.trim()) {
+        map[tableNo].remarks.push(order.remarks.trim());
+      }
+
       order.order_items?.forEach((item) => {
-        const itemName = item.item_name;
         const quantity = Number(item.quantity || 0);
         const unitPrice = Number(item.unit_price || 0);
         const lineTotal = quantity * unitPrice;
 
-        if (!billMap[itemName]) {
-          billMap[itemName] = {
-            item_name: itemName,
-            quantity: 0,
-            total: 0,
-          };
+        const existingItem = map[tableNo].items.find(
+          (entry) => entry.item_name === item.item_name
+        );
+
+        if (existingItem) {
+          existingItem.quantity += quantity;
+          existingItem.total += lineTotal;
+          existingItem.statuses.push(item.status || "pending");
+        } else {
+          map[tableNo].items.push({
+            item_name: item.item_name,
+            quantity,
+            total: lineTotal,
+            statuses: [item.status || "pending"],
+          });
         }
 
-        billMap[itemName].quantity += quantity;
-        billMap[itemName].total += lineTotal;
+        map[tableNo].total += lineTotal;
       });
     });
 
-    const billItems = Object.values(billMap).sort((a, b) =>
-      a.item_name.localeCompare(b.item_name)
+    return Object.values(map)
+      .sort((a, b) => {
+        const aNum = Number(a.table_number);
+        const bNum = Number(b.table_number);
+
+        if (!Number.isNaN(aNum) && !Number.isNaN(bNum)) {
+          return aNum - bNum;
+        }
+
+        return a.table_number.localeCompare(b.table_number);
+      })
+      .map((table) => ({
+        ...table,
+        items: table.items.sort((a, b) => {
+          const aHasReady = a.statuses.includes("ready");
+          const bHasReady = b.statuses.includes("ready");
+
+          if (aHasReady && !bHasReady) return -1;
+          if (!aHasReady && bHasReady) return 1;
+
+          return a.item_name.localeCompare(b.item_name);
+        }),
+      }));
+  }, [orders]);
+
+  const filteredGroupedTableOrders = useMemo(() => {
+    const search = tableSearch.trim().toLowerCase();
+
+    if (!search) return groupedTableOrders;
+
+    return groupedTableOrders.filter((table) =>
+      table.table_number.toLowerCase().includes(search)
     );
+  }, [groupedTableOrders, tableSearch]);
 
-    const grandTotal = billItems.reduce((sum, item) => sum + item.total, 0);
+  const recentPaidOrders = useMemo(() => {
+    return orders
+      .filter((order) => order.is_paid === true)
+      .sort((a, b) => {
+        const aTime = a.paid_at
+          ? new Date(a.paid_at).getTime()
+          : new Date(a.created_at).getTime();
+        const bTime = b.paid_at
+          ? new Date(b.paid_at).getTime()
+          : new Date(b.created_at).getTime();
+        return bTime - aTime;
+      })
+      .slice(0, 10);
+  }, [orders]);
 
-    return {
-      matchedOrders,
-      billItems,
-      grandTotal,
-    };
-  }
-
-  const waiterBillData = useMemo(() => {
-    return buildBillData(waiterBillTableNumber);
-  }, [waiterBillTableNumber, orders]);
-
-  async function markTableAsPaid(
+  async function markGroupedTableAsPaid(
     tableNo: string,
     paymentMethod: "cash" | "qr" | "card"
   ) {
@@ -737,7 +925,7 @@ export default function WaiterPage() {
     );
     if (!confirmPay) return;
 
-    setMarkingPaidWaiter(true);
+    setMarkingPaidTable(normalizedTableNo);
 
     const orderIds = unpaidOrdersForTable.map((order) => order.id);
 
@@ -751,7 +939,7 @@ export default function WaiterPage() {
       .in("id", orderIds)
       .eq("restaurant_id", RESTAURANT_ID);
 
-    setMarkingPaidWaiter(false);
+    setMarkingPaidTable(null);
 
     if (error) {
       alert("Failed to mark orders as paid");
@@ -759,11 +947,13 @@ export default function WaiterPage() {
     }
 
     await fetchOrders();
+    showToast(`Table ${normalizedTableNo} paid successfully`);
 
-    alert(`Table ${normalizedTableNo} marked as paid`);
-
-    setWaiterBillTableNumber("");
-    setWaiterPaymentMethod("cash");
+    setReadyNotifications((prev) =>
+      prev.filter(
+        (notification) => notification.tableNumber.trim() !== normalizedTableNo
+      )
+    );
   }
 
   async function handleTableMove() {
@@ -813,74 +1003,170 @@ export default function WaiterPage() {
     }
 
     await fetchOrders();
-    alert(`Moved unpaid orders from table ${oldTable} to table ${newTable}`);
     setMoveFromTable("");
     setMoveToTable("");
+    showToast(`Table moved from ${oldTable} to ${newTable}`);
   }
 
+  const currentReadyNotification = readyNotifications[0] || null;
 
+  function getGroupedPaymentButtonClass(
+    tableNo: string,
+    method: "cash" | "qr" | "card"
+  ) {
+    const selected = tablePaymentMethods[tableNo] || "cash";
 
+    return `py-2 rounded-xl text-sm font-medium ${
+      selected === method
+        ? "bg-blue-600 text-white"
+        : "bg-gray-200 text-gray-800"
+    }`;
+  }
 
-  if (!unlocked) {
+  function getItemStatusClass(status?: string) {
+    if (status === "ready") {
+      return "bg-green-100 text-green-700";
+    }
+    if (status === "preparing") {
+      return "bg-yellow-100 text-yellow-700";
+    }
+    return "bg-gray-200 text-gray-700";
+  }
+
+  function formatPaymentMethod(method?: string | null) {
+    if (method === "qr") return "QR";
+    if (method === "card") return "Card";
+    return "Cash";
+  }
+
+  function getOrderTotal(order: OrderRow) {
     return (
-      <main className="min-h-screen bg-gray-100 p-3">
-        <div className="max-w-md mx-auto">
-          <div className="bg-white rounded-2xl shadow p-4 space-y-4">
-            <h1 className="text-2xl font-bold text-center">Waiter Login</h1>
-
-            <input
-              type="password"
-              placeholder="Enter waiter password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full border rounded-xl px-4 py-3"
-            />
-
-            <button
-              type="button"
-              onClick={handleUnlock}
-              className="w-full bg-blue-600 text-white py-3 rounded-xl font-semibold"
-            >
-              Enter
-            </button>
-          </div>
-        </div>
-      </main>
+      order.order_items?.reduce((sum, item) => {
+        return sum + Number(item.quantity || 0) * Number(item.unit_price || 0);
+      }, 0) || 0
     );
   }
 
+  if (!unlocked) {
+    return (
+      <>
+        {toast && (
+          <div className="fixed top-4 right-4 z-50">
+            <div className="bg-green-600 text-white px-5 py-3 rounded-2xl shadow-lg text-sm font-semibold">
+              {toast}
+            </div>
+          </div>
+        )}
 
+        <main className="min-h-screen bg-gray-100 p-3">
+          <div className="max-w-md mx-auto">
+            <div className="bg-white rounded-3xl shadow p-5 space-y-4 border">
+              <div className="text-center">
+                <h1 className="text-2xl font-bold text-gray-900">
+                  {restaurantName || "Restaurant"}
+                </h1>
+                <p className="text-sm text-gray-500 mt-1">Waiter Panel Login</p>
+              </div>
 
+              <input
+                type="password"
+                placeholder="Enter waiter password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full border rounded-xl px-4 py-3"
+              />
 
-
+              <button
+                type="button"
+                onClick={handleUnlock}
+                className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold"
+              >
+                Enter
+              </button>
+            </div>
+          </div>
+        </main>
+      </>
+    );
+  }
 
   return (
-    <main className="min-h-screen bg-gray-100 p-3">
-      <div className="max-w-md mx-auto space-y-4">
-        <div className="bg-white rounded-2xl shadow p-4">
-          <h1 className="text-2xl font-bold mb-4 text-center">
-            Waiter Panel
-          </h1>
+    <>
+      <audio ref={audioRef} src="/bell.mp3" preload="auto" />
 
-          <div className="space-y-4">
-              {readyPopupOrder && (
+      {toast && (
+        <div className="fixed top-4 right-4 z-50">
+          <div className="bg-green-600 text-white px-5 py-3 rounded-2xl shadow-lg text-sm font-semibold">
+            {toast}
+          </div>
+        </div>
+      )}
+
+      <main className="min-h-screen bg-gray-100 p-3">
+        <div className="max-w-md mx-auto space-y-4">
+          <div className="bg-white rounded-3xl shadow p-4 border space-y-4">
+            <div className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-3xl p-5 shadow-lg space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center text-lg font-bold shrink-0">
+                  {restaurantName ? restaurantName.charAt(0).toUpperCase() : "R"}
+                </div>
+
+                <h1 className="text-lg font-bold text-center flex-1 mx-2 truncate">
+                  {restaurantName || "Restaurant"}
+                </h1>
+
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="bg-white text-red-600 px-3 py-1.5 rounded-full text-xs font-semibold shadow shrink-0"
+                >
+                  Logout
+                </button>
+              </div>
+
+              <div className="flex justify-center">
+                <div className="px-4 py-1.5 rounded-full bg-white/20 text-sm font-semibold">
+                  Waiter Panel
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              {currentReadyNotification && (
                 <div className="bg-green-50 border-2 border-green-300 rounded-2xl p-4 shadow">
                   <div className="flex items-start justify-between gap-3">
-                    <div>
+                    <div className="flex-1">
                       <p className="text-sm font-semibold text-green-700">
                         📢 Table Ready
                       </p>
                       <h2 className="text-xl font-bold text-green-900 mt-1">
-                        Table {readyPopupOrder.table_number} is ready
+                        Table {currentReadyNotification.tableNumber} is ready
                       </h2>
-                      <p className="text-sm text-green-800 mt-2">
-                        Order #{readyPopupOrder.id} is ready to serve.
+                      <p className="text-sm text-green-800 mt-1">
+                        Order #{currentReadyNotification.orderId}
                       </p>
+
+                      <div className="mt-3 space-y-1">
+                        {currentReadyNotification.items.map((item) => (
+                          <p
+                            key={item.id}
+                            className="text-sm text-green-900 font-medium"
+                          >
+                            {item.item_name} x {item.quantity}
+                          </p>
+                        ))}
+                      </div>
+
+                      {readyNotifications.length > 1 && (
+                        <p className="text-xs text-green-700 mt-3">
+                          {readyNotifications.length - 1} more ready notification(s) remaining
+                        </p>
+                      )}
                     </div>
 
                     <button
                       type="button"
-                      onClick={() => setReadyPopupOrder(null)}
+                      onClick={closeCurrentReadyNotification}
                       className="bg-white border border-green-300 px-3 py-1 rounded-lg text-sm font-medium"
                     >
                       Close
@@ -1017,6 +1303,34 @@ export default function WaiterPage() {
                   )}
                 </div>
 
+                <div className="space-y-3">
+                  <button
+                    type="button"
+                    onClick={() => setRemarksOpen((prev) => !prev)}
+                    className="w-full flex items-center justify-between border rounded-2xl px-4 py-3 bg-gray-50"
+                  >
+                    <span className="text-sm font-semibold">Remarks Section</span>
+                    <span className="text-sm font-semibold text-blue-600">
+                      {remarksOpen ? "Hide" : "Show"}
+                    </span>
+                  </button>
+
+                  {remarksOpen && (
+                    <div className="border rounded-2xl p-3 bg-gray-50">
+                      <label className="block text-sm font-semibold mb-2">
+                        Customer Remarks
+                      </label>
+                      <textarea
+                        value={remarks}
+                        onChange={(e) => setRemarks(e.target.value)}
+                        placeholder="Example: cheese badi halnu, chini nahalnu, thorai piro..."
+                        rows={3}
+                        className="w-full border rounded-xl px-4 py-3 text-sm resize-none"
+                      />
+                    </div>
+                  )}
+                </div>
+
                 <button
                   type="submit"
                   disabled={loading}
@@ -1026,47 +1340,573 @@ export default function WaiterPage() {
                 </button>
               </form>
 
-              <div className="bg-white rounded-2xl shadow p-4">
-                <h2 className="text-xl font-bold mb-3">Recent Orders</h2>
+              <div className="bg-white rounded-2xl shadow p-4 space-y-4">
+                <button
+                  type="button"
+                  onClick={() => setTableOrdersOpen((prev) => !prev)}
+                  className="w-full flex items-center justify-between text-left"
+                >
+                  <div>
+                    <h2 className="text-xl font-bold">Table Orders</h2>
+                    <p className="text-sm text-gray-500 mt-1">
+                      Search and manage unpaid table orders
+                    </p>
+                  </div>
 
-                <div className="space-y-3">
-                  {waiterVisibleOrders.length === 0 && (
-                    <p className="text-gray-500 text-sm">No unpaid active orders.</p>
-                  )}
+                  <span className="text-sm font-semibold text-blue-600">
+                    {tableOrdersOpen ? "Hide" : "Show"}
+                  </span>
+                </button>
 
-                  {waiterVisibleOrders.map((order) => {
-                    const canEditOrCancel =
-                      order.status === "pending" && order.is_paid !== true;
+                {tableOrdersOpen && (
+                  <div className="space-y-4 pt-2">
+                    <div>
+                      <label className="block text-sm font-semibold mb-2">
+                        Search Table Number
+                      </label>
+                      <input
+                        type="text"
+                        value={tableSearch}
+                        onChange={(e) => setTableSearch(e.target.value)}
+                        placeholder="Enter table number"
+                        className="w-full border rounded-xl px-4 py-3"
+                      />
+                    </div>
 
-                    return (
+                    {filteredGroupedTableOrders.length === 0 && (
+                      <p className="text-sm text-gray-500">
+                        No unpaid table orders found.
+                      </p>
+                    )}
+
+                    {filteredGroupedTableOrders.map((table) => {
+                      const selectedPaymentMethod =
+                        tablePaymentMethods[table.table_number] || "cash";
+
+                      const readyItems = table.items.filter((item) =>
+                        item.statuses.includes("ready")
+                      );
+                      const otherItems = table.items.filter(
+                        (item) => !item.statuses.includes("ready")
+                      );
+
+                      const singleEditableOrder =
+                        table.sourceOrders.length === 1 &&
+                        table.sourceOrders[0].status === "pending" &&
+                        table.sourceOrders[0].is_paid !== true
+                          ? table.sourceOrders[0]
+                          : null;
+
+                      const isEditingThisCard =
+                        singleEditableOrder &&
+                        editingOrderId === singleEditableOrder.id;
+
+                      return (
+                        <div
+                          key={table.table_number}
+                          className={`border rounded-2xl p-4 bg-gray-50 space-y-4 ${
+                            isEditingThisCard ? "border-2 border-yellow-300" : ""
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <h3 className="text-lg font-bold">
+                                  Table {table.table_number}
+                                </h3>
+
+                                <span className="px-2 py-1 rounded-lg text-xs font-semibold bg-yellow-100 text-yellow-700">
+                                  Unpaid
+                                </span>
+
+                                {isEditingThisCard && (
+                                  <span className="px-2 py-1 rounded-lg text-xs font-semibold bg-blue-100 text-blue-700">
+                                    Editing
+                                  </span>
+                                )}
+                              </div>
+
+                              <p className="text-xs text-gray-500 mt-1">
+                                Unpaid Orders: {table.unpaid_orders_count}
+                              </p>
+                            </div>
+
+                            {isEditingThisCard && (
+                              <button
+                                type="button"
+                                onClick={cancelEditOrder}
+                                className="bg-gray-400 text-white px-3 py-2 rounded-xl text-sm font-medium"
+                              >
+                                Close
+                              </button>
+                            )}
+                          </div>
+
+                          {!isEditingThisCard && (
+                            <>
+                              {readyItems.length > 0 && (
+                                <div className="border border-green-200 rounded-2xl p-3 bg-green-50 space-y-2">
+                                  <div className="flex items-center justify-between">
+                                    <p className="text-sm font-bold text-green-700">
+                                      Ready Items
+                                    </p>
+                                    <span className="px-2 py-1 rounded-full text-xs font-semibold bg-green-600 text-white animate-pulse">
+                                      Ready
+                                    </span>
+                                  </div>
+
+                                  {readyItems.map((item) => (
+                                    <div
+                                      key={`ready-${table.table_number}-${item.item_name}`}
+                                      className="flex items-center justify-between border rounded-xl px-3 py-2 bg-white"
+                                    >
+                                      <div>
+                                        <p className="text-sm font-medium text-green-800">
+                                          {item.item_name} x {item.quantity}
+                                        </p>
+                                      </div>
+
+                                      <div className="flex items-center gap-2">
+                                        <span className="px-2 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700">
+                                          Ready
+                                        </span>
+                                        <p className="text-sm font-semibold">
+                                          Rs. {item.total}
+                                        </p>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              {otherItems.length > 0 && (
+                                <div className="space-y-2">
+                                  {otherItems.map((item) => {
+                                    const currentStatus = item.statuses.includes(
+                                      "preparing"
+                                    )
+                                      ? "preparing"
+                                      : item.statuses.includes("pending")
+                                      ? "pending"
+                                      : item.statuses[0] || "pending";
+
+                                    return (
+                                      <div
+                                        key={`${table.table_number}-${item.item_name}`}
+                                        className="flex items-center justify-between border rounded-xl px-3 py-2 bg-white"
+                                      >
+                                        <div>
+                                          <p className="text-sm font-medium">
+                                            {item.item_name} x {item.quantity}
+                                          </p>
+                                        </div>
+
+                                        <div className="flex items-center gap-2">
+                                          <span
+                                            className={`px-2 py-1 rounded-full text-xs font-semibold capitalize ${getItemStatusClass(
+                                              currentStatus
+                                            )}`}
+                                          >
+                                            {currentStatus}
+                                          </span>
+                                          <p className="text-sm font-semibold">
+                                            Rs. {item.total}
+                                          </p>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+
+                              {table.remarks.length > 0 && (
+                                <div className="border rounded-xl p-3 bg-yellow-50">
+                                  <p className="text-xs font-semibold text-gray-600 mb-2">
+                                    Remarks
+                                  </p>
+                                  <div className="space-y-1">
+                                    {table.remarks.map((remark, index) => (
+                                      <p
+                                        key={`${table.table_number}-remark-${index}`}
+                                        className="text-sm text-gray-800 whitespace-pre-wrap"
+                                      >
+                                        • {remark}
+                                      </p>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              <div className="bg-red-50 border border-red-200 rounded-2xl p-4">
+                                <div className="flex items-center justify-between text-lg font-bold text-red-700">
+                                  <span>Total</span>
+                                  <span>Rs. {table.total}</span>
+                                </div>
+                              </div>
+
+                              <div className="space-y-2">
+                                <label className="block text-sm font-semibold">
+                                  Payment Method
+                                </label>
+
+                                <div className="grid grid-cols-3 gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setTablePaymentMethods((prev) => ({
+                                        ...prev,
+                                        [table.table_number]: "cash",
+                                      }))
+                                    }
+                                    className={getGroupedPaymentButtonClass(
+                                      table.table_number,
+                                      "cash"
+                                    )}
+                                  >
+                                    Cash
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setTablePaymentMethods((prev) => ({
+                                        ...prev,
+                                        [table.table_number]: "qr",
+                                      }))
+                                    }
+                                    className={getGroupedPaymentButtonClass(
+                                      table.table_number,
+                                      "qr"
+                                    )}
+                                  >
+                                    QR
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setTablePaymentMethods((prev) => ({
+                                        ...prev,
+                                        [table.table_number]: "card",
+                                      }))
+                                    }
+                                    className={getGroupedPaymentButtonClass(
+                                      table.table_number,
+                                      "card"
+                                    )}
+                                  >
+                                    Card
+                                  </button>
+                                </div>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  markGroupedTableAsPaid(
+                                    table.table_number,
+                                    selectedPaymentMethod
+                                  )
+                                }
+                                disabled={markingPaidTable === table.table_number}
+                                className="w-full bg-blue-600 text-white py-3 rounded-xl font-semibold"
+                              >
+                                {markingPaidTable === table.table_number
+                                  ? "Marking..."
+                                  : "Mark as Paid"}
+                              </button>
+
+                              {singleEditableOrder && (
+                                <div className="grid grid-cols-2 gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => startEditOrder(singleEditableOrder)}
+                                    className="bg-yellow-500 text-white py-2 rounded-xl font-semibold"
+                                  >
+                                    Edit Order
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      handleCancelOrder(singleEditableOrder.id)
+                                    }
+                                    disabled={
+                                      cancelingOrderId === singleEditableOrder.id
+                                    }
+                                    className="bg-red-600 text-white py-2 rounded-xl font-semibold"
+                                  >
+                                    {cancelingOrderId === singleEditableOrder.id
+                                      ? "Canceling..."
+                                      : "Cancel Order"}
+                                  </button>
+                                </div>
+                              )}
+                            </>
+                          )}
+
+                          {isEditingThisCard && singleEditableOrder && (
+                            <>
+                              <div>
+                                <label className="block text-sm font-semibold mb-2">
+                                  Table Number
+                                </label>
+                                <input
+                                  type="text"
+                                  value={editOrderTableNumber}
+                                  onChange={(e) =>
+                                    setEditOrderTableNumber(e.target.value)
+                                  }
+                                  placeholder="Enter table number"
+                                  className="w-full border rounded-xl px-4 py-3 bg-white"
+                                />
+                              </div>
+
+                              <div className="space-y-3">
+                                <label className="text-sm font-semibold">
+                                  Add More Items
+                                </label>
+
+                                <div className="flex gap-2">
+                                  <input
+                                    type="text"
+                                    value={editSearchTerm}
+                                    onChange={(e) =>
+                                      setEditSearchTerm(e.target.value)
+                                    }
+                                    placeholder="Search item..."
+                                    className="flex-1 border rounded-xl px-4 py-3 text-base bg-white"
+                                  />
+
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditSearchTerm("")}
+                                    className="bg-gray-300 px-4 py-3 rounded-xl text-sm font-medium"
+                                  >
+                                    Clear
+                                  </button>
+                                </div>
+
+                                <div className="grid grid-cols-3 gap-2 max-h-52 overflow-y-auto">
+                                  {editFilteredMenuItems.length === 0 && (
+                                    <p className="col-span-3 text-sm text-gray-500">
+                                      No matching items found.
+                                    </p>
+                                  )}
+
+                                  {editFilteredMenuItems.map((menu) => (
+                                    <button
+                                      key={menu.id}
+                                      type="button"
+                                      onClick={() => addMenuItemToEditOrder(menu)}
+                                      className="bg-gray-200 py-2 rounded-xl text-sm font-medium"
+                                    >
+                                      {menu.item_name}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+
+                              <div className="space-y-3">
+                                <label className="text-sm font-semibold">
+                                  Edit Selected Items
+                                </label>
+
+                                {editItems.length === 0 && (
+                                  <p className="text-sm text-gray-500">
+                                    No items left. Add one item or use cancel order.
+                                  </p>
+                                )}
+
+                                {editItems.map((item, index) => (
+                                  <div
+                                    key={`${item.item_name}-${index}`}
+                                    className="border rounded-2xl p-3 bg-white space-y-3"
+                                  >
+                                    <div className="flex items-center justify-between gap-2">
+                                      <div>
+                                        <p className="font-medium">
+                                          {item.item_name}
+                                        </p>
+                                        <p className="text-sm text-gray-500">
+                                          Rs. {item.price} each
+                                        </p>
+                                      </div>
+
+                                      <button
+                                        type="button"
+                                        onClick={() => removeEditItem(index)}
+                                        className="bg-red-500 text-white px-3 py-2 rounded-xl text-sm"
+                                      >
+                                        Remove
+                                      </button>
+                                    </div>
+
+                                    <div className="flex items-center gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          decreaseEditQuantity(index)
+                                        }
+                                        className="bg-gray-300 px-4 py-2 rounded-xl text-lg font-bold"
+                                      >
+                                        -
+                                      </button>
+
+                                      <div className="flex-1 text-center border rounded-xl py-2 text-lg font-semibold bg-gray-50">
+                                        {item.quantity}
+                                      </div>
+
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          increaseEditQuantity(index)
+                                        }
+                                        className="bg-gray-300 px-4 py-2 rounded-xl text-lg font-bold"
+                                      >
+                                        +
+                                      </button>
+                                    </div>
+
+                                    <div className="text-right font-semibold text-sm">
+                                      Subtotal: Rs. {item.price * item.quantity}
+                                    </div>
+                                  </div>
+                                ))}
+
+                                {editItems.length > 0 && (
+                                  <div className="bg-yellow-50 border border-yellow-200 rounded-2xl p-4">
+                                    <div className="flex items-center justify-between text-lg font-bold">
+                                      <span>Updated Total</span>
+                                      <span>Rs. {editOrderTotal}</span>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="space-y-3">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setEditRemarksOpen((prev) => !prev)
+                                  }
+                                  className="w-full flex items-center justify-between border rounded-2xl px-4 py-3 bg-white"
+                                >
+                                  <span className="text-sm font-semibold">
+                                    Remarks Section
+                                  </span>
+                                  <span className="text-sm font-semibold text-blue-600">
+                                    {editRemarksOpen ? "Hide" : "Show"}
+                                  </span>
+                                </button>
+
+                                {editRemarksOpen && (
+                                  <div className="border rounded-2xl p-3 bg-white">
+                                    <label className="block text-sm font-semibold mb-2">
+                                      Customer Remarks
+                                    </label>
+                                    <textarea
+                                      value={editRemarks}
+                                      onChange={(e) =>
+                                        setEditRemarks(e.target.value)
+                                      }
+                                      placeholder="Example: cheese badi halnu, chini nahalnu, thorai piro..."
+                                      rows={3}
+                                      className="w-full border rounded-xl px-4 py-3 text-sm resize-none"
+                                    />
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-2">
+                                <button
+                                  type="button"
+                                  onClick={saveEditedOrder}
+                                  disabled={savingEditOrder}
+                                  className="bg-blue-600 text-white py-3 rounded-xl font-semibold"
+                                >
+                                  {savingEditOrder ? "Saving..." : "Save Changes"}
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={cancelEditOrder}
+                                  className="bg-gray-400 text-white py-3 rounded-xl font-semibold"
+                                >
+                                  Cancel Edit
+                                </button>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleCancelOrder(singleEditableOrder.id)
+                                }
+                                disabled={
+                                  cancelingOrderId === singleEditableOrder.id
+                                }
+                                className="w-full bg-red-600 text-white py-3 rounded-xl font-semibold"
+                              >
+                                {cancelingOrderId === singleEditableOrder.id
+                                  ? "Canceling..."
+                                  : "Cancel Order"}
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-white rounded-2xl shadow p-4 space-y-4">
+                <button
+                  type="button"
+                  onClick={() => setPaidHistoryOpen((prev) => !prev)}
+                  className="w-full flex items-center justify-between text-left"
+                >
+                  <div>
+                    <h2 className="text-xl font-bold">Paid History</h2>
+                    <p className="text-sm text-gray-500 mt-1">
+                      Latest 10 paid orders
+                    </p>
+                  </div>
+
+                  <span className="text-sm font-semibold text-blue-600">
+                    {paidHistoryOpen ? "Hide" : "Show"}
+                  </span>
+                </button>
+
+                {paidHistoryOpen && (
+                  <div className="space-y-4 pt-2">
+                    {recentPaidOrders.length === 0 && (
+                      <p className="text-sm text-gray-500">
+                        No paid history available.
+                      </p>
+                    )}
+
+                    {recentPaidOrders.map((order) => (
                       <div
                         key={order.id}
-                        className="border rounded-2xl p-3 space-y-2"
+                        className="border rounded-[24px] p-4 bg-white space-y-3"
                       >
-                        <div className="flex items-center justify-between">
+                        <div className="flex items-start justify-between gap-3">
                           <div>
-                            <p className="font-semibold text-base">
+                            <h3 className="text-2xl font-bold leading-none">
                               Table {order.table_number}
-                            </p>
-                            <p className="text-xs text-gray-500">
+                            </h3>
+                            <p className="text-sm text-gray-500 mt-1">
                               Order #{order.id}
                             </p>
                           </div>
 
-                          <span
-                            className={`px-3 py-1 rounded-full text-sm font-semibold capitalize ${
-                              order.status === "ready"
-                                ? "bg-green-100 text-green-700"
-                                : order.status === "preparing"
-                                ? "bg-yellow-100 text-yellow-700"
-                                : "bg-gray-100 text-gray-700"
-                            }`}
-                          >
-                            {order.status}
+                          <span className="px-4 py-2 rounded-full text-sm font-semibold bg-green-100 text-green-700">
+                            Paid
                           </span>
                         </div>
 
-                        <div className="text-sm text-gray-700 space-y-1">
+                        <div className="space-y-1 text-sm text-gray-800">
                           {order.order_items?.length ? (
                             order.order_items.map((item) => (
                               <p key={item.id}>
@@ -1078,379 +1918,172 @@ export default function WaiterPage() {
                           )}
                         </div>
 
-                        {order.status === "ready" && !order.waiter_cleared && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              handleWaiterOk(order.id);
-                              if (readyPopupOrder?.id === order.id) {
-                                setReadyPopupOrder(null);
-                              }
-                            }}
-                            className="w-full bg-green-600 text-white py-3 rounded-xl font-semibold mt-2"
-                          >
-                            OK
-                          </button>
-                        )}
-
-                        {canEditOrCancel && (
-                          <div className="grid grid-cols-2 gap-2 pt-2">
-                            <button
-                              type="button"
-                              onClick={() => startEditOrder(order)}
-                              className="bg-yellow-500 text-white py-2 rounded-xl font-semibold"
-                            >
-                              Edit
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => handleCancelOrder(order.id)}
-                              disabled={cancelingOrderId === order.id}
-                              className="bg-red-600 text-white py-2 rounded-xl font-semibold"
-                            >
-                              {cancelingOrderId === order.id
-                                ? "Canceling..."
-                                : "Cancel"}
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {editingOrderId !== null && (
-                <div className="bg-white rounded-2xl shadow p-4 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h2 className="text-xl font-bold">
-                      Edit Order #{editingOrderId}
-                    </h2>
-
-                    <button
-                      type="button"
-                      onClick={cancelEditOrder}
-                      className="bg-gray-400 text-white px-4 py-2 rounded-xl text-sm font-medium"
-                    >
-                      Close
-                    </button>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-semibold mb-2">
-                      Table Number
-                    </label>
-                    <input
-                      type="text"
-                      value={editOrderTableNumber}
-                      onChange={(e) => setEditOrderTableNumber(e.target.value)}
-                      placeholder="Enter table number"
-                      className="w-full border rounded-xl px-4 py-3"
-                    />
-                  </div>
-
-                  <div className="space-y-3">
-                    <label className="text-sm font-semibold">
-                      Add More Items
-                    </label>
-
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        value={editSearchTerm}
-                        onChange={(e) => setEditSearchTerm(e.target.value)}
-                        placeholder="Search item..."
-                        className="flex-1 border rounded-xl px-4 py-3 text-base"
-                      />
-
-                      <button
-                        type="button"
-                        onClick={() => setEditSearchTerm("")}
-                        className="bg-gray-300 px-4 py-3 rounded-xl text-sm font-medium"
-                      >
-                        Clear
-                      </button>
-                    </div>
-
-                    <div className="grid grid-cols-3 gap-2 max-h-52 overflow-y-auto">
-                      {editFilteredMenuItems.length === 0 && (
-                        <p className="col-span-3 text-sm text-gray-500">
-                          No matching items found.
-                        </p>
-                      )}
-
-                      {editFilteredMenuItems.map((menu) => (
-                        <button
-                          key={menu.id}
-                          type="button"
-                          onClick={() => addMenuItemToEditOrder(menu)}
-                          className="bg-gray-200 py-2 rounded-xl text-sm font-medium"
-                        >
-                          {menu.item_name}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="space-y-3">
-                    <label className="text-sm font-semibold">
-                      Edit Selected Items
-                    </label>
-
-                    {editItems.length === 0 && (
-                      <p className="text-sm text-gray-500">
-                        No items left. Add one item or use cancel order.
-                      </p>
-                    )}
-
-                    {editItems.map((item, index) => (
-                      <div
-                        key={`${item.item_name}-${index}`}
-                        className="border rounded-2xl p-3 bg-gray-50 space-y-3"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <div>
-                            <p className="font-medium">{item.item_name}</p>
-                            <p className="text-sm text-gray-500">
-                              Rs. {item.price} each
-                            </p>
-                          </div>
-
-                          <button
-                            type="button"
-                            onClick={() => removeEditItem(index)}
-                            className="bg-red-500 text-white px-3 py-2 rounded-xl text-sm"
-                          >
-                            Remove
-                          </button>
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => decreaseEditQuantity(index)}
-                            className="bg-gray-300 px-4 py-2 rounded-xl text-lg font-bold"
-                          >
-                            -
-                          </button>
-
-                          <div className="flex-1 text-center border rounded-xl py-2 text-lg font-semibold bg-white">
-                            {item.quantity}
-                          </div>
-
-                          <button
-                            type="button"
-                            onClick={() => increaseEditQuantity(index)}
-                            className="bg-gray-300 px-4 py-2 rounded-xl text-lg font-bold"
-                          >
-                            +
-                          </button>
-                        </div>
-
-                        <div className="text-right font-semibold text-sm">
-                          Subtotal: Rs. {item.price * item.quantity}
+                        <div className="border-t border-gray-400 pt-3 space-y-1">
+                          <p className="text-xl font-semibold">
+                            Total:{" "}
+                            <span className="font-normal">
+                              Rs. {getOrderTotal(order)}
+                            </span>
+                          </p>
+                          <p className="text-lg font-semibold">
+                            Method:{" "}
+                            <span className="font-normal">
+                              {formatPaymentMethod(order.payment_method)}
+                            </span>
+                          </p>
+                          <p className="text-lg font-semibold">
+                            Paid At:{" "}
+                            <span className="font-normal">
+                              {order.paid_at
+                                ? new Date(order.paid_at).toLocaleString()
+                                : "-"}
+                            </span>
+                          </p>
                         </div>
                       </div>
                     ))}
-
-                    {editItems.length > 0 && (
-                      <div className="bg-yellow-50 border border-yellow-200 rounded-2xl p-4">
-                        <div className="flex items-center justify-between text-lg font-bold">
-                          <span>Updated Total</span>
-                          <span>Rs. {editOrderTotal}</span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={saveEditedOrder}
-                      disabled={savingEditOrder}
-                      className="bg-blue-600 text-white py-3 rounded-xl font-semibold"
-                    >
-                      {savingEditOrder ? "Saving..." : "Save Changes"}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={cancelEditOrder}
-                      className="bg-gray-400 text-white py-3 rounded-xl font-semibold"
-                    >
-                      Cancel Edit
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              <div className="bg-white rounded-2xl shadow p-4 space-y-4">
-                <h2 className="text-xl font-bold">Table Bill Lookup</h2>
-
-                <div>
-                  <label className="block text-sm font-semibold mb-2">
-                    Enter Table Number
-                  </label>
-                  <input
-                    type="text"
-                    value={waiterBillTableNumber}
-                    onChange={(e) => setWaiterBillTableNumber(e.target.value)}
-                    placeholder="Enter table number"
-                    className="w-full border rounded-xl px-4 py-3"
-                  />
-                </div>
-
-                {waiterBillTableNumber.trim() && (
-                  <div className="border rounded-2xl p-4 bg-gray-50 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-lg font-bold">
-                        Table {waiterBillTableNumber}
-                      </h3>
-                      <p className="text-sm text-gray-500">
-                        Unpaid Orders: {waiterBillData.matchedOrders.length}
-                      </p>
-                    </div>
-
-                    {waiterBillData.matchedOrders.length === 0 ? (
-                      <p className="text-sm text-gray-500">
-                        No unpaid orders found for this table.
-                      </p>
-                    ) : (
-                      <>
-                        <div className="space-y-2">
-                          {waiterBillData.billItems.map((item) => (
-                            <div
-                              key={item.item_name}
-                              className="flex items-center justify-between border-b pb-2 text-sm"
-                            >
-                              <div>
-                                <p className="font-medium">{item.item_name}</p>
-                                <p className="text-gray-500">
-                                  Qty: {item.quantity}
-                                </p>
-                              </div>
-                              <p className="font-semibold">Rs. {item.total}</p>
-                            </div>
-                          ))}
-                        </div>
-
-                        <div className="bg-green-50 border border-green-200 rounded-2xl p-4">
-                          <div className="flex items-center justify-between text-lg font-bold">
-                            <span>Grand Total</span>
-                            <span>Rs. {waiterBillData.grandTotal}</span>
-                          </div>
-                        </div>
-
-                        <div className="space-y-2">
-                          <label className="block text-sm font-semibold">
-                            Payment Method
-                          </label>
-
-                          <div className="grid grid-cols-3 gap-2">
-                            <button
-                              type="button"
-                              onClick={() => setWaiterPaymentMethod("cash")}
-                              className={`py-2 rounded-xl text-sm font-medium ${
-                                waiterPaymentMethod === "cash"
-                                  ? "bg-blue-600 text-white"
-                                  : "bg-gray-200 text-gray-800"
-                              }`}
-                            >
-                              Cash
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => setWaiterPaymentMethod("qr")}
-                              className={`py-2 rounded-xl text-sm font-medium ${
-                                waiterPaymentMethod === "qr"
-                                  ? "bg-blue-600 text-white"
-                                  : "bg-gray-200 text-gray-800"
-                              }`}
-                            >
-                              QR
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => setWaiterPaymentMethod("card")}
-                              className={`py-2 rounded-xl text-sm font-medium ${
-                                waiterPaymentMethod === "card"
-                                  ? "bg-blue-600 text-white"
-                                  : "bg-gray-200 text-gray-800"
-                              }`}
-                            >
-                              Card
-                            </button>
-                          </div>
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={() =>
-                            markTableAsPaid(
-                              waiterBillTableNumber,
-                              waiterPaymentMethod
-                            )
-                          }
-                          disabled={markingPaidWaiter}
-                          className="w-full bg-blue-600 text-white py-3 rounded-xl font-semibold"
-                        >
-                          {markingPaidWaiter ? "Marking..." : "Mark as Paid"}
-                        </button>
-                      </>
-                    )}
                   </div>
                 )}
               </div>
 
               <div className="bg-white rounded-2xl shadow p-4 space-y-4">
-                <h2 className="text-xl font-bold">Table Change</h2>
+                <button
+                  type="button"
+                  onClick={() => setTableChangeOpen((prev) => !prev)}
+                  className="w-full flex items-center justify-between text-left"
+                >
+                  <h2 className="text-xl font-bold">Table Change</h2>
+                  <span className="text-sm font-semibold text-blue-600">
+                    {tableChangeOpen ? "Hide" : "Show"}
+                  </span>
+                </button>
 
-                <div>
-                  <label className="block text-sm font-semibold mb-2">
-                    Current Table Number
-                  </label>
-                  <input
-                    type="text"
-                    value={moveFromTable}
-                    onChange={(e) => setMoveFromTable(e.target.value)}
-                    placeholder="Enter current table number"
-                    className="w-full border rounded-xl px-4 py-3"
-                  />
-                </div>
+                {tableChangeOpen && (
+                  <div className="space-y-4 pt-2">
+                    <div>
+                      <label className="block text-sm font-semibold mb-2">
+                        Current Table Number
+                      </label>
+                      <input
+                        type="text"
+                        value={moveFromTable}
+                        onChange={(e) => setMoveFromTable(e.target.value)}
+                        placeholder="Enter current table number"
+                        className="w-full border rounded-xl px-4 py-3"
+                      />
+                    </div>
 
-                <div>
-                  <label className="block text-sm font-semibold mb-2">
-                    New Table Number
-                  </label>
-                  <input
-                    type="text"
-                    value={moveToTable}
-                    onChange={(e) => setMoveToTable(e.target.value)}
-                    placeholder="Enter new table number"
-                    className="w-full border rounded-xl px-4 py-3"
-                  />
-                </div>
+                    <div>
+                      <label className="block text-sm font-semibold mb-2">
+                        New Table Number
+                      </label>
+                      <input
+                        type="text"
+                        value={moveToTable}
+                        onChange={(e) => setMoveToTable(e.target.value)}
+                        placeholder="Enter new table number"
+                        className="w-full border rounded-xl px-4 py-3"
+                      />
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleTableMove}
+                      disabled={movingTable}
+                      className="w-full bg-orange-500 text-white py-3 rounded-xl font-semibold"
+                    >
+                      {movingTable ? "Moving..." : "Move Table"}
+                    </button>
+
+                    <p className="text-xs text-gray-500">
+                      This will move all unpaid orders from current table to new
+                      table.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-white rounded-2xl shadow p-4 space-y-4">
+                <button
+                  type="button"
+                  onClick={() => setAddMenuOpen((prev) => !prev)}
+                  className="w-full flex items-center justify-between text-left"
+                >
+                  <div>
+                    <h2 className="text-xl font-bold">Add Menu Items</h2>
+                    <p className="text-sm text-gray-500 mt-1">
+                      Add new items directly from waiter panel
+                    </p>
+                  </div>
+
+                  <span className="text-sm font-semibold text-blue-600">
+                    {addMenuOpen ? "Hide" : "Show"}
+                  </span>
+                </button>
+
+                {addMenuOpen && (
+                  <div className="space-y-4 pt-2">
+                    <form onSubmit={handleAddMenuItem} className="space-y-3">
+                      <div>
+                        <label className="block text-sm font-semibold mb-2">
+                          Item Name
+                        </label>
+                        <input
+                          type="text"
+                          value={newItemName}
+                          onChange={(e) => setNewItemName(e.target.value)}
+                          placeholder="Enter item name"
+                          className="w-full border rounded-xl px-4 py-3"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-semibold mb-2">
+                          Price
+                        </label>
+                        <input
+                          type="number"
+                          value={newItemPrice}
+                          onChange={(e) => setNewItemPrice(e.target.value)}
+                          placeholder="Enter item price"
+                          className="w-full border rounded-xl px-4 py-3"
+                        />
+                      </div>
+
+                      <button
+                        type="submit"
+                        className="w-full bg-blue-600 text-white py-3 rounded-xl font-semibold"
+                      >
+                        Add Menu Item
+                      </button>
+                    </form>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={enableSound}
+                  className={`px-3 py-2 rounded-xl text-sm font-semibold text-white ${
+                    soundEnabled ? "bg-green-600" : "bg-blue-600"
+                  }`}
+                >
+                  {soundEnabled ? "🔔 Sound On" : "🔔 Enable Sound"}
+                </button>
 
                 <button
                   type="button"
-                  onClick={handleTableMove}
-                  disabled={movingTable}
-                  className="w-full bg-orange-500 text-white py-3 rounded-xl font-semibold"
+                  onClick={handleLogout}
+                  className="px-3 py-2 rounded-xl text-sm font-semibold text-white bg-red-600"
                 >
-                  {movingTable ? "Moving..." : "Move Table"}
+                  Logout
                 </button>
-
-                <p className="text-xs text-gray-500">
-                  This will move all unpaid orders from current table to new
-                  table.
-                </p>
               </div>
             </div>
+          </div>
         </div>
-      </div>
-    </main>
+      </main>
+    </>
   );
 }
