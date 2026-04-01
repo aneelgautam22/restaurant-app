@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
@@ -20,7 +20,7 @@ type Order = {
   order_items?: OrderItem[];
 };
 
-export default function KitchenPage() {
+function KitchenPageContent() {
   const searchParams = useSearchParams();
   const restaurantId = Number(searchParams.get("id"));
 
@@ -476,5 +476,13 @@ export default function KitchenPage() {
         </div>
       </main>
     </>
+  );
+}
+
+export default function KitchenPage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <KitchenPageContent />
+    </Suspense>
   );
 }
