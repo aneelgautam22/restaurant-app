@@ -6,7 +6,7 @@ export default function manifest(): MetadataRoute.Manifest {
     short_name: "Restrofy",
     description: "Smart Restaurant Management",
 
-    start_url: "/",
+    start_url: "/r/aone/waiter",
     display: "standalone",
     background_color: "#020617",
     theme_color: "#020617",
