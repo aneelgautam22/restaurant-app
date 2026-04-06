@@ -3,6 +3,8 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import AppSplash from "@/components/AppSplash";
+import PanelLoginCard from "@/components/PanelLoginCard";
 
 type OrderItem = {
   id: number;
@@ -27,13 +29,24 @@ function KitchenPageContent() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [restaurantName, setRestaurantName] = useState("");
+  const [showSplash, setShowSplash] = useState(true);
 
   const [password, setPassword] = useState("");
   const [unlocked, setUnlocked] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const previousPendingCountRef = useRef(0);
   const hasFetchedOnceRef = useRef(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setShowSplash(false);
+    }, 450);
+
+    return () => clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -56,6 +69,23 @@ function KitchenPageContent() {
     if (!restaurantId) return;
     fetchRestaurant();
   }, [restaurantId]);
+
+  useEffect(() => {
+    function handleOutsideClick(e: MouseEvent) {
+      if (!menuRef.current) return;
+      if (!menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+
+    if (menuOpen) {
+      document.addEventListener("mousedown", handleOutsideClick);
+    }
+
+    return () => {
+      document.removeEventListener("mousedown", handleOutsideClick);
+    };
+  }, [menuOpen]);
 
   async function fetchRestaurant() {
     if (!restaurantId) return;
@@ -109,6 +139,7 @@ function KitchenPageContent() {
     }
     setUnlocked(false);
     setPassword("");
+    setMenuOpen(false);
   }
 
   async function fetchOrders() {
@@ -229,10 +260,18 @@ function KitchenPageContent() {
 
       setSoundEnabled(true);
       localStorage.setItem(`kitchen_sound_enabled_${restaurantId}`, "true");
+      setMenuOpen(false);
       alert("Kitchen sound enabled");
     } catch {
       alert("Could not enable sound. Please tap again.");
     }
+  }
+
+  function disableSound() {
+    if (!restaurantId) return;
+    setSoundEnabled(false);
+    localStorage.setItem(`kitchen_sound_enabled_${restaurantId}`, "false");
+    setMenuOpen(false);
   }
 
   useEffect(() => {
@@ -263,210 +302,231 @@ function KitchenPageContent() {
     return sorted[0]?.id ?? null;
   }, [orders]);
 
+  if (showSplash) {
+    return <AppSplash subtitle="Kitchen Loading..." />;
+  }
+
   if (!restaurantId) {
     return (
-      <main className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
-        <div className="bg-white shadow rounded-2xl p-4 text-center text-sm text-red-600 font-medium">
+      <main className="min-h-screen bg-slate-100 flex items-center justify-center p-4 sm:p-6">
+        <div className="w-full max-w-md rounded-3xl border border-red-200 bg-white p-5 sm:p-6 text-center text-sm sm:text-base text-red-600 font-semibold shadow-sm">
           Invalid restaurant link. Please use the correct restaurant URL.
         </div>
       </main>
     );
   }
 
-  if (!unlocked) {
-    return (
-      <main className="min-h-screen bg-gray-100 p-4">
-        <div className="max-w-md mx-auto bg-white p-6 rounded-3xl shadow space-y-4 border">
-          <div className="text-center">
-            <h1 className="text-2xl font-bold text-gray-900">
-              {restaurantName || "Restaurant"}
-            </h1>
-            <p className="text-sm text-gray-500 mt-1">Kitchen Panel Login</p>
-          </div>
-
-          <input
-            type="password"
-            placeholder="Enter kitchen password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full border rounded-xl px-4 py-3"
-          />
-
-          <button
-            onClick={handleUnlock}
-            className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold"
-          >
-            Enter
-          </button>
-        </div>
-      </main>
-    );
-  }
+ if (!unlocked) {
+  return (
+    <PanelLoginCard
+      restaurantName={restaurantName}
+      panelTitle="Kitchen Panel"
+      panelDescription="Access live kitchen orders and update preparation status."
+      passwordLabel="Kitchen Password"
+      passwordPlaceholder="Enter kitchen password"
+      passwordValue={password}
+      onPasswordChange={setPassword}
+      onSubmit={handleUnlock}
+      buttonText="Enter Kitchen Panel"
+      theme="kitchen"
+    />
+  );
+}
 
   return (
     <>
       <audio ref={audioRef} src="/bell.mp3" preload="auto" />
+      
 
-      <main className="min-h-screen bg-gray-100 p-4 md:p-8">
-        <div className="max-w-6xl mx-auto space-y-6">
-          <div className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-3xl p-5 shadow-lg space-y-4">
-            <div className="flex items-center justify-between gap-3">
-              <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center text-lg font-bold shrink-0">
-                {restaurantName ? restaurantName.charAt(0).toUpperCase() : "R"}
+      <main className="min-h-screen bg-slate-100 px-3 py-3 sm:px-4 sm:py-4 md:px-6 md:py-6 2xl:px-10">
+        <div className="mx-auto w-full max-w-[1800px] space-y-4 sm:space-y-5 md:space-y-6">
+          <div className="rounded-[28px] bg-gradient-to-r from-blue-600 to-indigo-600 px-3 py-3 text-white shadow-[0_12px_30px_rgba(37,99,235,0.25)] sm:px-5 sm:py-4 md:px-6 md:py-5">
+            <div className="flex items-start justify-between gap-3 sm:items-center">
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="flex h-14 w-14 sm:h-16 sm:w-16 shrink-0 items-center justify-center overflow-hidden rounded-full bg-black shadow-md">
+  <img
+    src="/logo.png"
+    alt="Logo"
+    className="h-full w-full object-contain scale-110"
+  />
+</div>
+
+                <div className="min-w-0">
+                  <h1 className="truncate text-base sm:text-lg md:text-xl font-bold">
+                    {restaurantName || "Restaurant"}
+                  </h1>
+                  <p className="text-xs sm:text-sm text-white/80">
+                    Kitchen Panel
+                  </p>
+                </div>
               </div>
 
-              <h1 className="text-lg font-bold text-center flex-1 mx-2 truncate">
-                {restaurantName || "Restaurant"}
-              </h1>
+              <div className="relative shrink-0" ref={menuRef}>
+                <button
+                  onClick={() => setMenuOpen((prev) => !prev)}
+                  className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white/15 text-xl font-bold text-white active:scale-[0.97] select-none touch-manipulation"
+                  aria-label="Open menu"
+                >
+                  ⋮
+                </button>
 
-              <button
-                onClick={handleLogout}
-                className="bg-white text-red-600 px-3 py-1.5 rounded-full text-xs font-semibold shadow shrink-0"
-              >
-                Logout
-              </button>
-            </div>
+                {menuOpen && (
+                  <div className="absolute right-0 top-12 z-50 w-52 rounded-2xl border border-slate-200 bg-white p-2 shadow-[0_12px_30px_rgba(0,0,0,0.14)]">
+                    <button
+                      onClick={soundEnabled ? disableSound : enableSound}
+                      className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-medium text-slate-700 active:scale-[0.99] select-none touch-manipulation"
+                    >
+                      <span className="text-base">
+                        {soundEnabled ? "🔕" : "🔔"}
+                      </span>
+                      <span>
+                        {soundEnabled ? "Disable Sound" : "Enable Sound"}
+                      </span>
+                    </button>
 
-            <div className="flex justify-center">
-              <div className="px-4 py-1.5 rounded-full bg-white/20 text-sm font-semibold">
-                Kitchen Panel
+                    <button
+                      onClick={handleLogout}
+                      className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-medium text-red-600 active:scale-[0.99] select-none touch-manipulation"
+                    >
+                      <span className="text-base">🚪</span>
+                      <span>Logout</span>
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
-          </div>
-
-          <div className="flex justify-end">
-            <button
-              onClick={enableSound}
-              className={`px-5 py-3 rounded-2xl font-semibold text-white ${
-                soundEnabled ? "bg-green-600" : "bg-blue-600"
-              }`}
-            >
-              {soundEnabled ? "🔔 Sound Enabled" : "🔔 Enable Sound"}
-            </button>
           </div>
 
           {orders.length === 0 ? (
-            <div className="bg-white rounded-2xl shadow p-6">
-              <p className="text-gray-500 text-lg">
+            <div className="rounded-[24px] border border-slate-200 bg-white p-5 sm:p-6 shadow-sm">
+              <p className="text-sm sm:text-base md:text-lg text-slate-500">
                 No active kitchen items.
               </p>
             </div>
           ) : (
-            <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 gap-3 sm:gap-4 md:grid-cols-2 2xl:grid-cols-3">
               {orders.map((order) => {
                 const isOldestPending = order.id === oldestPendingOrderId;
 
                 return (
                   <div
                     key={order.id}
-                    className={`rounded-2xl shadow p-5 space-y-4 border ${
+                    className={`rounded-[24px] border p-3 shadow-sm sm:p-4 md:p-4 lg:p-5 ${
                       isOldestPending
-                        ? "bg-red-50 border-2 border-red-400"
-                        : "bg-white"
+                        ? "border-red-300 bg-red-50"
+                        : "border-slate-200 bg-white"
                     }`}
                   >
-                    <div className="flex justify-between gap-3">
-                      <div>
-                        {isOldestPending && (
-                          <div className="mb-2">
-                            <span className="px-3 py-1 rounded-full text-xs font-bold bg-red-600 text-white">
-                              🔥 Oldest Pending
-                            </span>
-                          </div>
-                        )}
-
-                        <h2 className="text-2xl font-bold">
-                          Table {order.table_number}
-                        </h2>
-                        <p className="text-sm text-gray-500">Order #{order.id}</p>
-                        <p className="text-xs text-gray-500 mt-1">
-                          {new Date(order.created_at).toLocaleString()}
-                        </p>
-                      </div>
-
-                      <span
-                        className={`px-3 py-1 rounded-full text-sm font-semibold h-fit capitalize ${
-                          order.status === "preparing"
-                            ? "bg-yellow-100 text-yellow-700"
-                            : "bg-gray-100 text-gray-700"
-                        }`}
-                      >
-                        {order.status}
-                      </span>
-                    </div>
-
-                    {order.remarks && (
-                      <div className="border border-orange-200 rounded-2xl p-3 bg-orange-50">
-                        <p className="text-xs font-semibold text-orange-700 mb-1">
-                          Customer Remarks
-                        </p>
-                        <p className="text-sm text-gray-800 whitespace-pre-wrap">
-                          {order.remarks}
-                        </p>
-                      </div>
-                    )}
-
                     <div className="space-y-3">
-                      {order.order_items?.length ? (
-                        order.order_items.map((item) => (
-                          <div
-                            key={item.id}
-                            className="border rounded-2xl p-3 bg-gray-50 space-y-3"
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <div>
-                                <p className="font-semibold">{item.item_name}</p>
-                                <p className="text-sm text-gray-500">
-                                  Qty: {item.quantity}
-                                </p>
-                              </div>
-
-                              <span
-                                className={`px-3 py-1 rounded-full text-xs font-semibold capitalize ${
-                                  item.status === "ready"
-                                    ? "bg-green-100 text-green-700"
-                                    : item.status === "preparing"
-                                    ? "bg-yellow-100 text-yellow-700"
-                                    : "bg-gray-200 text-gray-700"
-                                }`}
-                              >
-                                {item.status}
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          {isOldestPending && (
+                            <div className="mb-2">
+                              <span className="inline-flex items-center rounded-full bg-red-600 px-2.5 py-1 text-[10px] sm:text-xs font-bold text-white">
+                                🔥 Oldest Pending
                               </span>
                             </div>
+                          )}
 
-                            <div className="grid grid-cols-3 gap-2">
-                              <button
-                                onClick={() =>
-                                  updateItemStatus(order.id, item.id, "pending")
-                                }
-                                className="bg-gray-600 text-white py-2 rounded-xl text-sm font-medium"
-                              >
-                                Pending
-                              </button>
+                          <h2 className="truncate text-xl sm:text-2xl font-bold text-slate-900">
+                            Table {order.table_number}
+                          </h2>
 
-                              <button
-                                onClick={() =>
-                                  updateItemStatus(order.id, item.id, "preparing")
-                                }
-                                className="bg-yellow-500 text-white py-2 rounded-xl text-sm font-medium"
-                              >
-                                Preparing
-                              </button>
+                          <p className="mt-1 text-xs sm:text-sm text-slate-500">
+                            Order #{order.id}
+                          </p>
 
-                              <button
-                                onClick={() =>
-                                  updateItemStatus(order.id, item.id, "ready")
-                                }
-                                className="bg-green-600 text-white py-2 rounded-xl text-sm font-medium"
-                              >
-                                Ready
-                              </button>
-                            </div>
-                          </div>
-                        ))
-                      ) : (
-                        <p className="text-sm text-gray-500">No items</p>
+                          <p className="mt-1 text-[11px] sm:text-xs text-slate-500 break-words">
+                            {new Date(order.created_at).toLocaleString()}
+                          </p>
+                        </div>
+
+                        <span
+                          className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] sm:text-xs font-semibold capitalize ${
+                            order.status === "preparing"
+                              ? "bg-yellow-100 text-yellow-700"
+                              : "bg-slate-100 text-slate-700"
+                          }`}
+                        >
+                          {order.status}
+                        </span>
+                      </div>
+
+                      {order.remarks && (
+                        <div className="rounded-2xl border border-orange-200 bg-orange-50 p-3">
+                          <p className="mb-1 text-[11px] sm:text-xs font-semibold text-orange-700">
+                            Customer Remarks
+                          </p>
+                          <p className="whitespace-pre-wrap break-words text-sm text-slate-800">
+                            {order.remarks}
+                          </p>
+                        </div>
                       )}
+
+                      <div className="space-y-2.5 sm:space-y-3">
+                        {order.order_items?.length ? (
+                          order.order_items.map((item) => (
+                            <div
+                              key={item.id}
+                              className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-3"
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm sm:text-base font-semibold text-slate-900">
+                                    {item.item_name}
+                                  </p>
+                                  <p className="mt-1 text-xs sm:text-sm text-slate-500">
+                                    Qty: {item.quantity}
+                                  </p>
+                                </div>
+
+                                <span
+                                  className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] sm:text-xs font-semibold capitalize ${
+                                    item.status === "ready"
+                                      ? "bg-green-100 text-green-700"
+                                      : item.status === "preparing"
+                                      ? "bg-yellow-100 text-yellow-700"
+                                      : "bg-slate-200 text-slate-700"
+                                  }`}
+                                >
+                                  {item.status}
+                                </span>
+                              </div>
+
+                              <div className="grid grid-cols-3 gap-2">
+                                <button
+                                  onClick={() =>
+                                    updateItemStatus(order.id, item.id, "pending")
+                                  }
+                                  className="min-h-[40px] rounded-xl bg-slate-600 px-2 py-2 text-[11px] sm:text-xs md:text-sm font-semibold text-white active:scale-[0.98] select-none touch-manipulation"
+                                >
+                                  Pending
+                                </button>
+
+                                <button
+                                  onClick={() =>
+                                    updateItemStatus(order.id, item.id, "preparing")
+                                  }
+                                  className="min-h-[40px] rounded-xl bg-yellow-500 px-2 py-2 text-[11px] sm:text-xs md:text-sm font-semibold text-white active:scale-[0.98] select-none touch-manipulation"
+                                >
+                                  Preparing
+                                </button>
+
+                                <button
+                                  onClick={() =>
+                                    updateItemStatus(order.id, item.id, "ready")
+                                  }
+                                  className="min-h-[40px] rounded-xl bg-green-600 px-2 py-2 text-[11px] sm:text-xs md:text-sm font-semibold text-white active:scale-[0.98] select-none touch-manipulation"
+                                >
+                                  Ready
+                                </button>
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <p className="text-sm text-slate-500">No items</p>
+                        )}
+                      </div>
                     </div>
                   </div>
                 );
@@ -481,7 +541,13 @@ function KitchenPageContent() {
 
 export default function KitchenPage() {
   return (
-    <Suspense fallback={<div>Loading...</div>}>
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-slate-100 flex items-center justify-center text-slate-500">
+          Loading...
+        </div>
+      }
+    >
       <KitchenPageContent />
     </Suspense>
   );
