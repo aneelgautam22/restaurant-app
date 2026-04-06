@@ -13,9 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Restrofy",
+  title: "Restaurant App",
   description: "Smart Restaurant Management",
-  manifest: "/manifest.json",
 };
 
 export const viewport: Viewport = {

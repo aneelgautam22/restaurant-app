@@ -1,11 +1,18 @@
 import type { MetadataRoute } from "next";
 
-export default function manifest(): MetadataRoute.Manifest {
+export default function manifest({
+  params,
+}: {
+  params: { slug: string };
+}): MetadataRoute.Manifest {
+  const slug = params.slug;
+
   return {
-    name: "Restrofy",
-    short_name: "Restrofy",
-    description: "Smart Restaurant Management",
-   start_url: "/kitchen?id=1",
+    name: `${slug} Kitchen`,
+    short_name: `${slug} Kitchen`,
+    description: `${slug} kitchen panel`,
+    start_url: `/r/${slug}/kitchen`,
+    id: `/r/${slug}/kitchen`,
     display: "standalone",
     background_color: "#020617",
     theme_color: "#020617",
