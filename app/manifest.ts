@@ -2,15 +2,14 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Restrofy", // 👈 generic name राख
+    name: "Restrofy",
     short_name: "Restrofy",
     description: "Smart Restaurant Management",
-
-    start_url: "/r/aone/waiter",
+    start_url: "/launcher",
+    scope: "/",
     display: "standalone",
     background_color: "#020617",
     theme_color: "#020617",
-
     icons: [
       {
         src: "/icon-192.png",

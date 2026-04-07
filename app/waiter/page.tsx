@@ -75,9 +75,21 @@ type GroupedTableOrder = {
 
 function WaiterPageContent() {
   const searchParams = useSearchParams();
-  const restaurantId = Number(searchParams.get("id"));
+  const restaurantIdParam = searchParams.get("id");
+const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
 
   const [restaurantName, setRestaurantName] = useState("");
+  useEffect(() => {
+  if (typeof window === "undefined") return;
+
+  const params = new URLSearchParams(window.location.search);
+  const id = params.get("id");
+
+  if (!id || !/^\d+$/.test(id)) return;
+
+  localStorage.setItem("activeRestaurantId", id);
+  localStorage.setItem("activePanel", "waiter");
+}, []);
 
   const [tableNumber, setTableNumber] = useState("");
   const [items, setItems] = useState<OrderItemInput[]>([]);
@@ -1327,15 +1339,15 @@ function WaiterPageContent() {
 
   const restaurantInitial = (restaurantName || "R").trim().charAt(0).toUpperCase();
 
-  if (!restaurantId) {
-    return (
-      <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#0f172a_0%,_#020617_100%)]flex items-center justify-center p-4">
-        <div className="bg-white shadow rounded-2xl p-4 text-center text-sm text-red-600 font-medium">
-          Invalid restaurant link. Please use the correct restaurant URL.
-        </div>
-      </main>
-    );
-  }
+  if (!restaurantIdParam || Number.isNaN(restaurantId)) {
+  return (
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#0f172a_0%,_#020617_100%)] flex items-center justify-center p-4">
+      <div className="bg-white shadow rounded-2xl p-4 text-center text-sm text-red-600 font-medium">
+        Invalid restaurant link. Please use the correct restaurant URL.
+      </div>
+    </main>
+  );
+}
 
   if (checkingLogin) {
     return (

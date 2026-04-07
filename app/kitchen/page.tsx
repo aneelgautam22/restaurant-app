@@ -29,6 +29,17 @@ function KitchenPageContent() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [restaurantName, setRestaurantName] = useState("");
+useEffect(() => {
+  if (typeof window === "undefined") return;
+
+  const params = new URLSearchParams(window.location.search);
+  const id = params.get("id");
+
+  if (!id || !/^\d+$/.test(id)) return;
+
+  localStorage.setItem("activeRestaurantId", id);
+  localStorage.setItem("activePanel", "kitchen");
+}, []);
   const [showSplash, setShowSplash] = useState(true);
 
   const [password, setPassword] = useState("");

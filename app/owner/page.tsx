@@ -110,6 +110,17 @@ function OwnerPageContent() {
   const [ownerPasswordFromDB, setOwnerPasswordFromDB] = useState("");
 
   const [restaurantName, setRestaurantName] = useState("");
+  useEffect(() => {
+  if (typeof window === "undefined") return;
+
+  const params = new URLSearchParams(window.location.search);
+  const id = params.get("id");
+
+  if (!id || !/^\d+$/.test(id)) return;
+
+  localStorage.setItem("activeRestaurantId", id);
+  localStorage.setItem("activePanel", "owner");
+}, []);
   const [restaurantExists, setRestaurantExists] = useState(true);
   const [isSetupDone, setIsSetupDone] = useState(false);
   const [checkingRestaurant, setCheckingRestaurant] = useState(true);
@@ -698,38 +709,47 @@ function OwnerPageContent() {
     }, 0);
   }, [todayOrders]);
 
-  const todayPaymentBreakdown = useMemo(() => {
-    const totals = {
-      cash: 0,
-      qr: 0,
-      card: 0,
-    };
+const todayPaidOrders = useMemo(() => {
+  return orders.filter(
+    (order) =>
+      order.is_paid === true &&
+      order.paid_at &&
+      getLocalDateString(order.paid_at) === todayLocalDate
+  );
+}, [orders, todayLocalDate]);
 
-    todayOrders.forEach((order) => {
-      const orderTotal =
-        order.order_items?.reduce(
-          (sum, item) =>
-            sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
-          0
-        ) || 0;
+const todayPaymentBreakdown = useMemo(() => {
+  const totals = {
+    cash: 0,
+    qr: 0,
+    card: 0,
+  };
 
-      const method =
-        order.payment_method === "qr" || order.payment_method === "card"
-          ? order.payment_method
-          : "cash";
+  todayPaidOrders.forEach((order) => {
+    const orderTotal =
+      order.order_items?.reduce(
+        (sum, item) =>
+          sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
+        0
+      ) || 0;
 
-      totals[method] += orderTotal;
-    });
+    const method =
+      order.payment_method === "qr" || order.payment_method === "card"
+        ? order.payment_method
+        : "cash";
 
-    const total = totals.cash + totals.qr + totals.card;
+    totals[method] += orderTotal;
+  });
 
-    return {
-      ...totals,
-      cashPercent: total > 0 ? ((totals.cash / total) * 100).toFixed(1) : "0.0",
-      qrPercent: total > 0 ? ((totals.qr / total) * 100).toFixed(1) : "0.0",
-      cardPercent: total > 0 ? ((totals.card / total) * 100).toFixed(1) : "0.0",
-    };
-  }, [todayOrders]);
+  const total = totals.cash + totals.qr + totals.card;
+
+  return {
+    ...totals,
+    cashPercent: total > 0 ? ((totals.cash / total) * 100).toFixed(1) : "0.0",
+    qrPercent: total > 0 ? ((totals.qr / total) * 100).toFixed(1) : "0.0",
+    cardPercent: total > 0 ? ((totals.card / total) * 100).toFixed(1) : "0.0",
+  };
+}, [todayPaidOrders]);
 
   const totalRevenueYesterday = useMemo(() => {
     return yesterdayOrders.reduce((sum, order) => {
