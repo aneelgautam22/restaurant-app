@@ -4,7 +4,8 @@ import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import AppSplash from "@/components/AppSplash";
-import PanelLoginCard from "@/components/PanelLoginCard";
+import html2canvas from "html2canvas";
+import jsPDF from "jspdf";
 
 type OrderItemInput = {
   item_name: string;
@@ -80,16 +81,11 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
 
   const [restaurantName, setRestaurantName] = useState("");
   useEffect(() => {
-  if (typeof window === "undefined") return;
+  if (!restaurantId) return;
 
-  const params = new URLSearchParams(window.location.search);
-  const id = params.get("id");
-
-  if (!id || !/^\d+$/.test(id)) return;
-
-  localStorage.setItem("activeRestaurantId", id);
-  localStorage.setItem("activePanel", "waiter");
-}, []);
+  localStorage.setItem("lastRestaurantId", String(restaurantId));
+  localStorage.setItem("lastPanel", "waiter");
+}, [restaurantId]);
 
   const [tableNumber, setTableNumber] = useState("");
   const [items, setItems] = useState<OrderItemInput[]>([]);
@@ -142,6 +138,10 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
 
   const [toast, setToast] = useState("");
 
+  const [orderDetailsOpen, setOrderDetailsOpen] = useState(false);
+  const [orderDetailsView, setOrderDetailsView] = useState<"both" | "kot" | "customer">("both");
+  const [orderDetailsTableNumber, setOrderDetailsTableNumber] = useState("");
+
   const [activeTab, setActiveTab] = useState<
     "order" | "paid" | "change" | "menu"
   >("order");
@@ -155,6 +155,18 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
     setTimeout(() => setToast(""), 2000);
   }
 
+  function isSameLocalDay(dateStr?: string | null) {
+    if (!dateStr) return false;
+    const target = new Date(dateStr);
+    const now = new Date();
+    return (
+      target.getFullYear() === now.getFullYear() &&
+      target.getMonth() === now.getMonth() &&
+      target.getDate() === now.getDate()
+    );
+  }
+
+
   useEffect(() => {
     const t = setTimeout(() => {
       setStableOrders(orders);
@@ -162,6 +174,15 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
 
     return () => clearTimeout(t);
   }, [orders]);
+
+
+  const todayOrders = useMemo(() => {
+    return orders.filter((order) => isSameLocalDay(order.created_at));
+  }, [orders]);
+
+  const todayStableOrders = useMemo(() => {
+    return stableOrders.filter((order) => isSameLocalDay(order.created_at));
+  }, [stableOrders]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -412,7 +433,7 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
   useEffect(() => {
     const newNotifications: ReadyNotification[] = [];
 
-    orders.forEach((order) => {
+    todayOrders.forEach((order) => {
       if (order.is_paid === true) return;
 
       const newlyReadyItems = (order.order_items || []).filter(
@@ -446,7 +467,7 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
         notification.items.map((item) => item.id)
       ),
     ]);
-  }, [orders, seenReadyItemIds]);
+  }, [todayOrders, seenReadyItemIds]);
 
   useEffect(() => {
     if (readyNotifications.length === 0) return;
@@ -1017,7 +1038,7 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
   }
 
   const groupedTableOrders = useMemo(() => {
-    const unpaidOrders = stableOrders.filter((order) => order.is_paid !== true);
+    const unpaidOrders = todayStableOrders.filter((order) => order.is_paid !== true);
     const map: Record<string, GroupedTableOrder> = {};
 
     unpaidOrders.forEach((order) => {
@@ -1093,7 +1114,7 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
           return a.item_name.localeCompare(b.item_name);
         }),
       }));
-  }, [stableOrders]);
+  }, [todayStableOrders]);
 
   useEffect(() => {
     if (!selectedTablePopup) return;
@@ -1120,8 +1141,33 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
     );
   }, [groupedTableOrders, tableSearch]);
 
+  useEffect(() => {
+    if (!orderDetailsOpen) return;
+
+    if (groupedTableOrders.length === 0) {
+      setOrderDetailsTableNumber("");
+      return;
+    }
+
+    if (
+      !orderDetailsTableNumber ||
+      !groupedTableOrders.some((table) => table.table_number === orderDetailsTableNumber)
+    ) {
+      setOrderDetailsTableNumber(groupedTableOrders[0].table_number);
+    }
+  }, [groupedTableOrders, orderDetailsOpen, orderDetailsTableNumber]);
+
+  const selectedOrderDetailsTable = useMemo(() => {
+    if (!orderDetailsTableNumber) return groupedTableOrders[0] || null;
+    return (
+      groupedTableOrders.find((table) => table.table_number === orderDetailsTableNumber) ||
+      groupedTableOrders[0] ||
+      null
+    );
+  }, [groupedTableOrders, orderDetailsTableNumber]);
+
   const recentPaidOrders = useMemo(() => {
-    return stableOrders
+    return todayStableOrders
       .filter((order) => order.is_paid === true)
       .sort((a, b) => {
         const aTime = a.paid_at
@@ -1131,9 +1177,8 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
           ? new Date(b.paid_at).getTime()
           : new Date(b.created_at).getTime();
         return bTime - aTime;
-      })
-      .slice(0, 10);
-  }, [stableOrders]);
+      });
+  }, [todayStableOrders]);
 
   async function markGroupedTableAsPaid(
     tableNo: string,
@@ -1151,7 +1196,7 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
       return;
     }
 
-    const unpaidOrdersForTable = orders.filter(
+    const unpaidOrdersForTable = todayOrders.filter(
       (order) =>
         String(order.table_number).trim() === normalizedTableNo &&
         order.is_paid !== true
@@ -1216,7 +1261,7 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
       return;
     }
 
-    const unpaidOrdersForOldTable = orders.filter(
+    const unpaidOrdersForOldTable = todayOrders.filter(
       (order) =>
         String(order.table_number).trim() === oldTable && order.is_paid !== true
     );
@@ -1335,6 +1380,330 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
     }
 
     return "bg-gray-50 border-gray-200 text-slate-800";
+  }
+
+  function formatBillDate(dateStr?: string | null) {
+    if (!dateStr) return "-";
+    return new Date(dateStr).toLocaleString([], {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
+
+  function escapeHtml(value: string) {
+    return value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  function getPrimaryOrderTime(table: GroupedTableOrder) {
+    return table.sourceOrders
+      .map((order) => order.created_at)
+      .sort()[0] || null;
+  }
+
+  function getBillDocumentHtml(table: GroupedTableOrder, type: "kot" | "customer") {
+    const billTitle = type === "kot" ? "Kitchen Order Ticket (KOT)" : "Customer Bill";
+    const createdAt = formatBillDate(getPrimaryOrderTime(table));
+    const remarksHtml =
+      table.remarks.length > 0
+        ? `<div class="section"><div class="section-title">Remarks</div>${table.remarks
+            .map((remark) => `<div class="remark">• ${escapeHtml(remark)}</div>`)
+            .join("")}</div>`
+        : "";
+
+    const rows = table.items
+      .map((item, index) => {
+        if (type === "kot") {
+          return `<tr><td>${index + 1}</td><td>${escapeHtml(item.item_name)}</td><td>${item.quantity}</td></tr>`;
+        }
+
+        const unitPrice = item.quantity > 0 ? Math.round(item.total / item.quantity) : 0;
+        return `<tr><td>${index + 1}</td><td>${escapeHtml(item.item_name)}</td><td>${item.quantity}</td><td>Rs. ${unitPrice}</td><td>Rs. ${item.total}</td></tr>`;
+      })
+      .join("");
+
+    return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>${escapeHtml(restaurantName || "Restaurant")} - ${billTitle}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; margin: 0; padding: 24px; background: #f8fafc; color: #0f172a; }
+    .page { max-width: 760px; margin: 0 auto; background: #fff; border: 1px solid #e2e8f0; border-radius: 20px; padding: 24px; }
+    .top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+    .title { font-size: 28px; font-weight: 800; margin: 0; }
+    .sub { color: #475569; margin-top: 6px; }
+    .badge { background: ${type === "kot" ? "#eff6ff" : "#fef2f2"}; color: ${type === "kot" ? "#1d4ed8" : "#dc2626"}; border: 1px solid ${type === "kot" ? "#bfdbfe" : "#fecaca"}; padding: 8px 14px; border-radius: 999px; font-weight: 700; }
+    .meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
+    .meta-box { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 14px; padding: 12px; }
+    .meta-label { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #64748b; margin-bottom: 6px; font-weight: 700; }
+    .meta-value { font-size: 18px; font-weight: 800; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { padding: 12px 10px; border-bottom: 1px solid #e2e8f0; text-align: left; }
+    th { background: #f8fafc; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
+    .section { margin-top: 20px; }
+    .section-title { font-size: 16px; font-weight: 800; margin-bottom: 10px; }
+    .remark { background: #fff7ed; border: 1px solid #fed7aa; padding: 10px 12px; border-radius: 12px; margin-bottom: 8px; }
+    .total { margin-top: 20px; display: flex; justify-content: space-between; align-items: center; padding: 16px 18px; border-radius: 16px; background: #fef2f2; border: 1px solid #fecaca; font-size: 22px; font-weight: 800; color: #b91c1c; }
+    @media print { body { background: #fff; padding: 0; } .page { max-width: 100%; border: 0; border-radius: 0; } }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="top" style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 45%, ${type === "kot" ? "#2563eb" : "#dc2626"} 100%); padding:24px; color:#fff; border-radius:20px; margin-bottom:20px;"><div style="display:flex; align-items:center; gap:14px;"><div style="width:68px; height:68px; border-radius:20px; background:rgba(255,255,255,0.12); border:1px solid rgba(255,255,255,0.18); display:flex; align-items:center; justify-content:center; overflow:hidden;"><img src="/logo.png" alt="Restaurant Logo" style="width:100%; height:100%; object-fit:contain; padding:8px;" /></div><div><h1 class="title" style="color:#fff;">${escapeHtml(restaurantName || "Restaurant")}</h1><div class="sub" style="color:rgba(255,255,255,0.82);">${billTitle}</div></div></div><div class="badge" style="background:rgba(255,255,255,0.12); color:#fff; border:1px solid rgba(255,255,255,0.24);">Table ${escapeHtml(table.table_number)}</div></div>
+
+    <div class="meta">
+      <div class="meta-box">
+        <div class="meta-label">Table</div>
+        <div class="meta-value">${escapeHtml(table.table_number)}</div>
+      </div>
+      <div class="meta-box">
+        <div class="meta-label">Created At</div>
+        <div class="meta-value" style="font-size:16px;">${escapeHtml(createdAt)}</div>
+      </div>
+      <div class="meta-box">
+        <div class="meta-label">Order Count</div>
+        <div class="meta-value">${table.unpaid_orders_count}</div>
+      </div>
+      <div class="meta-box">
+        <div class="meta-label">Order IDs</div>
+        <div class="meta-value" style="font-size:16px;">${escapeHtml(table.order_ids.join(", "))}</div>
+      </div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Item</th>
+          <th>Qty</th>
+          ${type === "customer" ? "<th>Rate</th><th>Total</th>" : ""}
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+
+    ${remarksHtml}
+
+    ${type === "customer" ? `<div class="total"><span>Grand Total</span><span>Rs. ${table.total}</span></div>` : `<div class="remark">Kitchen copy only • Price hidden for kitchen team.</div>`}<div class="section" style="margin-top:20px;border-top:1px dashed #cbd5e1;padding-top:14px;display:flex;justify-content:space-between;gap:16px;font-size:12px;color:#64748b;"><div><strong style="color:#0f172a;">${escapeHtml(restaurantName || "Restaurant")}</strong><br/>Thank you for choosing us.</div><div style="text-align:right;">Powered by Restrofy<br/>Generated from Waiter Panel</div></div>
+  </div>
+</body>
+</html>`;
+  }
+
+  function printBill(table: GroupedTableOrder, type: "kot" | "customer") {
+    const printWindow = window.open("", "_blank", "width=900,height=700");
+    if (!printWindow) return;
+
+    printWindow.document.open();
+    printWindow.document.write(getBillDocumentHtml(table, type));
+    printWindow.document.close();
+    printWindow.focus();
+    setTimeout(() => {
+      printWindow.print();
+    }, 300);
+  }
+
+  async function downloadBill(table: GroupedTableOrder, type: "kot" | "customer") {
+    const iframe = document.createElement("iframe");
+    iframe.style.position = "fixed";
+    iframe.style.left = "-99999px";
+    iframe.style.top = "0";
+    iframe.style.width = "900px";
+    iframe.style.height = "1400px";
+    iframe.style.opacity = "0";
+    document.body.appendChild(iframe);
+
+    iframe.srcdoc = getBillDocumentHtml(table, type);
+
+    await new Promise<void>((resolve) => {
+      iframe.onload = () => resolve();
+      setTimeout(() => resolve(), 600);
+    });
+
+    const targetDoc = iframe.contentDocument;
+    if (!targetDoc?.body) {
+      document.body.removeChild(iframe);
+      alert("Failed to generate PDF");
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    const canvas = await html2canvas(targetDoc.body, {
+      scale: 2,
+      useCORS: true,
+      backgroundColor: "#ffffff",
+      width: targetDoc.body.scrollWidth,
+      height: targetDoc.body.scrollHeight,
+      windowWidth: targetDoc.body.scrollWidth,
+      windowHeight: targetDoc.body.scrollHeight,
+    });
+
+    const imgData = canvas.toDataURL("image/png");
+    const pdf = new jsPDF("p", "mm", "a4");
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const margin = 8;
+    const usableWidth = pageWidth - margin * 2;
+    const usableHeight = pageHeight - margin * 2;
+    const imgHeight = (canvas.height * usableWidth) / canvas.width;
+
+    let heightLeft = imgHeight;
+    let position = margin;
+
+    pdf.addImage(imgData, "PNG", margin, position, usableWidth, imgHeight, undefined, "FAST");
+    heightLeft -= usableHeight;
+
+    while (heightLeft > 0) {
+      position = heightLeft - imgHeight + margin;
+      pdf.addPage();
+      pdf.addImage(imgData, "PNG", margin, position, usableWidth, imgHeight, undefined, "FAST");
+      heightLeft -= usableHeight;
+    }
+
+    pdf.save(`${(restaurantName || "restaurant").replace(/\s+/g, "-").toLowerCase()}-table-${table.table_number}-${type}-bill.pdf`);
+    document.body.removeChild(iframe);
+  }
+
+  function renderBillCard(table: GroupedTableOrder, type: "kot" | "customer", expanded = false) {
+    const label = type === "kot" ? "KOT Bill" : "Customer Bill";
+    const accent = type === "kot"
+      ? "border-blue-200 bg-blue-50 text-blue-700"
+      : "border-red-200 bg-red-50 text-red-700";
+
+    return (
+      <div className={`rounded-[28px] border bg-white shadow-sm ${expanded ? "p-5" : "p-4"}`}>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className={`inline-flex rounded-full border px-3 py-1 text-xs font-extrabold ${accent}`}>
+              {label}
+            </div>
+            <h3 className="mt-3 text-2xl font-extrabold text-slate-900">
+              {restaurantName || "Restaurant"}
+            </h3>
+            <p className="mt-1 text-sm text-slate-500">
+              Table {table.table_number} • {formatBillDate(getPrimaryOrderTime(table))}
+            </p>
+          </div>
+
+          <div className="rounded-2xl bg-slate-100 px-4 py-3 text-right">
+            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Orders</p>
+            <p className="text-lg font-extrabold text-slate-900">{table.unpaid_orders_count}</p>
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-[22px] border border-dashed border-slate-200 bg-slate-50 px-4 py-4 text-xs text-slate-500">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="font-bold uppercase tracking-wide text-slate-700">Footer</p>
+              <p className="mt-1">Thank you for choosing {restaurantName || "Restaurant"}.</p>
+              <p>Please keep this bill for your record.</p>
+            </div>
+            <div className="text-right">
+              <p className="font-bold uppercase tracking-wide text-slate-700">Powered by</p>
+              <p className="mt-1">Restrofy Waiter Panel</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 gap-3">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Order IDs</p>
+            <p className="mt-1 text-sm font-bold text-slate-900 break-words">
+              {table.order_ids.join(", ")}
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Table</p>
+            <p className="mt-1 text-sm font-bold text-slate-900">{table.table_number}</p>
+          </div>
+        </div>
+
+        <div className="mt-4 overflow-hidden rounded-[22px] border border-slate-200">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50">
+              <tr>
+                <th className="px-3 py-3 text-left font-extrabold text-slate-500">Item</th>
+                <th className="px-3 py-3 text-center font-extrabold text-slate-500">Qty</th>
+                {type === "customer" && (
+                  <>
+                    <th className="px-3 py-3 text-right font-extrabold text-slate-500">Rate</th>
+                    <th className="px-3 py-3 text-right font-extrabold text-slate-500">Total</th>
+                  </>
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {table.items.map((item) => {
+                const unitPrice = item.quantity > 0 ? Math.round(item.total / item.quantity) : 0;
+
+                return (
+                  <tr key={`${type}-${table.table_number}-${item.item_name}`} className="border-t border-slate-200">
+                    <td className="px-3 py-3 font-semibold text-slate-900">{item.item_name}</td>
+                    <td className="px-3 py-3 text-center font-bold text-slate-900">{item.quantity}</td>
+                    {type === "customer" && (
+                      <>
+                        <td className="px-3 py-3 text-right font-semibold text-slate-700">Rs. {unitPrice}</td>
+                        <td className="px-3 py-3 text-right font-bold text-slate-900">Rs. {item.total}</td>
+                      </>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {table.remarks.length > 0 && (
+          <div className="mt-4 rounded-[22px] border border-amber-200 bg-amber-50 p-4">
+            <p className="text-sm font-extrabold text-slate-900">Remarks</p>
+            <div className="mt-2 space-y-1">
+              {table.remarks.map((remark, index) => (
+                <p key={`${type}-remark-${index}`} className="text-sm text-slate-800">
+                  • {remark}
+                </p>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {type === "customer" && (
+          <div className="mt-4 rounded-[22px] border border-red-200 bg-red-50 px-4 py-4 flex items-center justify-between">
+            <span className="text-base font-bold text-red-600">Grand Total</span>
+            <span className="text-2xl font-extrabold text-red-700">Rs. {table.total}</span>
+          </div>
+        )}
+
+        <div className="mt-4 grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={() => printBill(table, type)}
+            className="rounded-2xl bg-slate-900 px-4 py-3 text-sm font-extrabold text-white active:scale-[0.98] active:opacity-90"
+          >
+            Print
+          </button>
+
+          <button
+            type="button"
+            onClick={() => downloadBill(table, type)}
+            className="rounded-2xl bg-blue-600 px-4 py-3 text-sm font-extrabold text-white active:scale-[0.98] active:opacity-90"
+          >
+            Download PDF
+          </button>
+        </div>
+      </div>
+    );
   }
 
   const restaurantInitial = (restaurantName || "R").trim().charAt(0).toUpperCase();
@@ -1505,6 +1874,25 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
 
                     <button
                       type="button"
+                      onClick={() => {
+                        setOrderDetailsOpen(true);
+                        setOrderDetailsView("both");
+                        if (groupedTableOrders.length > 0) {
+                          setOrderDetailsTableNumber(groupedTableOrders[0].table_number);
+                        }
+                        setMenuOpen(false);
+                      }}
+                      className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-left active:scale-[0.98] active:bg-slate-100"
+                    >
+                      <span className="text-lg">🧾</span>
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900">Order Details</p>
+                        <p className="text-xs text-slate-500">View KOT and customer bills</p>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
                       onClick={handleLogout}
                       className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-left active:scale-[0.98] active:bg-red-100"
                     >
@@ -1574,7 +1962,7 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
                   <div className="bg-white rounded-2xl shadow-sm border border-black/10 p-3">
                    <div className="text-center py-6">
   <p className="text-lg font-semibold text-slate-700">No Active Tables</p>
-  <p className="text-sm text-slate-400 mt-1">Start taking orders using + button</p>
+  <p className="text-sm text-slate-400 mt-1">Today ko fresh orders + button bata start gara</p>
 </div>
                   </div>
                 )}
@@ -1703,12 +2091,12 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
               <div className="space-y-3">
                 <div className="bg-white rounded-[24px] shadow-sm border border-black/10 p-4">
                   <h2 className="text-[18px] font-extrabold text-slate-900">Paid History</h2>
-                  <p className="text-sm text-slate-500 mt-1">Latest 10 paid orders</p>
+                  <p className="text-sm text-slate-500 mt-1">Today's paid records only</p>
                 </div>
 
                 {recentPaidOrders.length === 0 && (
                   <div className="bg-white rounded-2xl shadow-sm border border-black/10 p-4">
-                    <p className="text-sm text-gray-500">No paid history available.</p>
+                    <p className="text-sm text-gray-500">No paid history for today.</p>
                   </div>
                 )}
 
@@ -2046,6 +2434,117 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
             </div>
           </div>
         </div>
+
+        {orderDetailsOpen && (
+          <div className="fixed inset-0 z-[80] bg-black/50">
+            <div className="max-w-md mx-auto h-full bg-gray-100 flex flex-col">
+              <div className="sticky top-0 z-10 border-b bg-white px-4 py-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-extrabold uppercase tracking-[0.18em] text-slate-500">Order Details</p>
+                    <h2 className="mt-1 text-2xl font-extrabold text-slate-900">Bills</h2>
+                    <p className="mt-1 text-sm text-slate-500">KOT bill ra customer bill dubai herna milne</p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setOrderDetailsOpen(false)}
+                    className="rounded-2xl bg-slate-200 px-3 py-2 text-sm font-semibold active:scale-[0.98] active:opacity-85"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto px-4 pb-6 pt-4 space-y-4">
+                {groupedTableOrders.length === 0 ? (
+                  <div className="rounded-[28px] border border-slate-200 bg-white p-6 text-center shadow-sm">
+                    <p className="text-lg font-extrabold text-slate-900">No active table found</p>
+                    <p className="mt-2 text-sm text-slate-500">Order garyo pachi bill yahi dekhine cha.</p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm">
+                      <p className="text-sm font-extrabold text-slate-900">Select Table</p>
+                      <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+                        {groupedTableOrders.map((table) => {
+                          const active = selectedOrderDetailsTable?.table_number === table.table_number;
+                          return (
+                            <button
+                              key={`bill-table-${table.table_number}`}
+                              type="button"
+                              onClick={() => setOrderDetailsTableNumber(table.table_number)}
+                              className={`shrink-0 rounded-full border px-4 py-2.5 text-sm font-extrabold active:scale-[0.98] active:opacity-90 ${
+                                active
+                                  ? "border-red-600 bg-red-600 text-white"
+                                  : "border-slate-300 bg-slate-50 text-slate-800"
+                              }`}
+                            >
+                              Table {table.table_number}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="rounded-[28px] border border-slate-200 bg-white p-3 shadow-sm">
+                      <div className="grid grid-cols-3 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setOrderDetailsView("both")}
+                          className={`rounded-2xl px-3 py-3 text-sm font-extrabold active:scale-[0.98] active:opacity-90 ${
+                            orderDetailsView === "both"
+                              ? "bg-slate-900 text-white"
+                              : "bg-slate-100 text-slate-700"
+                          }`}
+                        >
+                          Both
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setOrderDetailsView("kot")}
+                          className={`rounded-2xl px-3 py-3 text-sm font-extrabold active:scale-[0.98] active:opacity-90 ${
+                            orderDetailsView === "kot"
+                              ? "bg-blue-600 text-white"
+                              : "bg-blue-50 text-blue-700"
+                          }`}
+                        >
+                          KOT Bill
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setOrderDetailsView("customer")}
+                          className={`rounded-2xl px-3 py-3 text-sm font-extrabold active:scale-[0.98] active:opacity-90 ${
+                            orderDetailsView === "customer"
+                              ? "bg-red-600 text-white"
+                              : "bg-red-50 text-red-700"
+                          }`}
+                        >
+                          Customer Bill
+                        </button>
+                      </div>
+                    </div>
+
+                    {selectedOrderDetailsTable && orderDetailsView === "both" && (
+                      <div className="space-y-4">
+                        {renderBillCard(selectedOrderDetailsTable, "kot")}
+                        {renderBillCard(selectedOrderDetailsTable, "customer")}
+                      </div>
+                    )}
+
+                    {selectedOrderDetailsTable && orderDetailsView === "kot" &&
+                      renderBillCard(selectedOrderDetailsTable, "kot", true)}
+
+                    {selectedOrderDetailsTable && orderDetailsView === "customer" &&
+                      renderBillCard(selectedOrderDetailsTable, "customer", true)}
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         {orderModalOpen && (
           <div className="fixed inset-0 z-50 bg-black/50">

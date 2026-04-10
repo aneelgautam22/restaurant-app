@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import AppSplash from "@/components/AppSplash";
@@ -13,13 +13,17 @@ type PanelItem = {
   iconBg: string;
 };
 
+type RestaurantAppType = "full" | "mini" | null;
+
 function HomePageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  const restaurantId = searchParams.get("id");
+  const restaurantIdFromUrl = searchParams.get("id");
 
+  const [activeRestaurantId, setActiveRestaurantId] = useState<string | null>(null);
   const [restaurantName, setRestaurantName] = useState("Restaurant");
+  const [appType, setAppType] = useState<RestaurantAppType>(null);
   const [loading, setLoading] = useState(true);
   const [showSplash, setShowSplash] = useState(true);
 
@@ -32,12 +36,19 @@ function HomePageContent() {
   }, []);
 
   useEffect(() => {
-    fetchRestaurant();
-  }, [restaurantId]);
+    loadWorkspace();
+  }, [restaurantIdFromUrl]);
 
-  async function fetchRestaurant() {
-    if (!restaurantId) {
+  async function loadWorkspace() {
+    setLoading(true);
+
+    const finalRestaurantId =
+      restaurantIdFromUrl || localStorage.getItem("lastRestaurantId");
+
+    if (!finalRestaurantId) {
       setRestaurantName("Restaurant");
+      setActiveRestaurantId(null);
+      setAppType(null);
       setLoading(false);
       return;
     }
@@ -45,24 +56,45 @@ function HomePageContent() {
     const { data, error } = await supabase
       .from("restaurants")
       .select("*")
-      .eq("id", Number(restaurantId))
+      .eq("id", Number(finalRestaurantId))
       .single();
 
     if (error || !data) {
       setRestaurantName("Restaurant");
+      setActiveRestaurantId(null);
+      setAppType(null);
       setLoading(false);
       return;
     }
 
     const restaurantData = data as Record<string, any>;
 
-    setRestaurantName(
+    const fetchedName =
       restaurantData.name ||
-        restaurantData.restaurant_name ||
-        restaurantData.restaurant ||
-        restaurantData.title ||
-        "Restaurant"
-    );
+      restaurantData.restaurant_name ||
+      restaurantData.restaurant ||
+      restaurantData.title ||
+      "Restaurant";
+
+    const fetchedAppType: RestaurantAppType =
+      restaurantData.app_type === "mini" ? "mini" : "full";
+
+    setRestaurantName(fetchedName);
+    setAppType(fetchedAppType);
+    setActiveRestaurantId(String(restaurantData.id));
+
+    localStorage.setItem("lastRestaurantId", String(restaurantData.id));
+
+    if (restaurantIdFromUrl) {
+      if (fetchedAppType === "mini") {
+        localStorage.setItem("lastPanel", "mini");
+      } else {
+        const currentLastPanel = localStorage.getItem("lastPanel");
+        if (!currentLastPanel || currentLastPanel === "mini") {
+          localStorage.setItem("lastPanel", "owner");
+        }
+      }
+    }
 
     setLoading(false);
   }
@@ -73,56 +105,87 @@ function HomePageContent() {
       return;
     }
 
-    if (!restaurantId) {
+    if (!activeRestaurantId) {
       alert("Please create or select restaurant first");
       return;
     }
 
+    if (title === "Mini App") {
+      localStorage.setItem("lastRestaurantId", activeRestaurantId);
+      localStorage.setItem("lastPanel", "mini");
+      router.push(`/mini?id=${activeRestaurantId}`);
+      return;
+    }
+
     if (title === "Waiter Panel") {
-      router.push(`/waiter?id=${restaurantId}`);
+      localStorage.setItem("lastRestaurantId", activeRestaurantId);
+      localStorage.setItem("lastPanel", "waiter");
+      router.push(`/waiter?id=${activeRestaurantId}`);
       return;
     }
 
     if (title === "Kitchen Panel") {
-      router.push(`/kitchen?id=${restaurantId}`);
+      localStorage.setItem("lastRestaurantId", activeRestaurantId);
+      localStorage.setItem("lastPanel", "kitchen");
+      router.push(`/kitchen?id=${activeRestaurantId}`);
       return;
     }
 
     if (title === "Owner Panel") {
-      router.push(`/owner?id=${restaurantId}`);
+      localStorage.setItem("lastRestaurantId", activeRestaurantId);
+      localStorage.setItem("lastPanel", "owner");
+      router.push(`/owner?id=${activeRestaurantId}`);
     }
   }
 
-  const panels: PanelItem[] = [
-    {
-      title: "Create New Restaurant",
-      subtitle: "Start a fresh restaurant workspace",
-      icon: "+",
-      active: true,
-      iconBg: "bg-white/15",
-    },
-    {
-      title: "Waiter Panel",
-      subtitle: "Take orders and track status",
-      icon: "🧑‍🍳",
-      active: false,
-      iconBg: "bg-amber-100",
-    },
-    {
-      title: "Kitchen Panel",
-      subtitle: "Manage preparation and ready items",
-      icon: "🍳",
-      active: false,
-      iconBg: "bg-violet-100",
-    },
-    {
-      title: "Owner Panel",
-      subtitle: "View reports, billing, and control",
-      icon: "👑",
-      active: false,
-      iconBg: "bg-rose-100",
-    },
-  ];
+  const panels: PanelItem[] = useMemo(() => {
+    const base: PanelItem[] = [
+      {
+        title: "Create New Restaurant",
+        subtitle: "Start a fresh restaurant workspace",
+        icon: "+",
+        active: true,
+        iconBg: "bg-white/15",
+      },
+    ];
+
+    if (appType === "mini") {
+      base.push({
+        title: "Mini App",
+        subtitle: "Manage everything from one device",
+        icon: "📱",
+        active: false,
+        iconBg: "bg-emerald-100",
+      });
+      return base;
+    }
+
+    base.push(
+      {
+        title: "Waiter Panel",
+        subtitle: "Take orders and track status",
+        icon: "🧑‍🍳",
+        active: false,
+        iconBg: "bg-amber-100",
+      },
+      {
+        title: "Kitchen Panel",
+        subtitle: "Manage preparation and ready items",
+        icon: "🍳",
+        active: false,
+        iconBg: "bg-violet-100",
+      },
+      {
+        title: "Owner Panel",
+        subtitle: "View reports, billing, and control",
+        icon: "👑",
+        active: false,
+        iconBg: "bg-rose-100",
+      }
+    );
+
+    return base;
+  }, [appType]);
 
   if (showSplash) {
     return <AppSplash subtitle="Opening Workspace..." />;
@@ -157,9 +220,11 @@ function HomePageContent() {
           </h1>
 
           <p className="mt-2 text-[12px] text-slate-300 max-w-sm mx-auto leading-5 px-4">
-            {restaurantId
-              ? "Your restaurant is ready. Open waiter, kitchen, or owner panel instantly."
-              : "Create your restaurant first, then jump into waiter, kitchen, or owner panels instantly."}
+            {!activeRestaurantId
+              ? "Create your restaurant first, then jump into your panels instantly."
+              : appType === "mini"
+              ? "Your mini restaurant workspace is ready. Open the mini app instantly."
+              : "Your restaurant is ready. Open waiter, kitchen, or owner panel instantly."}
           </p>
         </div>
 
@@ -232,12 +297,20 @@ function HomePageContent() {
             </div>
 
             <div className="mt-2.5 rounded-[16px] border border-slate-200 bg-slate-50 px-3 py-2 text-center text-[12px] text-slate-500">
-              {restaurantId ? (
+              {activeRestaurantId ? (
                 <>
                   Active Restaurant ID:{" "}
                   <span className="font-bold text-slate-700">
-                    {restaurantId}
+                    {activeRestaurantId}
                   </span>
+                  {appType && (
+                    <>
+                      {" • "}Type:{" "}
+                      <span className="font-bold text-slate-700">
+                        {appType === "mini" ? "Mini" : "Full"}
+                      </span>
+                    </>
+                  )}
                 </>
               ) : (
                 "No active restaurant selected yet"

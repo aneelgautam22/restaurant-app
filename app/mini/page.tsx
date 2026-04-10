@@ -6,6 +6,7 @@ import { supabase } from "@/lib/supabase";
 import AppSplash from "@/components/AppSplash";
 import PanelLoginCard from "@/components/PanelLoginCard";
 import { QRCodeCanvas } from "qrcode.react";
+import jsPDF from "jspdf";
 
 type MenuItem = {
   id: number;
@@ -43,12 +44,14 @@ type SalesItem = {
 
 type OwnerView =
   | "dashboard"
+  | "order"
+  | "kitchen"
   | "salesOverview"
   | "report"
   | "billing"
   | "paymentHistory";
 
-type PopupView = "menuItems" | "passwords" | "qrAccess" | null;
+type PopupView = "menuItems" | "passwords" | null;
 type SalesPeriod = "day" | "week" | "month";
 
 type DailyTrendPoint = {
@@ -96,30 +99,48 @@ type GroupedTableOrder = {
   table_status: KitchenStatusKey;
 };
 
+type TakeOrderCartItem = {
+  id: number;
+  item_name: string;
+  price: number;
+  quantity: number;
+};
+
 function OwnerPageContent() {
   const searchParams = useSearchParams();
   const restaurantIdParam = searchParams.get("id");
   const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
-  const baseUrl =
-  typeof window !== "undefined" ? window.location.origin : "";
-  const waiterQrUrl = restaurantId ? `${baseUrl}/waiter?id=${restaurantId}` : "";
-  const kitchenQrUrl = restaurantId ? `${baseUrl}/kitchen?id=${restaurantId}` : "";
 
   const [ownerView, setOwnerView] = useState<OwnerView>("dashboard");
   const [popupView, setPopupView] = useState<PopupView>(null);
   const [showHeaderMenu, setShowHeaderMenu] = useState(false);
   const [isSwitching, setIsSwitching] = useState(false);
+  const [showQR, setShowQR] = useState(false);
+
+  const [showTakeOrderModal, setShowTakeOrderModal] = useState(false);
+  const [takeOrderTableNumber, setTakeOrderTableNumber] = useState("");
+  const [takeOrderSearch, setTakeOrderSearch] = useState("");
+  const [takeOrderRemarks, setTakeOrderRemarks] = useState("");
+  const [takeOrderItems, setTakeOrderItems] = useState<TakeOrderCartItem[]>([]);
+  const [submittingTakeOrder, setSubmittingTakeOrder] = useState(false);
+  const [showTakeOrderCart, setShowTakeOrderCart] = useState(false);
+  const [reportOrder, setReportOrder] = useState<OrderRow | null>(null);
+  const [selectedPaidOrder, setSelectedPaidOrder] = useState<OrderRow | null>(null);
+  const [reportPaymentMethod, setReportPaymentMethod] = useState<"cash" | "qr" | "card">("cash");
+  const [markingReportPaid, setMarkingReportPaid] = useState(false);
+  const [editingOrderId, setEditingOrderId] = useState<number | null>(null);
+  const [editingOrderLoading, setEditingOrderLoading] = useState(false);
 
   const [ownerPasswordInput, setOwnerPasswordInput] = useState("");
   const [ownerUnlocked, setOwnerUnlocked] = useState(false);
   const [ownerPasswordFromDB, setOwnerPasswordFromDB] = useState("");
 
   const [restaurantName, setRestaurantName] = useState("");
-useEffect(() => {
+ useEffect(() => {
   if (!restaurantId) return;
 
   localStorage.setItem("lastRestaurantId", String(restaurantId));
-  localStorage.setItem("lastPanel", "owner");
+  localStorage.setItem("lastPanel", "mini");
 }, [restaurantId]);
   const [restaurantExists, setRestaurantExists] = useState(true);
   const [isSetupDone, setIsSetupDone] = useState(false);
@@ -239,6 +260,576 @@ useEffect(() => {
     setIsSwitching(false);
   });
 }
+
+
+  const miniQrLink =
+    typeof window !== "undefined" && restaurantId
+      ? `${window.location.origin}/mini?id=${restaurantId}`
+      : "";
+
+  function openQrAccess() {
+    if (!restaurantId) {
+      alert("Invalid restaurant link");
+      return;
+    }
+
+    setShowHeaderMenu(false);
+    setShowQR(true);
+  }
+
+  async function copyMiniQrLink() {
+    if (!miniQrLink) {
+      alert("Link not ready");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(miniQrLink);
+      alert("Link copied");
+    } catch {
+      alert("Failed to copy link");
+    }
+  }
+
+  function downloadMiniQr() {
+    if (!restaurantId) {
+      alert("Invalid restaurant link");
+      return;
+    }
+
+    const canvas = document.getElementById("mini-qr-canvas") as HTMLCanvasElement | null;
+
+    if (!canvas) {
+      alert("QR not found");
+      return;
+    }
+
+    const pngUrl = canvas.toDataURL("image/png");
+    const link = document.createElement("a");
+    link.href = pngUrl;
+    link.download = `mini-qr-${restaurantId}.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+  function openTakeOrderModal() {
+    if (!restaurantId) {
+      alert("Invalid restaurant link");
+      return;
+    }
+
+    setShowHeaderMenu(false);
+    setShowTakeOrderModal(true);
+  }
+
+  function resetTakeOrderForm() {
+    setTakeOrderTableNumber("");
+    setTakeOrderSearch("");
+    setTakeOrderRemarks("");
+    setTakeOrderItems([]);
+    setShowTakeOrderCart(false);
+    setEditingOrderId(null);
+    setEditingOrderLoading(false);
+  }
+
+  function closeTakeOrderModal() {
+    if (submittingTakeOrder) return;
+    setShowTakeOrderModal(false);
+    resetTakeOrderForm();
+  }
+
+  function addTakeOrderItem(menu: MenuItem) {
+    setTakeOrderItems((prev) => {
+      const existing = prev.find((item) => item.id === menu.id);
+      if (existing) {
+        return prev.map((item) =>
+          item.id === menu.id ? { ...item, quantity: item.quantity + 1 } : item
+        );
+      }
+
+      return [
+        ...prev,
+        {
+          id: menu.id,
+          item_name: menu.item_name,
+          price: Number(menu.price || 0),
+          quantity: 1,
+        },
+      ];
+    });
+  }
+
+  function decreaseTakeOrderItem(menuId: number) {
+    setTakeOrderItems((prev) =>
+      prev
+        .map((item) =>
+          item.id === menuId ? { ...item, quantity: item.quantity - 1 } : item
+        )
+        .filter((item) => item.quantity > 0)
+    );
+  }
+
+  function increaseTakeOrderItem(menuId: number) {
+    setTakeOrderItems((prev) =>
+      prev.map((item) =>
+        item.id === menuId ? { ...item, quantity: item.quantity + 1 } : item
+      )
+    );
+  }
+
+  function removeTakeOrderItem(menuId: number) {
+    setTakeOrderItems((prev) => prev.filter((item) => item.id !== menuId));
+  }
+
+  async function submitTakeOrder() {
+    if (!restaurantId) {
+      alert("Invalid restaurant link");
+      return;
+    }
+
+    if (!takeOrderTableNumber.trim()) {
+      alert("Please enter table number");
+      return;
+    }
+
+    if (!/^\d+$/.test(takeOrderTableNumber.trim())) {
+      alert("Please enter valid table number");
+      return;
+    }
+
+    if (takeOrderItems.length === 0) {
+      alert("Please add at least one item");
+      return;
+    }
+
+    setSubmittingTakeOrder(true);
+
+    const payload = {
+      table_number: takeOrderTableNumber.trim(),
+      remarks: takeOrderRemarks.trim() || null,
+      status: "pending",
+      waiter_cleared: false,
+      is_paid: false,
+    };
+
+    if (editingOrderId) {
+      const { error: updateOrderError } = await supabase
+        .from("orders")
+        .update(payload)
+        .eq("id", editingOrderId)
+        .eq("restaurant_id", restaurantId);
+
+      if (updateOrderError) {
+        setSubmittingTakeOrder(false);
+        alert("Failed to update order");
+        return;
+      }
+
+      const { error: deleteItemsError } = await supabase
+        .from("order_items")
+        .delete()
+        .eq("order_id", editingOrderId);
+
+      if (deleteItemsError) {
+        setSubmittingTakeOrder(false);
+        alert("Failed to refresh order items");
+        return;
+      }
+
+      const updatedItemsPayload = takeOrderItems.map((item) => ({
+        order_id: editingOrderId,
+        item_name: item.item_name,
+        quantity: item.quantity,
+        unit_price: item.price,
+        status: "pending",
+      }));
+
+      const { error: insertItemsError } = await supabase
+        .from("order_items")
+        .insert(updatedItemsPayload);
+
+      setSubmittingTakeOrder(false);
+
+      if (insertItemsError) {
+        alert("Failed to update order items");
+        return;
+      }
+
+      resetTakeOrderForm();
+      setShowTakeOrderModal(false);
+      await fetchOrders();
+      alert("Order updated successfully");
+      return;
+    }
+
+    const { data: orderData, error: orderError } = await supabase
+      .from("orders")
+      .insert([
+        {
+          restaurant_id: restaurantId,
+          ...payload,
+        },
+      ])
+      .select()
+      .single();
+
+    if (orderError || !orderData) {
+      setSubmittingTakeOrder(false);
+      alert("Failed to create order");
+      return;
+    }
+
+    const orderItemsPayload = takeOrderItems.map((item) => ({
+      order_id: orderData.id,
+      item_name: item.item_name,
+      quantity: item.quantity,
+      unit_price: item.price,
+      status: "pending",
+    }));
+
+    const { error: orderItemsError } = await supabase
+      .from("order_items")
+      .insert(orderItemsPayload);
+
+    setSubmittingTakeOrder(false);
+
+    if (orderItemsError) {
+      await supabase.from("orders").delete().eq("id", orderData.id);
+      alert("Failed to save order items");
+      return;
+    }
+
+    resetTakeOrderForm();
+    setShowTakeOrderModal(false);
+
+    await fetchOrders();
+    alert("Order sent to kitchen");
+  }
+
+  function getOrderDisplayStatus(order: OrderRow): KitchenStatusKey {
+    const statuses = order.order_items?.map((item) => item.status || order.status) || [];
+    if (statuses.some((status) => status === "preparing")) return "preparing";
+    if (statuses.length > 0 && statuses.every((status) => status === "ready")) return "ready";
+    if (order.status === "ready") return "ready";
+    if (order.status === "preparing") return "preparing";
+    return "pending";
+  }
+
+  async function handleEditOrder(order: OrderRow) {
+    if (order.is_paid) {
+      alert("Paid order edit garna mildaina");
+      return;
+    }
+
+    const currentStatus = getOrderDisplayStatus(order);
+    if (currentStatus === "preparing" || currentStatus === "ready") {
+      alert("Preparing or ready bhayeko order edit garna mildaina");
+      return;
+    }
+
+    setEditingOrderLoading(true);
+    setEditingOrderId(order.id);
+    setTakeOrderTableNumber(String(order.table_number || ""));
+    setTakeOrderSearch("");
+    setTakeOrderRemarks(order.remarks || "");
+    setTakeOrderItems(
+      (order.order_items || []).map((item) => ({
+        id: item.id,
+        item_name: item.item_name,
+        price: Number(item.unit_price || 0),
+        quantity: Number(item.quantity || 0),
+      }))
+    );
+    setShowHeaderMenu(false);
+    setShowTakeOrderCart(false);
+    setShowTakeOrderModal(true);
+    setOwnerView("order");
+    setEditingOrderLoading(false);
+  }
+
+  async function handleCancelOrder(orderId: number) {
+    if (!restaurantId) {
+      alert("Invalid restaurant link");
+      return;
+    }
+
+    const targetOrder = orders.find((order) => order.id === orderId);
+    if (!targetOrder) {
+      alert("Order not found");
+      return;
+    }
+
+    if (targetOrder.is_paid) {
+      alert("Paid order cancel garna mildaina");
+      return;
+    }
+
+    const currentStatus = getOrderDisplayStatus(targetOrder);
+    if (currentStatus === "preparing" || currentStatus === "ready") {
+      alert("Preparing or ready bhayeko order cancel garna mildaina");
+      return;
+    }
+
+    const confirmCancel = confirm(`Cancel order #${orderId} for table ${targetOrder.table_number}?`);
+    if (!confirmCancel) return;
+
+    const { error: deleteItemsError } = await supabase
+      .from("order_items")
+      .delete()
+      .eq("order_id", orderId);
+
+    if (deleteItemsError) {
+      alert("Failed to cancel order items");
+      return;
+    }
+
+    const { error: deleteOrderError } = await supabase
+      .from("orders")
+      .delete()
+      .eq("id", orderId)
+      .eq("restaurant_id", restaurantId);
+
+    if (deleteOrderError) {
+      alert("Failed to cancel order");
+      return;
+    }
+
+    if (editingOrderId === orderId) {
+      resetTakeOrderForm();
+      setShowTakeOrderModal(false);
+    }
+
+    await fetchOrders();
+    alert("Order cancelled");
+  }
+
+
+  function openOrderReport(order: OrderRow) {
+    if (order.is_paid) {
+      alert("Yo order already paid chha");
+      return;
+    }
+
+    setReportOrder(order);
+    setReportPaymentMethod((order.payment_method === "qr" || order.payment_method === "card") ? order.payment_method : "cash");
+    setShowHeaderMenu(false);
+  }
+
+  function closeOrderReport() {
+    if (markingReportPaid) return;
+    setReportOrder(null);
+    setReportPaymentMethod("cash");
+  }
+
+  function getOrderTotal(order: OrderRow | null) {
+    if (!order) return 0;
+    return (order.order_items || []).reduce(
+      (sum, item) => sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
+      0
+    );
+  }
+
+  function openPaidOrderBill(order: OrderRow) {
+    setSelectedPaidOrder(order);
+    setShowHeaderMenu(false);
+  }
+
+  function closePaidOrderBill() {
+    setSelectedPaidOrder(null);
+  }
+
+function printReceipt() {
+    if (typeof window === "undefined") return;
+    if (!reportOrder && !selectedPaidOrder) return;
+    window.print();
+  }
+
+  function downloadReceipt() {
+    if (typeof window === "undefined" || !reportOrder) return;
+
+    const doc = new jsPDF({ unit: "pt", format: "a4" });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const marginX = 40;
+    let y = 50;
+
+    const line = (textValue: string, x = marginX, fontSize = 11, align: "left" | "center" | "right" = "left") => {
+      doc.setFontSize(fontSize);
+      doc.text(textValue, align === "center" ? pageWidth / 2 : x, y, { align });
+      y += fontSize + 8;
+    };
+
+    const divider = () => {
+      doc.setDrawColor(190, 190, 190);
+      doc.line(marginX, y, pageWidth - marginX, y);
+      y += 14;
+    };
+
+    const ensurePage = (extra = 20) => {
+      if (y + extra > doc.internal.pageSize.getHeight() - 40) {
+        doc.addPage();
+        y = 50;
+      }
+    };
+
+    line(`${restaurantName || "Restaurant"}`, marginX, 16, "center");
+    line(`KOT Bill`, marginX, 18, "center");
+    line(`Order #${reportOrder.id}`, marginX, 11, "center");
+    y += 4;
+    divider();
+
+    line(`Type: Dine In`);
+    line(`Table: ${reportOrder.table_number}`);
+    line(`Order By: Waiter`);
+    line(`Order At: ${new Date(reportOrder.created_at).toLocaleString()}`);
+    divider();
+
+    line(`S.N   Item`, marginX, 11);
+    doc.text(`Qty`, pageWidth - marginX, y - 19, { align: "right" });
+    divider();
+
+    (reportOrder.order_items || []).forEach((item, index) => {
+      ensurePage(40);
+      const itemLines = doc.splitTextToSize(`${index + 1}. ${item.item_name}`, pageWidth - marginX * 2 - 50);
+      doc.setFontSize(11);
+      doc.text(itemLines, marginX, y);
+      doc.text(String(item.quantity || 0), pageWidth - marginX, y, { align: "right" });
+      y += itemLines.length * 16 + 6;
+    });
+
+    divider();
+    line(`Total Dishes: ${(reportOrder.order_items || []).length}`);
+    line(
+      `Total Qty: ${(reportOrder.order_items || []).reduce((sum, item) => sum + Number(item.quantity || 0), 0)}`
+    );
+
+    if (reportOrder.remarks) {
+      ensurePage(50);
+      divider();
+      line(`Remarks:`, marginX, 11);
+      const remarkLines = doc.splitTextToSize(reportOrder.remarks, pageWidth - marginX * 2);
+      doc.text(remarkLines, marginX, y);
+      y += remarkLines.length * 16 + 6;
+    }
+
+    divider();
+    line(`Viewed At: ${new Date().toLocaleString()}`);
+    y += 6;
+    line(`Thank You!`, marginX, 12, "center");
+
+    doc.save(`receipt-table-${reportOrder.table_number}-order-${reportOrder.id}.pdf`);
+  }
+
+  function downloadPaidOrderBill() {
+    if (typeof window === "undefined" || !selectedPaidOrder) return;
+
+    const doc = new jsPDF({ unit: "pt", format: "a4" });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const marginX = 40;
+    let y = 50;
+
+    const line = (textValue: string, x = marginX, fontSize = 11, align: "left" | "center" | "right" = "left") => {
+      doc.setFontSize(fontSize);
+      doc.text(textValue, align === "center" ? pageWidth / 2 : x, y, { align });
+      y += fontSize + 8;
+    };
+
+    const divider = () => {
+      doc.setDrawColor(190, 190, 190);
+      doc.line(marginX, y, pageWidth - marginX, y);
+      y += 14;
+    };
+
+    const ensurePage = (extra = 20) => {
+      if (y + extra > doc.internal.pageSize.getHeight() - 40) {
+        doc.addPage();
+        y = 50;
+      }
+    };
+
+    line(`${restaurantName || "Restaurant"}`, marginX, 16, "center");
+    line(`Customer Bill`, marginX, 18, "center");
+    line(`Order #${selectedPaidOrder.id}`, marginX, 11, "center");
+    y += 4;
+    divider();
+
+    line(`Table: ${selectedPaidOrder.table_number}`);
+    line(
+      `Paid At: ${selectedPaidOrder.paid_at ? new Date(selectedPaidOrder.paid_at).toLocaleString() : "-"}`
+    );
+    line(`Payment: ${formatPaymentMethod(selectedPaidOrder.payment_method)}`);
+    divider();
+
+    line(`Item`, marginX, 11);
+    doc.text(`Qty`, pageWidth - marginX - 70, y - 19, { align: "right" });
+    doc.text(`Amount`, pageWidth - marginX, y - 19, { align: "right" });
+    divider();
+
+    (selectedPaidOrder.order_items || []).forEach((item) => {
+      ensurePage(40);
+      const itemLines = doc.splitTextToSize(`${item.item_name}`, pageWidth - marginX * 2 - 110);
+      const amount = Number(item.quantity || 0) * Number(item.unit_price || 0);
+      doc.setFontSize(11);
+      doc.text(itemLines, marginX, y);
+      doc.text(String(item.quantity || 0), pageWidth - marginX - 70, y, { align: "right" });
+      doc.text(`Rs. ${amount}`, pageWidth - marginX, y, { align: "right" });
+      y += itemLines.length * 16 + 6;
+    });
+
+    divider();
+    doc.setFontSize(13);
+    doc.text(`Total: Rs. ${getOrderTotal(selectedPaidOrder)}`, pageWidth - marginX, y, {
+      align: "right",
+    });
+    y += 22;
+
+    if (selectedPaidOrder.remarks) {
+      ensurePage(50);
+      divider();
+      line(`Remarks:`, marginX, 11);
+      const remarkLines = doc.splitTextToSize(selectedPaidOrder.remarks, pageWidth - marginX * 2);
+      doc.text(remarkLines, marginX, y);
+      y += remarkLines.length * 16 + 6;
+    }
+
+    y += 8;
+    line(`Thank You!`, marginX, 12, "center");
+
+    doc.save(`customer-bill-table-${selectedPaidOrder.table_number}-order-${selectedPaidOrder.id}.pdf`);
+  }
+
+  async function markOrderAsPaidFromReport() {
+    if (!restaurantId || !reportOrder) {
+      alert("Invalid order");
+      return;
+    }
+
+    const confirmPay = confirm(`Table ${reportOrder.table_number} ko order #${reportOrder.id} lai ${reportPaymentMethod.toUpperCase()} bata paid mark garne?`);
+    if (!confirmPay) return;
+
+    setMarkingReportPaid(true);
+
+    const { error } = await supabase
+      .from("orders")
+      .update({
+        is_paid: true,
+        payment_method: reportPaymentMethod,
+        paid_at: new Date().toISOString(),
+      })
+      .eq("id", reportOrder.id)
+      .eq("restaurant_id", restaurantId);
+
+    setMarkingReportPaid(false);
+
+    if (error) {
+      alert("Failed to mark order as paid");
+      return;
+    }
+
+    await fetchOrders();
+    setReportOrder(null);
+    setReportPaymentMethod("cash");
+    alert("Order marked as paid");
+  }
 
   async function fetchRestaurant(showLoader = false) {
     if (!restaurantId) {
@@ -709,6 +1300,60 @@ useEffect(() => {
     }, 0);
   }, [todayOrders]);
 
+
+  const filteredTakeOrderMenuItems = useMemo(() => {
+    const keyword = takeOrderSearch.trim().toLowerCase();
+
+    if (!keyword) return menuItems;
+
+    return menuItems.filter((item) =>
+      item.item_name.toLowerCase().includes(keyword)
+    );
+  }, [menuItems, takeOrderSearch]);
+
+  const popularTakeOrderItems = useMemo(() => {
+    const countMap: Record<number, number> = {};
+
+    orders.forEach((order) => {
+      order.order_items?.forEach((orderItem) => {
+        const matchedMenu = menuItems.find(
+          (menu) => menu.item_name.toLowerCase() === orderItem.item_name.toLowerCase()
+        );
+
+        if (!matchedMenu) return;
+
+        countMap[matchedMenu.id] =
+          (countMap[matchedMenu.id] || 0) + Number(orderItem.quantity || 0);
+      });
+    });
+
+    return [...menuItems]
+      .sort((a, b) => (countMap[b.id] || 0) - (countMap[a.id] || 0))
+      .slice(0, 8);
+  }, [orders, menuItems]);
+
+  const takeOrderCartCount = useMemo(() => {
+    return takeOrderItems.reduce((sum, item) => sum + item.quantity, 0);
+  }, [takeOrderItems]);
+
+  const takeOrderCartTotal = useMemo(() => {
+    return takeOrderItems.reduce((sum, item) => sum + item.quantity * item.price, 0);
+  }, [takeOrderItems]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+
+    if (showTakeOrderModal || reportOrder || showQR) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [showTakeOrderModal, reportOrder, selectedPaidOrder, showQR]);
+
 const todayPaidOrders = useMemo(() => {
   return orders.filter(
     (order) =>
@@ -1066,6 +1711,84 @@ const todayPaymentBreakdown = useMemo(() => {
       }));
   }, [orders]);
 
+
+const kitchenQueue = useMemo(() => {
+  return groupedTableOrders
+    .map((table) => {
+      const relatedOrders = orders
+        .filter(
+          (order) =>
+            String(order.table_number || "").trim() === table.table_number &&
+            order.is_paid !== true
+        )
+        .sort(
+          (a, b) =>
+            new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        );
+
+      const oldestCreatedAt = relatedOrders[0]?.created_at || "";
+      const visibleItems = table.items.sort((a, b) => a.item_name.localeCompare(b.item_name));
+
+      return {
+        ...table,
+        items: visibleItems,
+        oldestCreatedAt,
+      };
+    })
+    .filter((table) => table.table_status !== "ready")
+    .sort((a, b) => {
+      const aTime = a.oldestCreatedAt ? new Date(a.oldestCreatedAt).getTime() : 0;
+      const bTime = b.oldestCreatedAt ? new Date(b.oldestCreatedAt).getTime() : 0;
+      return aTime - bTime;
+    });
+}, [groupedTableOrders, orders]);
+
+async function updateKitchenTableStatus(
+  tableNo: string,
+  nextStatus: KitchenStatusKey
+) {
+  if (!restaurantId) {
+    alert("Invalid restaurant link");
+    return;
+  }
+
+  const targetOrders = orders.filter(
+    (order) =>
+      String(order.table_number || "").trim() === tableNo &&
+      order.is_paid !== true
+  );
+
+  if (targetOrders.length === 0) {
+    alert("No active kitchen order found");
+    return;
+  }
+
+  const orderIds = targetOrders.map((order) => order.id);
+
+  const { error: orderError } = await supabase
+    .from("orders")
+    .update({ status: nextStatus })
+    .in("id", orderIds)
+    .eq("restaurant_id", restaurantId);
+
+  if (orderError) {
+    alert("Failed to update order status");
+    return;
+  }
+
+  const { error: itemError } = await supabase
+    .from("order_items")
+    .update({ status: nextStatus })
+    .in("order_id", orderIds);
+
+  if (itemError) {
+    alert("Failed to update item status");
+    return;
+  }
+
+  await fetchOrders();
+}
+
   const kitchenStatusSummary = useMemo(() => {
     return groupedTableOrders.reduce(
       (acc, table) => {
@@ -1154,8 +1877,8 @@ const todayPaymentBreakdown = useMemo(() => {
       return;
     }
 
-    if (!newOwnerPassword.trim() || !newWaiterPassword.trim() || !newKitchenPassword.trim()) {
-      alert("Please fill all passwords");
+    if (!newOwnerPassword.trim()) {
+      alert("Please enter owner password");
       return;
     }
 
@@ -1165,20 +1888,18 @@ const todayPaymentBreakdown = useMemo(() => {
       .from("restaurants")
       .update({
         owner_password: newOwnerPassword.trim(),
-        waiter_password: newWaiterPassword.trim(),
-        kitchen_password: newKitchenPassword.trim(),
       })
       .eq("id", restaurantId);
 
     setSavingPasswords(false);
 
     if (error) {
-      alert("Failed to update passwords");
+      alert("Failed to update owner password");
       return;
     }
 
     setOwnerPasswordFromDB(newOwnerPassword.trim());
-    alert("Passwords updated successfully");
+    alert("Owner password updated successfully");
   }
 
   function formatPaymentMethod(method?: string | null) {
@@ -1604,10 +2325,10 @@ const todayPaymentBreakdown = useMemo(() => {
 
 function bottomNavButtonClass(view: OwnerView) {
   const active = ownerView === view;
-  return `flex flex-col items-center justify-center gap-1 rounded-[18px] px-1.5 py-2.5 text-[12px] font-semibold ${
+  return `flex flex-col items-center justify-center gap-1 rounded-[20px] px-2 py-2.5 text-[12px] font-semibold transition-all ${
     active
-      ? "bg-slate-900 text-white shadow-[0_12px_30px_rgba(15,23,42,0.28)]"
-      : "bg-white/40 text-slate-500"
+      ? "bg-slate-900 text-white shadow-[0_14px_34px_rgba(15,23,42,0.24)]"
+      : "bg-white text-slate-500 shadow-[inset_0_0_0_1px_rgba(148,163,184,0.18)]"
   }`;
 }
 
@@ -1635,7 +2356,7 @@ function bottomNavButtonClass(view: OwnerView) {
     cardClass = "bg-white border border-slate-200"
   ) {
     return (
-      <div className={`rounded-[22px] p-3.5 shadow-sm ${cardClass}`}>
+      <div className={`rounded-[24px] p-3.5 shadow-[0_10px_28px_rgba(15,23,42,0.07)] ${cardClass}`}>
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <p className="text-[11px] font-medium text-slate-500">{title}</p>
@@ -1651,11 +2372,11 @@ function bottomNavButtonClass(view: OwnerView) {
 
   function sectionTitle(title: string, subtitle: string, icon: string) {
     return (
-      <div className="flex items-start gap-3">
+      <div className="flex items-start gap-3.5">
         <div className="shrink-0">{iconBubble(icon, "bg-blue-50")}</div>
         <div>
-          <h2 className="text-base font-bold text-slate-900">{title}</h2>
-          <p className="text-xs text-slate-500">{subtitle}</p>
+          <h2 className="text-[17px] font-extrabold tracking-tight text-slate-900">{title}</h2>
+          <p className="text-xs leading-5 text-slate-500">{subtitle}</p>
         </div>
       </div>
     );
@@ -1959,167 +2680,136 @@ function bottomNavButtonClass(view: OwnerView) {
     }`;
   }
 
-  function renderKitchenStatusCards() {
-    return (
-      <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm">
-        <div className="mb-4 flex items-start justify-between gap-3">
-          <div className="flex items-center gap-3">
-            {iconBubble("🍳", "bg-orange-50")}
-            <div>
-              <h3 className="font-bold text-slate-900">Kitchen Status</h3>
-              <p className="text-xs text-slate-500">Pending, preparing ra ready tables</p>
-            </div>
-          </div>
 
-          <button
-            type="button"
-            onClick={() => setKitchenStatusExpanded((prev) => !prev)}
-            className="rounded-full bg-slate-100 px-3 py-1.5 text-[11px] font-semibold text-slate-700"
-          >
-            {kitchenStatusExpanded ? "Hide" : "Open"}
-          </button>
+function renderKitchenStatusCards() {
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between px-1">
+        <div>
+          <h3 className="text-sm font-bold text-slate-900">Table Queue</h3>
+          
         </div>
+        <div className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold text-slate-700">
+          {kitchenQueue.length} active
+        </div>
+      </div>
 
-        <button
-          type="button"
-          onClick={() => setKitchenStatusExpanded((prev) => !prev)}
-          className="grid w-full grid-cols-3 gap-2 rounded-[20px] border border-slate-200 bg-slate-50 p-3 text-left"
-        >
-          {(["pending", "preparing", "ready"] as KitchenStatusKey[]).map((status) => (
-            <div key={status} className="rounded-2xl bg-white px-3 py-2 shadow-sm">
-              <div className="flex items-center gap-2">
-                <span className={`h-2.5 w-2.5 rounded-full ${getKitchenStatusDotClass(status)}`} />
-                <p className="text-[10px] font-semibold text-slate-500">{getKitchenStatusLabel(status)}</p>
+      {kitchenQueue.length === 0 ? (
+        <div className="rounded-[24px] border border-dashed border-slate-200 bg-white px-4 py-8 text-center text-sm text-slate-500 shadow-sm">
+          No kitchen queue right now.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {kitchenQueue.map((table, index) => (
+            <div
+              key={`kitchen-queue-${table.table_number}`}
+              className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-[0_10px_28px_rgba(15,23,42,0.08)]"
+            >
+              {(index === 0 || index === 1) && (
+                <div className="mb-3">
+                  {index === 0 ? (
+                    <span className="inline-flex items-center rounded-full bg-red-600 px-3 py-1 text-[11px] font-bold text-white shadow-md">
+                      🔴 Oldest
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center rounded-full bg-amber-500 px-3 py-1 text-[11px] font-bold text-white shadow-md">
+                      🟠 2nd Oldest
+                    </span>
+                  )}
+                </div>
+              )}
+
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-base font-bold text-slate-900">Table {table.table_number}</p>
+                  </div>
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    {table.unpaid_orders_count} order(s) • {table.oldestCreatedAt ? new Date(table.oldestCreatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-"}
+                  </p>
+                </div>
+
+                <span className={`shrink-0 rounded-full px-3 py-1.5 text-[11px] font-bold shadow-sm ${getKitchenStatusBadgeClass(table.table_status)}`}>
+                  {getKitchenStatusLabel(table.table_status)}
+                </span>
               </div>
-              <p className="mt-1 text-base font-bold text-slate-900">{kitchenStatusSummary[status]}</p>
+
+              <div className="mt-3 rounded-[20px] border border-slate-200 bg-slate-50 p-3">
+                <div className="space-y-2">
+                  {table.items.map((item, itemIndex) => (
+                    <div
+                      key={`${table.table_number}-${item.item_name}-${itemIndex}`}
+                      className="flex items-start justify-between gap-3 rounded-2xl bg-white px-3 py-2"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-slate-900">{item.item_name}</p>
+                        <p className="text-[11px] text-slate-500">Qty: {item.quantity}</p>
+                      </div>
+                      <span className="shrink-0 rounded-full bg-slate-100 px-2 py-1 text-[10px] font-semibold text-slate-700">
+                        x{item.quantity}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {table.remarks.length > 0 && (
+                  <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2.5">
+                    <p className="mb-1 text-[10px] font-bold uppercase tracking-wide text-amber-700">Remarks</p>
+                    <div className="space-y-1">
+                      {table.remarks.map((remark, remarkIndex) => (
+                        <p
+                          key={`${table.table_number}-remark-${remarkIndex}`}
+                          className="text-[11px] font-medium text-slate-700"
+                        >
+                          • {remark}
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={() => updateKitchenTableStatus(table.table_number, "pending")}
+                  className={`rounded-2xl py-2.5 text-xs font-bold ${
+                    table.table_status === "pending"
+                      ? "bg-slate-900 text-white"
+                      : "border border-slate-300 bg-white text-slate-700"
+                  }`}
+                >
+                  Pending
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateKitchenTableStatus(table.table_number, "preparing")}
+                  className={`rounded-2xl py-2.5 text-xs font-bold ${
+                    table.table_status === "preparing"
+                      ? "bg-amber-500 text-white"
+                      : "border border-amber-300 bg-amber-50 text-amber-700"
+                  }`}
+                >
+                  Preparing
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateKitchenTableStatus(table.table_number, "ready")}
+                  className="rounded-2xl bg-green-600 py-2.5 text-xs font-extrabold tracking-wide text-white shadow-md active:scale-95"
+                >
+                  ✅ Ready
+                </button>
+              </div>
             </div>
           ))}
-        </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
-        {kitchenStatusExpanded && (
-          <div className="mt-4 space-y-4">
-            <div className="grid grid-cols-4 gap-2 rounded-2xl bg-slate-100 p-1">
-              <button type="button" onClick={() => setKitchenStatusFilter("all")} className={kitchenFilterButtonClass("all")}>
-                All
-              </button>
-              <button type="button" onClick={() => setKitchenStatusFilter("pending")} className={kitchenFilterButtonClass("pending")}>
-                Pending
-              </button>
-              <button type="button" onClick={() => setKitchenStatusFilter("preparing")} className={kitchenFilterButtonClass("preparing")}>
-                Preparing
-              </button>
-              <button type="button" onClick={() => setKitchenStatusFilter("ready")} className={kitchenFilterButtonClass("ready")}>
-                Ready
-              </button>
-            </div>
+function renderDashboardView() {
 
-            {filteredKitchenTables.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-                No kitchen orders in this status.
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 gap-3">
-                {filteredKitchenTables.map((table) => {
-                  const isOpen = openedKitchenTables[table.table_number] === true;
-                  const firstItem = table.items[0];
-
-                  return (
-                    <div
-                      key={`kitchen-${table.table_number}`}
-                      className="rounded-[26px] border border-slate-200 bg-white p-3 shadow-[0_8px_24px_rgba(15,23,42,0.08)]"
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="truncate text-base font-bold text-slate-900">Table {table.table_number}</p>
-                          <p className="mt-1 text-sm text-slate-500">{table.unpaid_orders_count} unpaid</p>
-                        </div>
-                        <span className={`shrink-0 rounded-full px-3 py-1 text-[11px] font-semibold ${getKitchenStatusBadgeClass(table.table_status)}`}>
-                          {getKitchenStatusLabel(table.table_status)}
-                        </span>
-                      </div>
-
-                      <div className="mt-4 rounded-[18px] bg-slate-100 px-4 py-3">
-                        {firstItem ? (
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-medium text-slate-900">{firstItem.item_name} x {firstItem.quantity}</p>
-                              {isOpen && table.items.length > 1 && (
-                                <p className="mt-1 text-[10px] text-slate-500">+{table.items.length - 1} more item(s)</p>
-                              )}
-                            </div>
-                            <p className="shrink-0 text-sm font-bold text-slate-900">Rs. {firstItem.total}</p>
-                          </div>
-                        ) : (
-                          <p className="text-sm text-slate-500">No items</p>
-                        )}
-                      </div>
-
-                      {isOpen && (
-                        <div className="mt-3 space-y-2">
-                          {table.items.map((item, index) => (
-                            <div
-                              key={`${table.table_number}-${item.item_name}-${index}`}
-                              className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2"
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <div className="min-w-0">
-                                  <p className="truncate text-xs font-semibold text-slate-900">{item.item_name} x {item.quantity}</p>
-                                  <div className="mt-1 flex items-center gap-1.5">
-                                    <span className={`h-2 w-2 rounded-full ${getKitchenStatusDotClass(item.status)}`} />
-                                    <span className="text-[10px] text-slate-500">{getKitchenStatusLabel(item.status)}</span>
-                                  </div>
-                                </div>
-                                <p className="shrink-0 text-xs font-bold text-slate-900">Rs. {item.total}</p>
-                              </div>
-                            </div>
-                          ))}
-
-                          {table.remarks.length > 0 && (
-                            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2">
-                              <p className="mb-1 text-[10px] font-semibold text-slate-600">Remarks</p>
-                              <div className="space-y-1">
-                                {table.remarks.map((remark, index) => (
-                                  <p key={`${table.table_number}-kitchen-remark-${index}`} className="line-clamp-2 text-[11px] text-slate-700">
-                                    • {remark}
-                                  </p>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      <div className="mt-4 rounded-[18px] border border-rose-200 bg-rose-50 px-4 py-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <p className="text-sm font-bold text-rose-600">Total</p>
-                          <p className="text-lg font-bold text-rose-600">Rs. {table.total}</p>
-                        </div>
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setOpenedKitchenTables((prev) => ({
-                            ...prev,
-                            [table.table_number]: !prev[table.table_number],
-                          }))
-                        }
-                        className="mt-4 w-full rounded-[18px] bg-slate-100 py-3 text-sm font-semibold text-slate-700"
-                      >
-                        {isOpen ? "Close" : "Open"}
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  function renderDashboardView() {
     return (
       <div className="space-y-4 pb-4">
         {sectionTitle("Dashboard", "Compact mobile-first business snapshot", "📊")}
@@ -2268,7 +2958,6 @@ function bottomNavButtonClass(view: OwnerView) {
             </div>
           </div>
 
-          {renderKitchenStatusCards()}
 
           <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3 flex items-center justify-between gap-3">
@@ -2397,7 +3086,6 @@ function bottomNavButtonClass(view: OwnerView) {
             )}
           </div>
         </div>
-
       </div>
     );
   }
@@ -2432,7 +3120,7 @@ function bottomNavButtonClass(view: OwnerView) {
       <div className="space-y-4 pb-4">
         {sectionTitle(
           "Sales Overview",
-          "Day, week ra month anusar sales progress",
+          "",
           "💹"
         )}
 
@@ -2783,7 +3471,190 @@ function bottomNavButtonClass(view: OwnerView) {
     );
   }
 
-  function renderBillingView() {
+
+  function renderOrderView() {
+    const activeOrders = orders
+      .filter((order) => order.is_paid !== true)
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+    return (
+      <div className="space-y-3 pb-4">
+        {sectionTitle("Order", "", "🍽️")}
+
+        <div className="rounded-[28px] border border-slate-200/80 bg-white p-4 shadow-[0_12px_34px_rgba(15,23,42,0.06)] space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900">Live Bills</h3>
+            </div>
+            <span className="rounded-full bg-blue-50 px-3 py-1 text-[11px] font-semibold text-blue-700">
+              {activeOrders.length} Active
+            </span>
+          </div>
+
+          {activeOrders.length === 0 ? (
+            <div className="rounded-[20px] border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+              No active order records yet.
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-3">
+              {activeOrders.map((order) => {
+                const orderTotal =
+                  order.order_items?.reduce(
+                    (sum, item) =>
+                      sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
+                    0
+                  ) || 0;
+                const displayStatus = getOrderDisplayStatus(order);
+                const itemPreview = (order.order_items || []).slice(0, 3);
+                const moreCount = Math.max((order.order_items || []).length - 3, 0);
+                const isLockedOrder = displayStatus === "preparing" || displayStatus === "ready";
+
+                const statusClass =
+                  displayStatus === "ready"
+                    ? "bg-emerald-100 text-emerald-700"
+                    : displayStatus === "preparing"
+                    ? "bg-amber-100 text-amber-700"
+                    : "bg-slate-100 text-slate-700";
+
+                return (
+                  <div
+                    key={order.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => openOrderReport(order)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        openOrderReport(order);
+                      }
+                    }}
+                    className="min-h-[196px] rounded-[22px] bg-slate-50/90 p-3 shadow-[0_8px_24px_rgba(15,23,42,0.06)] ring-1 ring-slate-200/80 transition active:scale-[0.99]"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-[14px] font-bold leading-none text-slate-900">
+                          Table {order.table_number}
+                        </p>
+                        <p className="mt-1 text-[10px] text-slate-500">
+                          {new Date(order.created_at).toLocaleTimeString([], {
+                            hour: "numeric",
+                            minute: "2-digit",
+                          })}
+                        </p>
+                      </div>
+
+                      <span className={`shrink-0 rounded-full px-2.5 py-1 text-[9px] font-bold ${statusClass}`}>
+                        {getKitchenStatusLabel(displayStatus)}
+                      </span>
+                    </div>
+
+                    <div className="mt-3 rounded-[16px] bg-white px-2.5 py-2 shadow-[inset_0_0_0_1px_rgba(226,232,240,0.9)]">
+                      {itemPreview.length === 0 ? (
+                        <p className="text-[10px] text-slate-500">No items</p>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {itemPreview.map((item) => (
+                            <div key={item.id} className="flex items-center justify-between gap-2">
+                              <p className="truncate text-[10px] font-semibold text-slate-800">
+                                {item.item_name} x {item.quantity}
+                              </p>
+                              <span className="shrink-0 text-[10px] font-semibold text-slate-500">
+                                Rs. {Number(item.quantity || 0) * Number(item.unit_price || 0)}
+                              </span>
+                            </div>
+                          ))}
+                          {moreCount > 0 && (
+                            <p className="text-[9px] font-medium text-slate-500">+{moreCount} more item(s)</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="mt-3 flex items-end justify-between gap-2">
+                      <div>
+                        <p className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-400">Total</p>
+                        <p className="mt-1 text-[20px] font-bold leading-none text-slate-900">Rs. {orderTotal}</p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openOrderReport(order);
+                        }}
+                        className="shrink-0 rounded-[12px] bg-blue-600 px-3 py-2 text-[10px] font-bold text-white shadow-sm"
+                      >
+                        Open
+                      </button>
+                    </div>
+
+                    <div className="mt-2 min-h-[16px]">
+                      {isLockedOrder ? (
+                        <p className="text-[9px] font-semibold text-slate-500">
+                          {displayStatus === "preparing"
+                            ? "Preparing: edit/cancel locked"
+                            : "Ready: edit/cancel locked"}
+                        </p>
+                      ) : order.remarks ? (
+                        <p className="truncate text-[9px] font-medium text-amber-700">Remark: {order.remarks}</p>
+                      ) : (
+                        <p className="text-[9px] text-slate-400">Tap bill to open payment</p>
+                      )}
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleEditOrder(order);
+                        }}
+                        disabled={editingOrderLoading || isLockedOrder}
+                        className={`rounded-[12px] py-2 text-[10px] font-semibold ${
+                          editingOrderLoading || isLockedOrder
+                            ? "bg-slate-200 text-slate-400"
+                            : "bg-white text-slate-700 ring-1 ring-slate-200"
+                        }`}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleCancelOrder(order.id);
+                        }}
+                        disabled={isLockedOrder}
+                        className={`rounded-[12px] py-2 text-[10px] font-semibold ${
+                          isLockedOrder
+                            ? "bg-slate-200 text-slate-400"
+                            : "bg-rose-50 text-rose-600 ring-1 ring-rose-100"
+                        }`}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+
+function renderKitchenView() {
+  return (
+    <div className="space-y-3 pb-4">
+      {renderKitchenStatusCards()}
+    </div>
+  );
+}
+
+function renderBillingView() {
+
     return (
       <div className="space-y-4 pb-4">
         {sectionTitle(
@@ -2952,305 +3823,229 @@ function bottomNavButtonClass(view: OwnerView) {
           "🧾"
         )}
 
-     <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm">
-  {paidOrders.length === 0 && (
-    <p className="text-sm text-slate-500">No paid orders yet.</p>
-  )}
+        <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm">
+          {paidOrders.length === 0 ? (
+            <p className="text-sm text-slate-500">No paid orders yet.</p>
+          ) : (
+            <div className="grid grid-cols-2 gap-3">
+              {paidOrders.map((order) => {
+                const orderTotal = getOrderTotal(order);
 
-  <div className="grid grid-cols-2 gap-3">
-    {paidOrders.map((order) => {
-      const orderTotal =
-        order.order_items?.reduce(
-          (sum, item) =>
-            sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
-          0
-        ) || 0;
+                return (
+                  <button
+                    key={order.id}
+                    type="button"
+                    onClick={() => openPaidOrderBill(order)}
+                    className="rounded-[18px] border border-slate-200 bg-slate-50 p-3 text-left space-y-2 transition hover:border-blue-300 hover:bg-blue-50"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-bold text-slate-900">
+                          Table {order.table_number}
+                        </p>
+                        <p className="text-[11px] text-slate-500">#{order.id}</p>
+                      </div>
 
-      return (
-        <div
-          key={order.id}
-          className="rounded-[18px] border border-slate-200 bg-slate-50 p-3 space-y-2"
-        >
-          <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0">
-              <p className="truncate text-sm font-bold text-slate-900">
-                Table {order.table_number}
-              </p>
-              <p className="text-[11px] text-slate-500">#{order.id}</p>
-            </div>
+                      <span className="shrink-0 rounded-full bg-green-100 px-2 py-1 text-[10px] font-semibold text-green-700">
+                        Paid
+                      </span>
+                    </div>
 
-            <span className="shrink-0 rounded-full bg-green-100 px-2 py-1 text-[10px] font-semibold text-green-700">
-              Paid
-            </span>
-          </div>
+                    <div className="space-y-1 text-xs text-slate-700">
+                      {order.order_items?.length ? (
+                        order.order_items.slice(0, 3).map((item) => (
+                          <p key={item.id} className="truncate">
+                            {item.item_name} x {item.quantity}
+                          </p>
+                        ))
+                      ) : (
+                        <p>No items</p>
+                      )}
 
-          <div className="space-y-1 text-xs text-slate-700">
-            {order.order_items?.length ? (
-              order.order_items.slice(0, 3).map((item) => (
-                <p key={item.id} className="truncate">
-                  {item.item_name} x {item.quantity}
-                </p>
-              ))
-            ) : (
-              <p>No items</p>
-            )}
+                      {order.order_items && order.order_items.length > 3 && (
+                        <p className="text-[11px] text-slate-500">
+                          +{order.order_items.length - 3} more
+                        </p>
+                      )}
+                    </div>
 
-            {order.order_items && order.order_items.length > 3 && (
-              <p className="text-[11px] text-slate-500">
-                +{order.order_items.length - 3} more
-              </p>
-            )}
-          </div>
+                    {order.remarks && (
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 p-2">
+                        <p className="mb-1 text-[10px] font-semibold text-slate-600">Remarks</p>
+                        <p className="line-clamp-2 text-[11px] text-slate-800">
+                          {order.remarks}
+                        </p>
+                      </div>
+                    )}
 
-          {order.remarks && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 p-2">
-              <p className="mb-1 text-[10px] font-semibold text-slate-600">Remarks</p>
-              <p className="line-clamp-2 text-[11px] text-slate-800">
-                {order.remarks}
-              </p>
+                    <div className="grid grid-cols-2 gap-2 border-t border-slate-200 pt-2">
+                      <div className="rounded-xl bg-white p-2">
+                        <p className="text-[10px] text-slate-500">Total</p>
+                        <p className="text-xs font-bold text-slate-900">Rs. {orderTotal}</p>
+                      </div>
+
+                      <div className="rounded-xl bg-white p-2">
+                        <p className="text-[10px] text-slate-500">Method</p>
+                        <p className="text-xs font-bold text-slate-900">
+                          {formatPaymentMethod(order.payment_method)}
+                        </p>
+                      </div>
+
+                      <div className="col-span-2 rounded-xl bg-white p-2">
+                        <p className="text-[10px] text-slate-500">Paid Time</p>
+                        <p className="text-[11px] font-semibold text-slate-900">
+                          {order.paid_at ? new Date(order.paid_at).toLocaleString() : "-"}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl bg-slate-900 px-3 py-2 text-center text-[11px] font-semibold text-white">
+                      Tap to view customer bill
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           )}
-
-          <div className="grid grid-cols-2 gap-2 border-t border-slate-200 pt-2">
-            <div className="rounded-xl bg-white p-2">
-              <p className="text-[10px] text-slate-500">Total</p>
-              <p className="text-xs font-bold text-slate-900">Rs. {orderTotal}</p>
-            </div>
-
-            <div className="rounded-xl bg-white p-2">
-              <p className="text-[10px] text-slate-500">Method</p>
-              <p className="text-xs font-bold text-slate-900">
-                {formatPaymentMethod(order.payment_method)}
-              </p>
-            </div>
-
-            <div className="col-span-2 rounded-xl bg-white p-2">
-              <p className="text-[10px] text-slate-500">Paid Time</p>
-              <p className="text-[11px] font-semibold text-slate-900">
-                {order.paid_at ? new Date(order.paid_at).toLocaleString() : "-"}
-              </p>
-            </div>
-          </div>
         </div>
-      );
-    })}
-  </div>
-</div>
       </div>
     );
   }
+
+
 
   function renderMenuItemsPopup() {
     return (
       <div className="space-y-4 pb-4">
-        <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="mb-4 flex items-center gap-3">
-            {iconBubble("🍽️", "bg-blue-50")}
+        {sectionTitle("Menu Items", "Add, edit and delete restaurant menu", "🍽️")}
+
+        <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm space-y-4">
+          <form onSubmit={handleAddMenuItem} className="space-y-3">
             <div>
-              <h3 className="font-bold text-slate-900">Menu Items</h3>
-              <p className="text-xs text-slate-500">Add, edit, delete menu items</p>
+              <label className="mb-2 block text-sm font-semibold text-slate-700">Item Name</label>
+              <input
+                type="text"
+                value={newItemName}
+                onChange={(e) => setNewItemName(e.target.value)}
+                placeholder="Enter item name"
+                className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3"
+              />
             </div>
-          </div>
 
-          <form onSubmit={handleAddMenuItem} className="mb-4 space-y-3">
-            <input
-              type="text"
-              value={newItemName}
-              onChange={(e) => setNewItemName(e.target.value)}
-              placeholder="New item name"
-              className="w-full rounded-2xl border border-slate-200 px-4 py-3"
-            />
+            <div>
+              <label className="mb-2 block text-sm font-semibold text-slate-700">Price</label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={newItemPrice}
+                onChange={(e) => setNewItemPrice(e.target.value)}
+                placeholder="Enter price"
+                className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3"
+              />
+            </div>
 
-            <input
-              type="number"
-              value={newItemPrice}
-              onChange={(e) => setNewItemPrice(e.target.value)}
-              placeholder="Price"
-              className="w-full rounded-2xl border border-slate-200 px-4 py-3"
-            />
-
-            <button
-              type="submit"
-              className="w-full rounded-2xl bg-blue-600 py-3 font-semibold text-white shadow-[0_10px_25px_rgba(37,99,235,0.28)]"
-            >
-              Add Menu Item
-            </button>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setPopupView(null);
+                  setShowHeaderMenu(false);
+                }}
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700"
+              >
+                Back
+              </button>
+              <button
+                type="submit"
+                className="rounded-2xl bg-blue-600 px-4 py-3 text-sm font-bold text-white"
+              >
+                Add Item
+              </button>
+            </div>
           </form>
 
           <div className="space-y-3">
-            {menuItems.length === 0 && (
-              <p className="text-sm text-slate-500">No menu items yet.</p>
-            )}
-
-            {menuItems.map((menu) => (
-              <div
-                key={menu.id}
-                className="rounded-[22px] border border-slate-200 bg-slate-50 p-3 space-y-3"
-              >
-                {editingMenuId === menu.id ? (
-                  <>
-                    <input
-                      type="text"
-                      value={editingItemName}
-                      onChange={(e) => setEditingItemName(e.target.value)}
-                      className="w-full rounded-2xl border border-slate-200 px-4 py-3"
-                    />
-
-                    <input
-                      type="number"
-                      value={editingItemPrice}
-                      onChange={(e) => setEditingItemPrice(e.target.value)}
-                      className="w-full rounded-2xl border border-slate-200 px-4 py-3"
-                    />
-
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => saveEditMenuItem(menu.id)}
-                        className="flex-1 rounded-2xl bg-green-600 py-2.5 font-semibold text-white"
-                      >
-                        Save
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={cancelEditMenuItem}
-                        className="flex-1 rounded-2xl bg-slate-400 py-2.5 font-semibold text-white"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="font-semibold text-slate-900">{menu.item_name}</p>
-                        <p className="text-sm text-slate-500">Rs. {menu.price}</p>
+            {menuItems.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+                No menu items yet.
+              </div>
+            ) : (
+              menuItems.map((menu) => (
+                <div
+                  key={menu.id}
+                  className="rounded-[22px] border border-slate-200 bg-slate-50 p-3 shadow-sm"
+                >
+                  {editingMenuId === menu.id ? (
+                    <div className="space-y-3">
+                      <input
+                        type="text"
+                        value={editingItemName}
+                        onChange={(e) => setEditingItemName(e.target.value)}
+                        className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3"
+                        placeholder="Item name"
+                      />
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={editingItemPrice}
+                        onChange={(e) => setEditingItemPrice(e.target.value)}
+                        className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3"
+                        placeholder="Price"
+                      />
+                      <div className="grid grid-cols-3 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => saveEditMenuItem(menu.id)}
+                          className="rounded-2xl bg-blue-600 px-3 py-2.5 text-xs font-bold text-white"
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          onClick={cancelEditMenuItem}
+                          className="rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-semibold text-slate-700"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteMenuItem(menu.id)}
+                          className="rounded-2xl bg-rose-50 px-3 py-2.5 text-xs font-semibold text-rose-600 ring-1 ring-rose-100"
+                        >
+                          Delete
+                        </button>
                       </div>
                     </div>
-
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => startEditMenuItem(menu)}
-                        className="flex-1 rounded-2xl bg-amber-500 py-2.5 font-semibold text-white"
-                      >
-                        Edit
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => deleteMenuItem(menu.id)}
-                        className="flex-1 rounded-2xl bg-red-600 py-2.5 font-semibold text-white"
-                      >
-                        Delete
-                      </button>
+                  ) : (
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-bold text-slate-900">{menu.item_name}</p>
+                        <p className="mt-1 text-xs text-slate-500">Rs. {menu.price}</p>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => startEditMenuItem(menu)}
+                          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteMenuItem(menu.id)}
+                          className="rounded-xl bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-600 ring-1 ring-rose-100"
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </div>
-                  </>
-                )}
-              </div>
-            ))}
+                  )}
+                </div>
+              ))
+            )}
           </div>
-        </div>
-      </div>
-    );
-  }
-
-
-  async function copyQrLink(link: string, label: string) {
-    if (!link) {
-      alert("Link not available");
-      return;
-    }
-
-    try {
-      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(link);
-      } else if (typeof document !== "undefined") {
-        const textarea = document.createElement("textarea");
-        textarea.value = link;
-        textarea.setAttribute("readonly", "true");
-        textarea.style.position = "absolute";
-        textarea.style.left = "-9999px";
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand("copy");
-        document.body.removeChild(textarea);
-      } else {
-        throw new Error("Clipboard unavailable");
-      }
-
-      alert(`${label} link copied`);
-    } catch (error) {
-      alert("Failed to copy link");
-    }
-  }
-
-  function downloadQrCode(canvasId: string, fileName: string) {
-    if (typeof document === "undefined") {
-      alert("QR download is not available right now");
-      return;
-    }
-
-    const canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
-
-    if (!canvas) {
-      alert("QR is not ready yet");
-      return;
-    }
-
-    const pngUrl = canvas.toDataURL("image/png");
-    const anchor = document.createElement("a");
-    anchor.href = pngUrl;
-    anchor.download = fileName;
-    anchor.click();
-  }
-
-  function renderQrAccessCard(
-    title: string,
-    subtitle: string,
-    link: string,
-    canvasId: string,
-    fileName: string
-  ) {
-    return (
-      <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
-        <div className="flex flex-col items-center text-center">
-          <div className="inline-flex rounded-[22px] bg-white p-4 shadow-sm">
-            <QRCodeCanvas
-              id={canvasId}
-              value={link || " "}
-              size={190}
-              includeMargin={true}
-            />
-          </div>
-
-          <p className="mt-4 text-lg font-bold text-slate-900">{title}</p>
-          <p className="mt-1 text-xs text-slate-500">{subtitle}</p>
-        </div>
-
-        <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-3">
-          <p className="text-[11px] font-semibold text-slate-500">Link</p>
-          <p className="mt-1 break-all text-xs text-slate-700">{link || "-"}</p>
-        </div>
-
-        <div className="mt-4 grid grid-cols-1 gap-2">
-          <button
-            type="button"
-            onClick={() => copyQrLink(link, title)}
-            className="w-full rounded-2xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white shadow-[0_10px_25px_rgba(37,99,235,0.22)]"
-          >
-            Copy Link
-          </button>
-
-          <button
-            type="button"
-            onClick={() => downloadQrCode(canvasId, fileName)}
-            className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700"
-          >
-            Download QR
-          </button>
         </div>
       </div>
     );
@@ -3259,111 +4054,42 @@ function bottomNavButtonClass(view: OwnerView) {
   function renderPasswordsPopup() {
     return (
       <div className="space-y-4 pb-4">
-        <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm space-y-4">
-          <div className="flex items-center gap-3">
-            {iconBubble("🔐", "bg-blue-50")}
-            <div>
-              <h3 className="font-bold text-slate-900">Passwords</h3>
-              <p className="text-xs text-slate-500">Owner, waiter, kitchen password management</p>
-            </div>
-          </div>
+        {sectionTitle("Passwords", "Update owner password", "🔐")}
 
-          <div>
-            <label className="mb-2 block text-sm font-semibold text-slate-700">
-              Owner Password
-            </label>
+        <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm space-y-4">
+          <div className="rounded-[22px] border border-slate-200 bg-slate-50 p-4">
+            <label className="mb-2 block text-sm font-semibold text-slate-700">Owner Password</label>
             <input
               type="text"
               value={newOwnerPassword}
               onChange={(e) => setNewOwnerPassword(e.target.value)}
-              className="w-full rounded-2xl border border-slate-200 px-4 py-3"
+              placeholder="Enter new owner password"
+              className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3"
             />
-          </div>
-
-          <div>
-            <label className="mb-2 block text-sm font-semibold text-slate-700">
-              Waiter Password
-            </label>
-            <input
-              type="text"
-              value={newWaiterPassword}
-              onChange={(e) => setNewWaiterPassword(e.target.value)}
-              className="w-full rounded-2xl border border-slate-200 px-4 py-3"
-            />
-          </div>
-
-          <div>
-            <label className="mb-2 block text-sm font-semibold text-slate-700">
-              Kitchen Password
-            </label>
-            <input
-              type="text"
-              value={newKitchenPassword}
-              onChange={(e) => setNewKitchenPassword(e.target.value)}
-              className="w-full rounded-2xl border border-slate-200 px-4 py-3"
-            />
-          </div>
-
-          <button
-            type="button"
-            onClick={savePasswords}
-            disabled={savingPasswords}
-            className="w-full rounded-2xl bg-blue-600 py-3 font-semibold text-white shadow-[0_10px_25px_rgba(37,99,235,0.28)]"
-          >
-            {savingPasswords ? "Saving..." : "Save Passwords"}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  function renderQrAccessPopup() {
-    return (
-      <div className="flex h-full flex-col pb-4">
-        <div className="flex min-h-0 flex-1 flex-col rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="mb-4 flex items-start justify-between gap-3">
-            <div className="flex items-center gap-3">
-              {iconBubble("🔳", "bg-blue-50")}
-              <div>
-                <h3 className="font-bold text-slate-900">QR Access</h3>
-                <p className="text-xs text-slate-500">
-                  Waiter ra kitchen QR vertically dekhine, scroll garna milne.
-                </p>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setPopupView(null)}
-              className="rounded-2xl bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700"
-            >
-              Close
-            </button>
-          </div>
-
-          <div className="mb-4 rounded-[22px] border border-blue-100 bg-blue-50 px-4 py-3">
-            <p className="text-sm font-semibold text-slate-900">QR Tools</p>
-            <p className="mt-1 text-xs text-slate-500">
-              Scroll गरेर QR herna sakinchha, link copy garna milchha ra QR image download pani garna milchha.
+            <p className="mt-2 text-xs text-slate-500">
+              Current password updates only for owner panel access.
             </p>
           </div>
 
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
-            {renderQrAccessCard(
-              "Waiter QR",
-              "Waiter panel kholna yo QR scan garnus.",
-              waiterQrUrl,
-              "waiter-qr-canvas",
-              `waiter-qr-${restaurantId || "restaurant"}.png`
-            )}
-
-            {renderQrAccessCard(
-              "Kitchen QR",
-              "Kitchen panel kholna yo QR scan garnus.",
-              kitchenQrUrl,
-              "kitchen-qr-canvas",
-              `kitchen-qr-${restaurantId || "restaurant"}.png`
-            )}
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                setPopupView(null);
+                setShowHeaderMenu(false);
+              }}
+              className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700"
+            >
+              Back
+            </button>
+            <button
+              type="button"
+              onClick={savePasswords}
+              disabled={savingPasswords}
+              className={`rounded-2xl px-4 py-3 text-sm font-bold text-white ${savingPasswords ? "bg-slate-400" : "bg-blue-600"}`}
+            >
+              {savingPasswords ? "Saving..." : "Save Password"}
+            </button>
           </div>
         </div>
       </div>
@@ -3379,12 +4105,16 @@ function bottomNavButtonClass(view: OwnerView) {
       return renderPasswordsPopup();
     }
 
-    if (popupView === "qrAccess") {
-      return renderQrAccessPopup();
-    }
-
     if (ownerView === "dashboard") {
       return renderDashboardView();
+    }
+
+    if (ownerView === "order") {
+      return renderOrderView();
+    }
+
+    if (ownerView === "kitchen") {
+      return renderKitchenView();
     }
 
     if (ownerView === "salesOverview") {
@@ -3610,15 +4340,44 @@ if (!ownerUnlocked) {
 
                         <button
                           type="button"
-                          onClick={() => {
-                            setPopupView("qrAccess");
-                            setShowHeaderMenu(false);
-                            scrollMainContentToTop();
-                          }}
+                          onClick={openQrAccess}
                           className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold text-slate-700 hover:bg-slate-100"
                         >
                           <span className="text-base">🔳</span>
                           QR Access
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            changeView("report");
+                          }}
+                          className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                        >
+                          <span className="text-base">📝</span>
+                          Report
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            changeView("billing");
+                          }}
+                          className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                        >
+                          <span className="text-base">💳</span>
+                          Billing
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            changeView("paymentHistory");
+                          }}
+                          className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                        >
+                          <span className="text-base">🧾</span>
+                          History
                         </button>
 
                         <button
@@ -3657,9 +4416,801 @@ if (!ownerUnlocked) {
           </div>
         </div>
 
-    {popupView !== "qrAccess" && (
+        {popupView === null && !showTakeOrderModal && !reportOrder && (
+          <button
+            type="button"
+            onClick={openTakeOrderModal}
+            style={{
+              position: "fixed",
+              bottom: "100px",
+              left: "50%",
+              transform: "translateX(-50%)",
+              zIndex: 99999,
+              background: "linear-gradient(135deg, #2563eb, #1d4ed8)",
+              color: "#ffffff",
+              border: "none",
+              borderRadius: "9999px",
+              padding: "14px 24px",
+              fontSize: "14px",
+              fontWeight: 700,
+              boxShadow: "0 18px 35px rgba(37,99,235,0.35)",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+            }}
+          >
+            <span style={{ fontSize: "20px", lineHeight: 1 }}>+</span>
+            <span>Take Order</span>
+          </button>
+        )}
+
+        {showTakeOrderModal && (
+          <div className="absolute inset-0 z-50">
+            <div
+              className="absolute inset-0 bg-slate-950/40 backdrop-blur-[1px]"
+              onClick={closeTakeOrderModal}
+            />
+
+            <div className="absolute inset-0 flex items-end justify-center">
+              <div className="relative flex h-full w-full max-w-[430px] flex-col overflow-hidden rounded-none bg-[#f8fafc] shadow-2xl">
+                <div className="shrink-0 border-b border-slate-200 bg-white px-4 pb-4 pt-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Order Entry</p>
+                      <h2 className="text-[22px] font-extrabold tracking-tight text-slate-900">{editingOrderId ? "Edit Order" : "Take Order"}</h2>
+                      <p className="text-xs text-slate-500">{editingOrderId ? "Order update garera save garna sakinchha" : "Quick order entry and send to kitchen"}</p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={closeTakeOrderModal}
+                      className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-2xl text-slate-700 shadow-sm"
+                    >
+                      ×
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="mb-2 block text-[11px] font-bold uppercase tracking-[0.14em] text-slate-500">Table Number</label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={takeOrderTableNumber}
+                        onChange={(e) => setTakeOrderTableNumber(e.target.value.replace(/[^0-9]/g, ""))}
+                        placeholder="Table"
+                        className="w-full rounded-[18px] border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition-all placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-[11px] font-bold uppercase tracking-[0.14em] text-slate-500">Search Items</label>
+                      <input
+                        type="text"
+                        value={takeOrderSearch}
+                        onChange={(e) => setTakeOrderSearch(e.target.value)}
+                        placeholder="Search item"
+                        className="w-full rounded-[18px] border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition-all placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+                  <div className="space-y-4 pb-28">
+                    <div className="rounded-[24px] bg-white p-4 shadow-sm ring-1 ring-slate-200/70">
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <div>
+                          <h3 className="text-[18px] font-extrabold tracking-tight text-slate-900">Popular Items</h3>
+                          <p className="text-xs text-slate-500">Quick add</p>
+                        </div>
+                        <span className="rounded-full bg-amber-50 px-3 py-1 text-[11px] font-semibold text-amber-700 shadow-sm ring-1 ring-amber-100">
+                          Top {popularTakeOrderItems.length}
+                        </span>
+                      </div>
+
+                      {popularTakeOrderItems.length === 0 ? (
+                        <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-5 text-center text-sm text-slate-500">
+                          No popular items yet.
+                        </div>
+                      ) : (
+                        <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1 [scrollbar-width:none]">
+                          {popularTakeOrderItems.map((item) => {
+                            const activeItem = takeOrderItems.find((cartItem) => cartItem.id === item.id);
+
+                            return (
+                              <button
+                                key={`popular-${item.id}`}
+                                type="button"
+                                onClick={() => addTakeOrderItem(item)}
+                                className={`min-w-[86px] rounded-[16px] border px-3 py-2 text-center shadow-sm transition-all ${
+                                  activeItem ? "bg-blue-600 text-white shadow-sm" : "bg-slate-100 text-slate-700"
+                                }`}
+                              >
+                                <p className="line-clamp-2 text-[11px] font-semibold leading-4 text-slate-900">
+                                  {item.item_name}
+                                </p>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {takeOrderSearch.trim() !== "" && (
+                      <div className="rounded-[24px] bg-white p-4 shadow-sm ring-1 ring-slate-200/70">
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                          <div>
+                            <h3 className="text-sm font-bold text-slate-900">Search Results</h3>
+                            <p className="text-xs text-slate-500">Search gareko items matra</p>
+                          </div>
+                          <span className="rounded-full bg-blue-50 px-3 py-1 text-[11px] font-semibold text-blue-700">
+                            {filteredTakeOrderMenuItems.length}
+                          </span>
+                        </div>
+
+                        {filteredTakeOrderMenuItems.length === 0 ? (
+                          <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                            No matching items found.
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-2 gap-2">
+                            {filteredTakeOrderMenuItems.map((item) => {
+                              const activeItem = takeOrderItems.find((cartItem) => cartItem.id === item.id);
+
+                              return (
+                                <button
+                                  key={item.id}
+                                  type="button"
+                                  onClick={() => addTakeOrderItem(item)}
+                                  className={`rounded-[18px] border p-3 text-left shadow-sm transition ${
+                                    activeItem ? "border-blue-500 bg-blue-50" : "border-slate-200 bg-slate-50"
+                                  }`}
+                                >
+                                  <p className="line-clamp-2 text-sm font-semibold text-slate-900">{item.item_name}</p>
+                                  <div className="mt-2 flex items-center justify-between gap-2">
+                                    <span className="text-sm font-bold text-slate-900">Rs. {item.price}</span>
+                                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold shadow-sm ${activeItem ? "bg-blue-600 text-white" : "bg-white text-slate-600 ring-1 ring-slate-200"}`}>
+                                      {activeItem ? `${activeItem.quantity}` : "+ Add"}
+                                    </span>
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="rounded-[24px] bg-white p-3 shadow-sm ring-1 ring-slate-200/70">
+                      <div className="mb-2 flex items-center justify-between gap-3">
+                        <div>
+                          <h3 className="text-sm font-bold text-slate-900">Selected Items</h3>
+                          <p className="text-[11px] text-slate-500">Compact quantity controls</p>
+                        </div>
+                        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-600">
+                          {takeOrderCartCount} items
+                        </span>
+                      </div>
+
+                      {takeOrderItems.length === 0 ? (
+                        <div className="rounded-[18px] border border-dashed border-slate-200 bg-slate-50 px-3 py-5 text-center text-xs text-slate-500">
+                          No items selected yet.
+                        </div>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {takeOrderItems.map((item) => (
+                            <div
+                              key={`selected-${item.id}`}
+                              className="flex items-center justify-between gap-2 rounded-[16px] bg-slate-50 px-2.5 py-2 ring-1 ring-slate-200"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-[12px] font-semibold text-slate-900">{item.item_name}</p>
+                              </div>
+
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => decreaseTakeOrderItem(item.id)}
+                                  className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white text-[15px] font-bold text-slate-700 ring-1 ring-slate-200"
+                                >
+                                  −
+                                </button>
+
+                                <span className="min-w-[22px] text-center text-[12px] font-bold text-slate-900">
+                                  {item.quantity}
+                                </span>
+
+                                <button
+                                  type="button"
+                                  onClick={() => increaseTakeOrderItem(item.id)}
+                                  className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-blue-600 text-[15px] font-bold text-white shadow-sm"
+                                >
+                                  +
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="rounded-[24px] bg-white p-4 shadow-sm ring-1 ring-slate-200/70">
+                      <div className="mb-3 flex items-center gap-2">
+                        <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-sm">✍️</span>
+                        <div>
+                          <h3 className="text-sm font-bold text-slate-900">Remarks</h3>
+                          <p className="text-xs text-slate-500">Optional special instruction</p>
+                        </div>
+                      </div>
+                      <textarea
+                        value={takeOrderRemarks}
+                        onChange={(e) => setTakeOrderRemarks(e.target.value)}
+                        placeholder="Example: no sugar, extra spicy"
+                        className="min-h-[92px] w-full resize-none rounded-[22px] border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] outline-none transition-all placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:shadow-[0_0_0_4px_rgba(59,130,246,0.10)]"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="shrink-0 border-t border-slate-200/80 bg-white/92 px-4 pb-4 pt-3 backdrop-blur">
+                  <div className="mb-3 rounded-[26px] border border-slate-200/80 bg-white/90 p-2 shadow-[0_10px_28px_rgba(15,23,42,0.06)]">
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="rounded-[18px] bg-[linear-gradient(180deg,#f8fafc_0%,#eef2ff_100%)] px-3 py-2">
+                        <p className="text-[11px] text-slate-500">Items</p>
+                        <p className="text-sm font-bold text-slate-900">{takeOrderCartCount}</p>
+                      </div>
+                      <div className="rounded-[18px] bg-[linear-gradient(180deg,#f8fafc_0%,#eef2ff_100%)] px-3 py-2">
+                        <p className="text-[11px] text-slate-500">Total</p>
+                        <p className="text-sm font-bold text-slate-900">Rs. {takeOrderCartTotal}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowTakeOrderCart(true)}
+                        className="rounded-[20px] bg-slate-900 px-3 py-2 text-sm font-bold text-white shadow-[0_12px_24px_rgba(15,23,42,0.24)]"
+                      >
+                        View Cart
+                      </button>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={submitTakeOrder}
+                    disabled={submittingTakeOrder || takeOrderItems.length === 0}
+                    className="w-full rounded-[24px] bg-blue-600 py-3.5 text-sm font-extrabold text-white shadow-md disabled:opacity-60"
+                  >
+                    {submittingTakeOrder ? (editingOrderId ? "Updating..." : "Sending...") : (editingOrderId ? "Update Order" : "Send to Kitchen")}
+                  </button>
+                </div>
+
+                {showTakeOrderCart && (
+                  <div className="absolute inset-0 z-[60] flex items-end justify-center">
+                    <div className="absolute inset-0 bg-slate-950/45" onClick={() => setShowTakeOrderCart(false)} />
+                    <div className="relative w-full max-w-[430px] rounded-t-[28px] border border-slate-200 bg-white p-4 shadow-2xl">
+                      <div className="mb-4 flex items-center justify-between gap-3">
+                        <div>
+                          <h3 className="text-base font-bold text-slate-900">View Cart</h3>
+                          <p className="text-xs text-slate-500">Add, minus, remove ra send</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowTakeOrderCart(false)}
+                          className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-xl text-slate-700"
+                        >
+                          ×
+                        </button>
+                      </div>
+
+                      {takeOrderItems.length === 0 ? (
+                        <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+                          No items in cart.
+                        </div>
+                      ) : (
+                        <div className="max-h-[45vh] space-y-3 overflow-y-auto pb-2">
+                          {takeOrderItems.map((item) => (
+                            <div
+                              key={`cart-${item.id}`}
+                              className="rounded-2xl border border-slate-200 bg-slate-50 p-3"
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm font-semibold text-slate-900">{item.item_name}</p>
+                                  <p className="text-xs text-slate-500">Rs. {item.price} each</p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => removeTakeOrderItem(item.id)}
+                                  className="rounded-full bg-rose-100 px-3 py-1 text-xs font-semibold text-rose-600"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+
+                              <div className="mt-3 flex items-center justify-between gap-3">
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => decreaseTakeOrderItem(item.id)}
+                                    className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-200 text-lg font-bold text-slate-700"
+                                  >
+                                    −
+                                  </button>
+                                  <span className="min-w-[28px] text-center text-sm font-bold text-slate-900">{item.quantity}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => increaseTakeOrderItem(item.id)}
+                                    className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-blue-600 text-lg font-bold text-white"
+                                  >
+                                    +
+                                  </button>
+                                </div>
+                                <p className="text-sm font-bold text-slate-900">Rs. {item.quantity * item.price}</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="mt-4 rounded-[20px] bg-slate-900 px-4 py-3 text-white">
+                        <div className="flex items-center justify-between text-sm">
+                          <span>Items</span>
+                          <span className="font-bold">{takeOrderCartCount}</span>
+                        </div>
+                        <div className="mt-2 flex items-center justify-between text-sm">
+                          <span>Total</span>
+                          <span className="text-lg font-bold">Rs. {takeOrderCartTotal}</span>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 grid grid-cols-2 gap-3">
+                        <button
+                          type="button"
+                          onClick={() => setShowTakeOrderCart(false)}
+                          className="rounded-[20px] bg-slate-200 py-3 text-sm font-bold text-slate-700"
+                        >
+                          Close Cart
+                        </button>
+                        <button
+                          type="button"
+                          onClick={submitTakeOrder}
+                          disabled={submittingTakeOrder || takeOrderItems.length === 0}
+                          className="rounded-[20px] bg-blue-600 py-3 text-sm font-bold text-white disabled:opacity-60"
+                        >
+                          {submittingTakeOrder ? (editingOrderId ? "Updating..." : "Sending...") : (editingOrderId ? "Update Order" : "Send to Kitchen")}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {reportOrder && (
+          <div className="absolute inset-0 z-[70]">
+            <div
+              className="absolute inset-0 bg-slate-950/45 backdrop-blur-[2px]"
+              onClick={closeOrderReport}
+            />
+
+            <div className="absolute inset-0 flex items-end justify-center">
+              <div className="relative flex h-full w-full max-w-[430px] flex-col overflow-hidden rounded-none bg-[#f8fafc] shadow-2xl">
+                <div className="shrink-0 border-b border-slate-200 bg-white px-4 pb-3 pt-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Receipt View</p>
+                      <h2 className="text-[22px] font-extrabold tracking-tight text-slate-900">Order Receipt</h2>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={closeOrderReport}
+                      className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-2xl text-slate-700 shadow-sm"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+
+                <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+                  <div className="space-y-4 pb-28">
+                    <div className="rounded-[26px] border border-slate-200 bg-white px-4 py-5 shadow-sm">
+                      <div className="text-center">
+                        <h3 className="text-[34px] font-black tracking-tight text-slate-900">
+                          KOT {reportOrder.id}
+                        </h3>
+                      </div>
+
+                      <div className="mt-5 flex items-start justify-between gap-4 text-[15px] text-slate-800">
+                        <div className="space-y-1">
+                          <p>Type: Dine In</p>
+                          <p>Order By: Owner</p>
+                          <p>
+                            Order At:{" "}
+                            {new Date(reportOrder.created_at).toLocaleString([], {
+                              year: "numeric",
+                              month: "short",
+                              day: "2-digit",
+                              hour: "numeric",
+                              minute: "2-digit",
+                            })}
+                          </p>
+                        </div>
+
+                        <div className="shrink-0 text-right">
+                          <p>Table: {reportOrder.table_number}</p>
+                        </div>
+                      </div>
+
+                      <div className="my-5 border-t border-dashed border-slate-300" />
+
+                      <div className="grid grid-cols-[52px_1fr_52px] items-center gap-2 text-[17px] font-bold text-slate-900">
+                        <span>S.N</span>
+                        <span>Dishes</span>
+                        <span className="text-right">QTY</span>
+                      </div>
+
+                      <div className="my-4 border-t border-dashed border-slate-300" />
+
+                      <div className="space-y-3">
+                        {(reportOrder.order_items || []).length === 0 ? (
+                          <p className="text-sm text-slate-500">No order items found.</p>
+                        ) : (
+                          (reportOrder.order_items || []).map((item, index) => (
+                            <div
+                              key={`report-item-${item.id}`}
+                              className="grid grid-cols-[52px_1fr_52px] items-start gap-2 text-[18px] text-slate-900"
+                            >
+                              <span>{index + 1}.</span>
+                              <div className="min-w-0">
+                                <p className="break-words">{item.item_name}</p>
+                              </div>
+                              <span className="text-right">{item.quantity}</span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+
+                      <div className="my-5 border-t border-dashed border-slate-300" />
+
+                      <div className="flex items-center justify-between gap-3 text-[18px] font-semibold text-slate-900">
+                        <span>Total (Dishes/QTY)</span>
+                        <span>
+                          {(reportOrder.order_items || []).length}/
+                          {(reportOrder.order_items || []).reduce(
+                            (sum, item) => sum + Number(item.quantity || 0),
+                            0
+                          )}
+                        </span>
+                      </div>
+
+                      {reportOrder.remarks && (
+                        <>
+                          <div className="my-5 border-t border-dashed border-slate-300" />
+                          <div className="text-[15px] text-slate-900">
+                            <p className="font-semibold">Remarks:</p>
+                            <p className="mt-1 whitespace-pre-wrap">{reportOrder.remarks}</p>
+                          </div>
+                        </>
+                      )}
+
+                      <div className="my-5 border-t border-dashed border-slate-300" />
+
+                      <div className="space-y-1 text-[15px] text-slate-900">
+                        <p>Viewed By: Owner</p>
+                        <p>
+                          Viewed At:{" "}
+                          {new Date().toLocaleString([], {
+                            year: "numeric",
+                            month: "short",
+                            day: "2-digit",
+                            hour: "numeric",
+                            minute: "2-digit",
+                          })}
+                        </p>
+                      </div>
+
+                      <p className="mt-6 text-center text-[20px] font-medium text-slate-900">
+                        Thank You!
+                      </p>
+                    </div>
+
+                    <div className="rounded-[24px] bg-white p-4 shadow-sm ring-1 ring-slate-200/70">
+                      <div className="mb-3">
+                        <h3 className="text-sm font-bold text-slate-900">Payment Option</h3>
+                        <p className="text-xs text-slate-500">Payment method choose garera paid mark garnu</p>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setReportPaymentMethod("cash")}
+                          className={`rounded-[18px] border py-3 text-sm font-semibold ${reportPaymentMethod === "cash" ? "border-blue-600 bg-blue-600 text-white" : "border-slate-200 bg-slate-50 text-slate-700"}`}
+                        >
+                          Cash
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setReportPaymentMethod("qr")}
+                          className={`rounded-[18px] border py-3 text-sm font-semibold ${reportPaymentMethod === "qr" ? "border-blue-600 bg-blue-600 text-white" : "border-slate-200 bg-slate-50 text-slate-700"}`}
+                        >
+                          QR
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setReportPaymentMethod("card")}
+                          className={`rounded-[18px] border py-3 text-sm font-semibold ${reportPaymentMethod === "card" ? "border-blue-600 bg-blue-600 text-white" : "border-slate-200 bg-slate-50 text-slate-700"}`}
+                        >
+                          Card
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="shrink-0 border-t border-slate-200 bg-white px-4 pb-4 pt-3">
+                  <div className="mb-3 rounded-[20px] bg-slate-900 px-4 py-3 text-white">
+                    <div className="flex items-center justify-between text-sm">
+                      <span>Selected Payment</span>
+                      <span className="font-bold">{formatPaymentMethod(reportPaymentMethod)}</span>
+                    </div>
+                    <div className="mt-2 flex items-center justify-between text-sm">
+                      <span>Bill Total</span>
+                      <span className="text-lg font-bold">Rs. {(reportOrder.order_items || []).reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.unit_price || 0), 0)}</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={downloadReceipt}
+                      className="rounded-[20px] bg-slate-200 py-3 text-sm font-bold text-slate-700"
+                    >
+                      Download
+                    </button>
+                    <button
+                      type="button"
+                      onClick={printReceipt}
+                      className="rounded-[20px] bg-slate-900 py-3 text-sm font-bold text-white"
+                    >
+                      Print
+                    </button>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={closeOrderReport}
+                      className="rounded-[20px] bg-slate-200 py-3 text-sm font-bold text-slate-700"
+                    >
+                      Close
+                    </button>
+                    <button
+                      type="button"
+                      onClick={markOrderAsPaidFromReport}
+                      disabled={markingReportPaid}
+                      className="rounded-[20px] bg-blue-600 py-3 text-sm font-bold text-white disabled:opacity-60"
+                    >
+                      {markingReportPaid ? "Marking..." : "Mark as Paid"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {selectedPaidOrder && (
+          <div className="absolute inset-0 z-[80]">
+            <div
+              className="absolute inset-0 bg-slate-950/45 backdrop-blur-[2px]"
+              onClick={closePaidOrderBill}
+            />
+
+            <div className="absolute inset-0 flex items-end justify-center">
+              <div className="relative flex h-full w-full max-w-[430px] flex-col overflow-hidden rounded-none bg-[#f8fafc] shadow-2xl">
+                <div className="shrink-0 border-b border-slate-200 bg-white px-4 pb-3 pt-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Paid Receipt</p>
+                      <h2 className="text-[22px] font-extrabold tracking-tight text-slate-900">Customer Bill</h2>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={closePaidOrderBill}
+                      className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-2xl text-slate-700 shadow-sm"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+
+                <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+                  <div className="rounded-[28px] bg-white p-5 shadow-sm ring-1 ring-slate-200/70">
+                    <div className="text-center">
+                      <p className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-400">{restaurantName || "Restaurant"}</p>
+                      <h3 className="mt-2 text-[30px] font-black tracking-tight text-slate-900">Customer Bill</h3>
+                      <p className="mt-1 text-sm text-slate-500">Order #{selectedPaidOrder.id}</p>
+                    </div>
+
+                    <div className="mt-5 grid grid-cols-2 gap-3 text-[14px] text-slate-800">
+                      <div className="rounded-2xl bg-slate-50 p-3">
+                        <p className="text-[11px] uppercase tracking-wide text-slate-400">Table</p>
+                        <p className="mt-1 font-bold text-slate-900">{selectedPaidOrder.table_number}</p>
+                      </div>
+                      <div className="rounded-2xl bg-slate-50 p-3">
+                        <p className="text-[11px] uppercase tracking-wide text-slate-400">Payment</p>
+                        <p className="mt-1 font-bold text-slate-900">{formatPaymentMethod(selectedPaidOrder.payment_method)}</p>
+                      </div>
+                      <div className="col-span-2 rounded-2xl bg-slate-50 p-3">
+                        <p className="text-[11px] uppercase tracking-wide text-slate-400">Paid At</p>
+                        <p className="mt-1 font-semibold text-slate-900">
+                          {selectedPaidOrder.paid_at ? new Date(selectedPaidOrder.paid_at).toLocaleString() : "-"}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="my-5 border-t border-dashed border-slate-300" />
+
+                    <div className="grid grid-cols-[1fr_56px_80px] items-center gap-2 text-[14px] font-bold text-slate-900">
+                      <span>Item</span>
+                      <span className="text-center">Qty</span>
+                      <span className="text-right">Amount</span>
+                    </div>
+
+                    <div className="my-4 border-t border-dashed border-slate-300" />
+
+                    <div className="space-y-3">
+                      {(selectedPaidOrder.order_items || []).length === 0 ? (
+                        <p className="text-sm text-slate-500">No order items found.</p>
+                      ) : (
+                        (selectedPaidOrder.order_items || []).map((item) => (
+                          <div
+                            key={`paid-report-item-${item.id}`}
+                            className="grid grid-cols-[1fr_56px_80px] items-start gap-2 text-[15px] text-slate-900"
+                          >
+                            <div className="min-w-0">
+                              <p className="break-words font-medium">{item.item_name}</p>
+                              <p className="text-[12px] text-slate-500">Rs. {Number(item.unit_price || 0)} each</p>
+                            </div>
+                            <span className="text-center">{item.quantity}</span>
+                            <span className="text-right font-semibold">
+                              Rs. {Number(item.quantity || 0) * Number(item.unit_price || 0)}
+                            </span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+
+                    {selectedPaidOrder.remarks && (
+                      <>
+                        <div className="my-5 border-t border-dashed border-slate-300" />
+                        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-[14px] text-slate-900">
+                          <p className="font-semibold">Remarks</p>
+                          <p className="mt-1 whitespace-pre-wrap">{selectedPaidOrder.remarks}</p>
+                        </div>
+                      </>
+                    )}
+
+                    <div className="my-5 border-t border-dashed border-slate-300" />
+
+                    <div className="space-y-2 rounded-[22px] bg-slate-900 px-4 py-4 text-white">
+                      <div className="flex items-center justify-between text-sm">
+                        <span>Items</span>
+                        <span className="font-bold">
+                          {(selectedPaidOrder.order_items || []).reduce(
+                            (sum, item) => sum + Number(item.quantity || 0),
+                            0
+                          )}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-base">
+                        <span>Total</span>
+                        <span className="text-xl font-extrabold">Rs. {getOrderTotal(selectedPaidOrder)}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="shrink-0 border-t border-slate-200 bg-white px-4 pb-4 pt-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={downloadPaidOrderBill}
+                      className="rounded-[20px] bg-slate-200 py-3 text-sm font-bold text-slate-700"
+                    >
+                      Download
+                    </button>
+                    <button
+                      type="button"
+                      onClick={printReceipt}
+                      className="rounded-[20px] bg-slate-900 py-3 text-sm font-bold text-white"
+                    >
+                      Print
+                    </button>
+                  </div>
+
+                  <div className="mt-3">
+                    <button
+                      type="button"
+                      onClick={closePaidOrderBill}
+                      className="w-full rounded-[20px] bg-blue-600 py-3 text-sm font-bold text-white"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showQR && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 px-4">
+            <div className="w-full max-w-sm rounded-[28px] bg-white p-5 shadow-2xl">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900">QR Access</h3>
+                  <p className="mt-1 text-xs text-slate-500">Mini app access QR</p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowQR(false)}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-lg text-slate-600"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="mt-5 rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+                <div className="flex justify-center">
+                  <QRCodeCanvas
+                    id="mini-qr-canvas"
+                    value={miniQrLink || "about:blank"}
+                    size={220}
+                    level="H"
+                    includeMargin
+                    bgColor="#ffffff"
+                    fgColor="#0f172a"
+                  />
+                </div>
+
+                <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-3 py-3">
+                  <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    Mini Link
+                  </p>
+                  <p className="break-all text-xs text-slate-700">{miniQrLink || "Link not ready"}</p>
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={copyMiniQrLink}
+                    className="rounded-2xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white shadow-[0_10px_25px_rgba(37,99,235,0.28)]"
+                  >
+                    Copy Link
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={downloadMiniQr}
+                    className="rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white shadow-[0_10px_25px_rgba(5,150,105,0.28)]"
+                  >
+                    Download QR
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
     <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] z-30 rounded-[15px] border border-white/60 bg-white shadow-[0_18px_50px_rgba(15,23,42,0.16)]">
-          <div className="grid grid-cols-5 gap-2 px-2.5 pt-0.5 pb-4">
+          <div className="grid grid-cols-4 gap-2 px-2.5 pt-0.5 pb-4">
             <button
               type="button"
               onClick={() => changeView("dashboard")}
@@ -3671,42 +5222,32 @@ if (!ownerUnlocked) {
 
             <button
               type="button"
+              onClick={() => changeView("order")}
+              className={bottomNavButtonClass("order")}
+            >
+              <span className="text-base">🍽️</span>
+              <span>Order</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => changeView("kitchen")}
+              className={bottomNavButtonClass("kitchen")}
+            >
+              <span className="text-base">🍳</span>
+              <span>Kitchen</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => changeView("salesOverview")}
               className={bottomNavButtonClass("salesOverview")}
             >
               <span className="text-base">💹</span>
               <span>Sales</span>
             </button>
-
-            <button
-              type="button"
-              onClick={() => changeView("report")}
-              className={bottomNavButtonClass("report")}
-            >
-              <span className="text-base">📝</span>
-              <span>Report</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => changeView("billing")}
-              className={bottomNavButtonClass("billing")}
-            >
-              <span className="text-base">💳</span>
-              <span>Billing</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => changeView("paymentHistory")}
-              className={bottomNavButtonClass("paymentHistory")}
-            >
-              <span className="text-base">🧾</span>
-              <span>History</span>
-            </button>
           </div>
         </div>
-        )}
       </div>
     </main>
   );

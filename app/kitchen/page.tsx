@@ -30,16 +30,11 @@ function KitchenPageContent() {
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [restaurantName, setRestaurantName] = useState("");
 useEffect(() => {
-  if (typeof window === "undefined") return;
+  if (!restaurantId) return;
 
-  const params = new URLSearchParams(window.location.search);
-  const id = params.get("id");
-
-  if (!id || !/^\d+$/.test(id)) return;
-
-  localStorage.setItem("activeRestaurantId", id);
-  localStorage.setItem("activePanel", "kitchen");
-}, []);
+  localStorage.setItem("lastRestaurantId", String(restaurantId));
+  localStorage.setItem("lastPanel", "kitchen");
+}, [restaurantId]);
   const [showSplash, setShowSplash] = useState(true);
 
   const [password, setPassword] = useState("");
