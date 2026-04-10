@@ -200,6 +200,18 @@ function OwnerPageContent() {
   const [reportFromDate, setReportFromDate] = useState(getTodayLocalDate());
   const [reportToDate, setReportToDate] = useState(getTodayLocalDate());
   const [showSplash, setShowSplash] = useState(true);
+  const [toast, setToast] = useState<{
+    message: string;
+    kind: "success" | "error" | "info";
+  } | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const confirmResolverRef = useRef<((value: boolean) => void) | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    message: string;
+    confirmText: string;
+    cancelText: string;
+  } | null>(null);
+
   useEffect(() => {
   const timer = setTimeout(() => {
     setShowSplash(false);
@@ -207,6 +219,92 @@ function OwnerPageContent() {
 
   return () => clearTimeout(timer);
 }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
+
+  function showToast(message: string, kind: "success" | "error" | "info" = "info") {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+    }
+
+    setToast({ message, kind });
+
+    toastTimerRef.current = setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, 2200);
+  }
+
+  function askConfirm(
+    message: string,
+    confirmText = "Confirm",
+    cancelText = "Cancel"
+  ) {
+    return new Promise<boolean>((resolve) => {
+      confirmResolverRef.current = resolve;
+      setConfirmDialog({ message, confirmText, cancelText });
+    });
+  }
+
+  function handleConfirmResponse(value: boolean) {
+    const resolver = confirmResolverRef.current;
+    confirmResolverRef.current = null;
+    setConfirmDialog(null);
+    if (resolver) resolver(value);
+  }
+
+  function renderFeedbackOverlays() {
+    return (
+      <>
+        {toast && (
+          <div className="pointer-events-none fixed inset-x-0 top-4 z-[9999] flex justify-center px-4">
+            <div
+              className={`pointer-events-auto rounded-2xl px-4 py-3 text-sm font-semibold text-white shadow-[0_18px_50px_rgba(15,23,42,0.25)] ${
+                toast.kind === "success"
+                  ? "bg-emerald-600"
+                  : toast.kind === "error"
+                    ? "bg-rose-600"
+                    : "bg-slate-900"
+              }`}
+            >
+              {toast.message}
+            </div>
+          </div>
+        )}
+
+        {confirmDialog && (
+          <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-slate-900/50 px-4">
+            <div className="w-full max-w-sm rounded-[28px] bg-white p-5 shadow-[0_24px_80px_rgba(15,23,42,0.30)]">
+              <h3 className="text-lg font-bold text-slate-900">Please confirm</h3>
+              <p className="mt-2 text-sm leading-6 text-slate-600">{confirmDialog.message}</p>
+              <div className="mt-5 grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => handleConfirmResponse(false)}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700"
+                >
+                  {confirmDialog.cancelText}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleConfirmResponse(true)}
+                  className="rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white"
+                >
+                  {confirmDialog.confirmText}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </>
+    );
+  }
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -269,7 +367,7 @@ function OwnerPageContent() {
 
   function openQrAccess() {
     if (!restaurantId) {
-      alert("Invalid restaurant link");
+      showToast("Invalid restaurant link", "error");
       return;
     }
 
@@ -279,28 +377,28 @@ function OwnerPageContent() {
 
   async function copyMiniQrLink() {
     if (!miniQrLink) {
-      alert("Link not ready");
+      showToast("Link not ready", "error");
       return;
     }
 
     try {
       await navigator.clipboard.writeText(miniQrLink);
-      alert("Link copied");
+      showToast("Link copied", "success");
     } catch {
-      alert("Failed to copy link");
+      showToast("Failed to copy link", "error");
     }
   }
 
   function downloadMiniQr() {
     if (!restaurantId) {
-      alert("Invalid restaurant link");
+      showToast("Invalid restaurant link", "error");
       return;
     }
 
     const canvas = document.getElementById("mini-qr-canvas") as HTMLCanvasElement | null;
 
     if (!canvas) {
-      alert("QR not found");
+      showToast("QR not found", "error");
       return;
     }
 
@@ -314,7 +412,7 @@ function OwnerPageContent() {
   }
   function openTakeOrderModal() {
     if (!restaurantId) {
-      alert("Invalid restaurant link");
+      showToast("Invalid restaurant link", "error");
       return;
     }
 
@@ -383,22 +481,22 @@ function OwnerPageContent() {
 
   async function submitTakeOrder() {
     if (!restaurantId) {
-      alert("Invalid restaurant link");
+      showToast("Invalid restaurant link", "error");
       return;
     }
 
     if (!takeOrderTableNumber.trim()) {
-      alert("Please enter table number");
+      showToast("Please enter table number", "error");
       return;
     }
 
     if (!/^\d+$/.test(takeOrderTableNumber.trim())) {
-      alert("Please enter valid table number");
+      showToast("Please enter valid table number", "error");
       return;
     }
 
     if (takeOrderItems.length === 0) {
-      alert("Please add at least one item");
+      showToast("Please add at least one item", "error");
       return;
     }
 
@@ -421,7 +519,7 @@ function OwnerPageContent() {
 
       if (updateOrderError) {
         setSubmittingTakeOrder(false);
-        alert("Failed to update order");
+        showToast("Failed to update order", "error");
         return;
       }
 
@@ -432,7 +530,7 @@ function OwnerPageContent() {
 
       if (deleteItemsError) {
         setSubmittingTakeOrder(false);
-        alert("Failed to refresh order items");
+        showToast("Failed to refresh order items", "error");
         return;
       }
 
@@ -451,14 +549,14 @@ function OwnerPageContent() {
       setSubmittingTakeOrder(false);
 
       if (insertItemsError) {
-        alert("Failed to update order items");
+        showToast("Failed to update order items", "error");
         return;
       }
 
       resetTakeOrderForm();
       setShowTakeOrderModal(false);
       await fetchOrders();
-      alert("Order updated successfully");
+      showToast("Order updated successfully", "success");
       return;
     }
 
@@ -475,7 +573,7 @@ function OwnerPageContent() {
 
     if (orderError || !orderData) {
       setSubmittingTakeOrder(false);
-      alert("Failed to create order");
+      showToast("Failed to create order", "error");
       return;
     }
 
@@ -495,7 +593,7 @@ function OwnerPageContent() {
 
     if (orderItemsError) {
       await supabase.from("orders").delete().eq("id", orderData.id);
-      alert("Failed to save order items");
+      showToast("Failed to save order items", "error");
       return;
     }
 
@@ -503,7 +601,7 @@ function OwnerPageContent() {
     setShowTakeOrderModal(false);
 
     await fetchOrders();
-    alert("Order sent to kitchen");
+    showToast("Order sent to kitchen", "success");
   }
 
   function getOrderDisplayStatus(order: OrderRow): KitchenStatusKey {
@@ -517,13 +615,13 @@ function OwnerPageContent() {
 
   async function handleEditOrder(order: OrderRow) {
     if (order.is_paid) {
-      alert("Paid order edit garna mildaina");
+      showToast("Paid order edit garna mildaina", "error");
       return;
     }
 
     const currentStatus = getOrderDisplayStatus(order);
     if (currentStatus === "preparing" || currentStatus === "ready") {
-      alert("Preparing or ready bhayeko order edit garna mildaina");
+      showToast("Preparing or ready bhayeko order edit garna mildaina", "error");
       return;
     }
 
@@ -549,28 +647,28 @@ function OwnerPageContent() {
 
   async function handleCancelOrder(orderId: number) {
     if (!restaurantId) {
-      alert("Invalid restaurant link");
+      showToast("Invalid restaurant link", "error");
       return;
     }
 
     const targetOrder = orders.find((order) => order.id === orderId);
     if (!targetOrder) {
-      alert("Order not found");
+      showToast("Order not found", "error");
       return;
     }
 
     if (targetOrder.is_paid) {
-      alert("Paid order cancel garna mildaina");
+      showToast("Paid order cancel garna mildaina", "error");
       return;
     }
 
     const currentStatus = getOrderDisplayStatus(targetOrder);
     if (currentStatus === "preparing" || currentStatus === "ready") {
-      alert("Preparing or ready bhayeko order cancel garna mildaina");
+      showToast("Preparing or ready bhayeko order cancel garna mildaina", "error");
       return;
     }
 
-    const confirmCancel = confirm(`Cancel order #${orderId} for table ${targetOrder.table_number}?`);
+    const confirmCancel = await askConfirm(`Cancel order #${orderId} for table ${targetOrder.table_number}?`, "Yes, cancel", "Keep");
     if (!confirmCancel) return;
 
     const { error: deleteItemsError } = await supabase
@@ -579,7 +677,7 @@ function OwnerPageContent() {
       .eq("order_id", orderId);
 
     if (deleteItemsError) {
-      alert("Failed to cancel order items");
+      showToast("Failed to cancel order items", "error");
       return;
     }
 
@@ -590,7 +688,7 @@ function OwnerPageContent() {
       .eq("restaurant_id", restaurantId);
 
     if (deleteOrderError) {
-      alert("Failed to cancel order");
+      showToast("Failed to cancel order", "error");
       return;
     }
 
@@ -600,13 +698,13 @@ function OwnerPageContent() {
     }
 
     await fetchOrders();
-    alert("Order cancelled");
+    showToast("Order cancelled", "success");
   }
 
 
   function openOrderReport(order: OrderRow) {
     if (order.is_paid) {
-      alert("Yo order already paid chha");
+      showToast("Yo order already paid chha", "error");
       return;
     }
 
@@ -799,11 +897,11 @@ function printReceipt() {
 
   async function markOrderAsPaidFromReport() {
     if (!restaurantId || !reportOrder) {
-      alert("Invalid order");
+      showToast("Invalid order", "error");
       return;
     }
 
-    const confirmPay = confirm(`Table ${reportOrder.table_number} ko order #${reportOrder.id} lai ${reportPaymentMethod.toUpperCase()} bata paid mark garne?`);
+    const confirmPay = await askConfirm(`Table ${reportOrder.table_number} ko order #${reportOrder.id} lai ${reportPaymentMethod.toUpperCase()} bata paid mark garne?`, "Mark paid", "Back");
     if (!confirmPay) return;
 
     setMarkingReportPaid(true);
@@ -821,14 +919,14 @@ function printReceipt() {
     setMarkingReportPaid(false);
 
     if (error) {
-      alert("Failed to mark order as paid");
+      showToast("Failed to mark order as paid", "error");
       return;
     }
 
     await fetchOrders();
     setReportOrder(null);
     setReportPaymentMethod("cash");
-    alert("Order marked as paid");
+    showToast("Order marked as paid", "success");
   }
 
   async function fetchRestaurant(showLoader = false) {
@@ -1007,27 +1105,27 @@ function printReceipt() {
     e.preventDefault();
 
     if (!restaurantId) {
-      alert("Invalid restaurant link");
+      showToast("Invalid restaurant link", "error");
       return;
     }
 
     if (!setupRestaurantName.trim()) {
-      alert("Please enter restaurant name");
+      showToast("Please enter restaurant name", "error");
       return;
     }
 
     if (!setupOwnerPassword.trim()) {
-      alert("Please enter owner password");
+      showToast("Please enter owner password", "error");
       return;
     }
 
     if (!setupWaiterPassword.trim()) {
-      alert("Please enter waiter password");
+      showToast("Please enter waiter password", "error");
       return;
     }
 
     if (!setupKitchenPassword.trim()) {
-      alert("Please enter kitchen password");
+      showToast("Please enter kitchen password", "error");
       return;
     }
 
@@ -1047,7 +1145,7 @@ function printReceipt() {
     setSettingUpRestaurant(false);
 
     if (error) {
-      alert("Failed to complete restaurant setup");
+      showToast("Failed to complete restaurant setup", "error");
       return;
     }
 
@@ -1057,13 +1155,13 @@ function printReceipt() {
     setNewWaiterPassword(setupWaiterPassword.trim());
     setNewKitchenPassword(setupKitchenPassword.trim());
     setIsSetupDone(true);
-    alert("Restaurant setup completed");
+    showToast("Restaurant setup completed", "success");
     fetchRestaurant();
   }
 
   function unlockOwner() {
     if (!ownerPasswordFromDB || ownerPasswordFromDB === "setup_pending") {
-      alert("Owner password not found. Please complete setup first.");
+      showToast("Owner password not found. Please complete setup first.", "error");
       return;
     }
 
@@ -1076,9 +1174,9 @@ function printReceipt() {
         localStorage.setItem(`owner_logged_in_${restaurantId}`, "true");
       }
 
-      alert("Owner access granted");
+      showToast("Owner access granted", "success");
     } else {
-      alert("Wrong password");
+      showToast("Wrong password", "error");
     }
   }
 
@@ -1105,17 +1203,17 @@ function printReceipt() {
     e.preventDefault();
 
     if (!restaurantId) {
-      alert("Invalid restaurant link");
+      showToast("Invalid restaurant link", "error");
       return;
     }
 
     if (!newItemName.trim()) {
-      alert("Please enter item name");
+      showToast("Please enter item name", "error");
       return;
     }
 
     if (!newItemPrice.trim() || Number(newItemPrice) <= 0) {
-      alert("Please enter valid price");
+      showToast("Please enter valid price", "error");
       return;
     }
 
@@ -1128,14 +1226,14 @@ function printReceipt() {
     ]);
 
     if (error) {
-      alert("Failed to add menu item");
+      showToast("Failed to add menu item", "error");
       return;
     }
 
     setNewItemName("");
     setNewItemPrice("");
     fetchMenu();
-    alert("Menu item added");
+    showToast("Menu item added", "success");
   }
 
   function startEditMenuItem(menu: MenuItem) {
@@ -1152,17 +1250,17 @@ function printReceipt() {
 
   async function saveEditMenuItem(id: number) {
     if (!restaurantId) {
-      alert("Invalid restaurant link");
+      showToast("Invalid restaurant link", "error");
       return;
     }
 
     if (!editingItemName.trim()) {
-      alert("Please enter item name");
+      showToast("Please enter item name", "error");
       return;
     }
 
     if (!editingItemPrice.trim() || Number(editingItemPrice) <= 0) {
-      alert("Please enter valid price");
+      showToast("Please enter valid price", "error");
       return;
     }
 
@@ -1176,22 +1274,22 @@ function printReceipt() {
       .eq("restaurant_id", restaurantId);
 
     if (error) {
-      alert("Failed to update menu item");
+      showToast("Failed to update menu item", "error");
       return;
     }
 
     cancelEditMenuItem();
     fetchMenu();
-    alert("Menu item updated");
+    showToast("Menu item updated", "success");
   }
 
   async function deleteMenuItem(id: number) {
     if (!restaurantId) {
-      alert("Invalid restaurant link");
+      showToast("Invalid restaurant link", "error");
       return;
     }
 
-    const confirmDelete = confirm("Delete this menu item?");
+    const confirmDelete = await askConfirm("Delete this menu item?", "Delete", "Keep");
     if (!confirmDelete) return;
 
     const { error } = await supabase
@@ -1201,12 +1299,12 @@ function printReceipt() {
       .eq("restaurant_id", restaurantId);
 
     if (error) {
-      alert("Failed to delete menu item");
+      showToast("Failed to delete menu item", "error");
       return;
     }
 
     fetchMenu();
-    alert("Menu item deleted");
+    showToast("Menu item deleted", "success");
   }
 
   function getLocalDateString(dateValue: string) {
@@ -1748,7 +1846,7 @@ async function updateKitchenTableStatus(
   nextStatus: KitchenStatusKey
 ) {
   if (!restaurantId) {
-    alert("Invalid restaurant link");
+    showToast("Invalid restaurant link", "error");
     return;
   }
 
@@ -1759,7 +1857,7 @@ async function updateKitchenTableStatus(
   );
 
   if (targetOrders.length === 0) {
-    alert("No active kitchen order found");
+    showToast("No active kitchen order found", "error");
     return;
   }
 
@@ -1772,7 +1870,7 @@ async function updateKitchenTableStatus(
     .eq("restaurant_id", restaurantId);
 
   if (orderError) {
-    alert("Failed to update order status");
+    showToast("Failed to update order status", "error");
     return;
   }
 
@@ -1782,7 +1880,7 @@ async function updateKitchenTableStatus(
     .in("order_id", orderIds);
 
   if (itemError) {
-    alert("Failed to update item status");
+    showToast("Failed to update item status", "error");
     return;
   }
 
@@ -1819,14 +1917,14 @@ async function updateKitchenTableStatus(
     paymentMethod: "cash" | "qr" | "card"
   ) {
     if (!restaurantId) {
-      alert("Invalid restaurant link");
+      showToast("Invalid restaurant link", "error");
       return;
     }
 
     const normalizedTableNo = tableNo.trim();
 
     if (!normalizedTableNo) {
-      alert("Invalid table number");
+      showToast("Invalid table number", "error");
       return;
     }
 
@@ -1837,12 +1935,14 @@ async function updateKitchenTableStatus(
     );
 
     if (unpaidOrdersForTable.length === 0) {
-      alert("No unpaid orders found for this table");
+      showToast("No unpaid orders found for this table", "error");
       return;
     }
 
-    const confirmPay = confirm(
-      `Mark all unpaid orders for table ${normalizedTableNo} as paid with ${paymentMethod.toUpperCase()}?`
+    const confirmPay = await askConfirm(
+      `Mark all unpaid orders for table ${normalizedTableNo} as paid with ${paymentMethod.toUpperCase()}?`,
+      "Mark paid",
+      "Back"
     );
     if (!confirmPay) return;
 
@@ -1863,22 +1963,22 @@ async function updateKitchenTableStatus(
     setMarkingPaidTable(null);
 
     if (error) {
-      alert("Failed to mark orders as paid");
+      showToast("Failed to mark orders as paid", "error");
       return;
     }
 
     await fetchOrders();
-    alert(`Table ${normalizedTableNo} marked as paid`);
+    showToast(`Table ${normalizedTableNo} marked as paid`, "success");
   }
 
   async function savePasswords() {
     if (!restaurantId) {
-      alert("Invalid restaurant link");
+      showToast("Invalid restaurant link", "error");
       return;
     }
 
     if (!newOwnerPassword.trim()) {
-      alert("Please enter owner password");
+      showToast("Please enter owner password", "error");
       return;
     }
 
@@ -1894,12 +1994,12 @@ async function updateKitchenTableStatus(
     setSavingPasswords(false);
 
     if (error) {
-      alert("Failed to update owner password");
+      showToast("Failed to update owner password", "error");
       return;
     }
 
     setOwnerPasswordFromDB(newOwnerPassword.trim());
-    alert("Owner password updated successfully");
+    showToast("Owner password updated successfully", "success");
   }
 
   function formatPaymentMethod(method?: string | null) {
@@ -4137,13 +4237,16 @@ function renderBillingView() {
 
   if (!restaurantId) {
     return (
-      <main className="min-h-screen bg-slate-200 flex justify-center px-3">
+      <>
+        {renderFeedbackOverlays()}
+        <main className="min-h-screen bg-slate-200 flex justify-center px-3">
         <div className={`${shellClass} flex items-center justify-center p-4`}>
           <div className="rounded-3xl bg-white p-5 text-center text-sm font-medium text-red-600 shadow border border-slate-200">
             Invalid restaurant link. Please use the correct restaurant URL.
           </div>
         </div>
       </main>
+      </>
     );
   }
 if (showSplash) {
@@ -4151,31 +4254,39 @@ if (showSplash) {
 }
   if (checkingRestaurant) {
     return (
-      <main className="min-h-screen bg-slate-200 flex justify-center px-3">
+      <>
+        {renderFeedbackOverlays()}
+        <main className="min-h-screen bg-slate-200 flex justify-center px-3">
         <div className={`${shellClass} flex items-center justify-center p-4`}>
           <div className="rounded-3xl bg-white p-5 text-center text-sm font-medium shadow border border-slate-200">
             Loading...
           </div>
         </div>
       </main>
+      </>
     );
   }
 
   if (!restaurantExists) {
     return (
-      <main className="min-h-screen bg-slate-200 flex justify-center px-3">
+      <>
+        {renderFeedbackOverlays()}
+        <main className="min-h-screen bg-slate-200 flex justify-center px-3">
         <div className={`${shellClass} flex items-center justify-center p-4`}>
           <div className="rounded-3xl bg-white p-5 text-center text-sm font-medium text-red-600 shadow border border-slate-200">
             Restaurant link not found. Please use the correct restaurant URL.
           </div>
         </div>
       </main>
+      </>
     );
   }
 
   if (!isSetupDone) {
     return (
-      <main className="min-h-screen bg-slate-200 flex justify-center px-3">
+      <>
+        {renderFeedbackOverlays()}
+        <main className="min-h-screen bg-slate-200 flex justify-center px-3">
         <div className={`${shellClass} p-3`}>
           <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm space-y-4">
             <div className="text-center">
@@ -4249,12 +4360,15 @@ if (showSplash) {
           </div>
         </div>
       </main>
+      </>
     );
   }
 
 if (!ownerUnlocked) {
   return (
-    <PanelLoginCard
+    <>
+      {renderFeedbackOverlays()}
+      <PanelLoginCard
       restaurantName={restaurantName}
       panelTitle="Owner Panel"
       panelDescription="Secure access to billing, reports and live restaurant activity."
@@ -4266,11 +4380,14 @@ if (!ownerUnlocked) {
       buttonText="Unlock Owner Panel"
       theme="owner"
     />
+    </>
   );
 }
 
   return (
-    <main className="min-h-screen bg-slate-200 flex justify-center px-3">
+    <>
+      {renderFeedbackOverlays()}
+      <main className="min-h-screen bg-slate-200 flex justify-center px-3">
       <div className={`${shellClass} h-screen overflow-hidden relative`}>
         <div className="flex h-full flex-col px-3">
           <div className="shrink-0 pt-3 pb-3">
@@ -5250,6 +5367,7 @@ if (!ownerUnlocked) {
         </div>
       </div>
     </main>
+    </>
   );
 }
 
