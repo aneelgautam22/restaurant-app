@@ -166,6 +166,9 @@ function OwnerPageContent() {
   const [newWaiterPassword, setNewWaiterPassword] = useState("");
   const [newKitchenPassword, setNewKitchenPassword] = useState("");
   const [savingPasswords, setSavingPasswords] = useState(false);
+  const [profitPercent, setProfitPercent] = useState<number>(40);
+  const [savingProfitPercent, setSavingProfitPercent] = useState(false);
+  const [showProfitSetupInMenuItems, setShowProfitSetupInMenuItems] = useState(false);
   const [passwordsLoaded, setPasswordsLoaded] = useState(false);
 
   const [hoveredTrendPoint, setHoveredTrendPoint] = useState<HoveredTrendPoint>(null);
@@ -992,6 +995,7 @@ function printReceipt() {
     const fetchedOwnerPassword = restaurantData.owner_password || "";
     const fetchedWaiterPassword = restaurantData.waiter_password || "";
     const fetchedKitchenPassword = restaurantData.kitchen_password || "";
+    const fetchedProfitPercent = Number(restaurantData.profit_percent ?? 40);
 
     const setupComplete =
       restaurantData.is_setup_done === true ||
@@ -1004,6 +1008,7 @@ function printReceipt() {
 
     setRestaurantName(fetchedRestaurantName || "Restaurant");
     setOwnerPasswordFromDB(fetchedOwnerPassword);
+    setProfitPercent(Number.isFinite(fetchedProfitPercent) ? fetchedProfitPercent : 40);
     if (!passwordsLoaded) {
   setNewOwnerPassword(fetchedOwnerPassword);
   setNewWaiterPassword(fetchedWaiterPassword);
@@ -1545,6 +1550,51 @@ const todayPaymentBreakdown = useMemo(() => {
     }, 0);
   }, [yesterdayOrders]);
 
+  const todayProfit = useMemo(() => {
+    return Math.round(totalRevenueToday * (profitPercent / 100));
+  }, [totalRevenueToday, profitPercent]);
+
+  const yesterdayProfit = useMemo(() => {
+    return Math.round(totalRevenueYesterday * (profitPercent / 100));
+  }, [totalRevenueYesterday, profitPercent]);
+
+  const profitVsYesterday = useMemo(() => {
+    const diff = todayProfit - yesterdayProfit;
+
+    if (yesterdayProfit <= 0) {
+      if (todayProfit > 0) {
+        return {
+          text: `+Rs. ${diff} vs yesterday`,
+          className: "text-emerald-600",
+        };
+      }
+
+      return {
+        text: "Rs. 0 vs yesterday",
+        className: "text-slate-500",
+      };
+    }
+
+    if (diff > 0) {
+      return {
+        text: `+Rs. ${diff} vs yesterday`,
+        className: "text-emerald-600",
+      };
+    }
+
+    if (diff < 0) {
+      return {
+        text: `-Rs. ${Math.abs(diff)} vs yesterday`,
+        className: "text-rose-600",
+      };
+    }
+
+    return {
+      text: "Rs. 0 vs yesterday",
+      className: "text-slate-500",
+    };
+  }, [todayProfit, yesterdayProfit]);
+
   const salesVsYesterday = useMemo(() => {
     const diff = totalRevenueToday - totalRevenueYesterday;
 
@@ -2083,6 +2133,37 @@ async function updateKitchenTableStatus(
     showToast("Owner password updated successfully", "success");
   }
 
+
+  async function saveProfitPercent() {
+    if (!restaurantId) {
+      showToast("Invalid restaurant link", "error");
+      return;
+    }
+
+    if (!Number.isFinite(profitPercent) || profitPercent < 0 || profitPercent > 100) {
+      showToast("Profit % must be between 0 and 100", "error");
+      return;
+    }
+
+    setSavingProfitPercent(true);
+
+    const { error } = await supabase
+      .from("restaurants")
+      .update({
+        profit_percent: Number(profitPercent),
+      })
+      .eq("id", restaurantId);
+
+    setSavingProfitPercent(false);
+
+    if (error) {
+      showToast("Failed to update profit percent", "error");
+      return;
+    }
+
+    showToast("Profit percent updated successfully", "success");
+  }
+
   function formatPaymentMethod(method?: string | null) {
     if (!method) return "-";
     if (method === "qr") return "QR";
@@ -2229,8 +2310,9 @@ async function updateKitchenTableStatus(
       return sum + total;
     }, 0);
 
+    const totalProfit = Math.round(totalSales * (profitPercent / 100));
+    const previousProfit = Math.round(previousSales * (profitPercent / 100));
     const totalOrders = selectedSalesOrders.length;
-
     const avgOrderValue = totalOrders > 0 ? Math.round(totalSales / totalOrders) : 0;
 
     const itemMap: Record<string, SalesItem> = {};
@@ -2281,16 +2363,54 @@ async function updateKitchenTableStatus(
       }
     }
 
+    const previousPeriodLabel =
+      salesPeriod === "day"
+        ? "yesterday"
+        : salesPeriod === "week"
+        ? "previous week"
+        : "previous month";
+
+    const periodProfitLabel =
+      salesPeriod === "day"
+        ? "Today Profit"
+        : salesPeriod === "week"
+        ? "Week Profit"
+        : "Month Profit";
+
+    let profitComparisonText = `Rs. 0 vs ${previousPeriodLabel}`;
+    let profitComparisonClass = "text-slate-500";
+
+    if (previousProfit <= 0) {
+      if (totalProfit > 0) {
+        profitComparisonText = `+Rs. ${totalProfit} vs ${previousPeriodLabel}`;
+        profitComparisonClass = "text-emerald-600";
+      }
+    } else {
+      const profitDiff = totalProfit - previousProfit;
+
+      if (profitDiff > 0) {
+        profitComparisonText = `+Rs. ${profitDiff} vs ${previousPeriodLabel}`;
+        profitComparisonClass = "text-emerald-600";
+      } else if (profitDiff < 0) {
+        profitComparisonText = `-Rs. ${Math.abs(profitDiff)} vs ${previousPeriodLabel}`;
+        profitComparisonClass = "text-rose-600";
+      }
+    }
+
     return {
       totalSales,
+      totalProfit,
       totalOrders,
       avgOrderValue,
       topItems,
       bestSeller: topItems[0]?.item_name || "-",
       comparisonText,
       comparisonClass,
+      profitComparisonText,
+      profitComparisonClass,
+      periodProfitLabel,
     };
-  }, [selectedSalesOrders, previousSalesOrders]);
+  }, [selectedSalesOrders, previousSalesOrders, profitPercent, salesPeriod]);
 
   const selectedSalesTrend = useMemo(() => {
     const now = new Date();
@@ -3105,27 +3225,13 @@ function renderDashboardView() {
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <button
-              type="button"
-              onClick={() => setKitchenStatusExpanded((prev) => !prev)}
-              className="rounded-[20px] border border-slate-200 bg-white px-4 py-3 text-left shadow-sm"
-            >
-              <p className="text-[11px] font-medium text-slate-500">🍳 Kitchen Status</p>
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-[10px] font-semibold text-slate-700">
-                  <span className="h-2 w-2 rounded-full bg-slate-400" />
-                  {kitchenStatusSummary.pending}
-                </span>
-                <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold text-amber-700">
-                  <span className="h-2 w-2 rounded-full bg-amber-500" />
-                  {kitchenStatusSummary.preparing}
-                </span>
-                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-semibold text-emerald-700">
-                  <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                  {kitchenStatusSummary.ready}
-                </span>
-              </div>
-            </button>
+            <div className="rounded-[20px] border border-emerald-200 bg-emerald-50 px-4 py-3 shadow-sm">
+              <p className="text-[11px] font-medium text-slate-500">💸 Today Profit</p>
+              <p className="mt-1 text-lg font-bold text-slate-900">Rs. {todayProfit}</p>
+              <p className={`mt-1 text-[11px] font-semibold ${profitVsYesterday.className}`}>
+                {profitVsYesterday.text}
+              </p>
+                          </div>
 
             <div className="rounded-[20px] border border-slate-200 bg-white px-4 py-3 shadow-sm">
               <div className="flex items-center justify-between text-[12px]">
@@ -3352,18 +3458,32 @@ function renderDashboardView() {
               </p>
             </div>
 
-            {statCard(
-              "🧾 Orders",
-              selectedSalesSummary.totalOrders,
-              "🧾",
-              "bg-blue-50 border border-blue-200"
-            )}
-            {statCard(
-              "📦 Avg Order",
-              `Rs. ${selectedSalesSummary.avgOrderValue}`,
-              "📦",
-              "bg-white border border-slate-200"
-            )}
+            <div className="rounded-[22px] border border-green-200 bg-green-50 p-3.5 shadow-sm">
+              <p className="text-[11px] font-medium text-slate-500">💸 {selectedSalesSummary.periodProfitLabel}</p>
+              <p className="mt-1 text-lg font-bold text-slate-900">
+                Rs. {selectedSalesSummary.totalProfit}
+              </p>
+              <p className={`mt-1 text-[11px] font-semibold ${selectedSalesSummary.profitComparisonClass}`}>
+                {selectedSalesSummary.profitComparisonText}
+              </p>
+                          </div>
+
+            <div className="rounded-[24px] border border-slate-200 bg-white p-3.5 shadow-[0_10px_28px_rgba(15,23,42,0.07)]">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-medium text-slate-500">📦 Avg Order</p>
+                  <p className="mt-1 break-words text-base font-bold text-slate-900">
+                    Rs. {selectedSalesSummary.avgOrderValue}
+                  </p>
+                  <p className="mt-1 text-[11px] font-medium text-slate-500">
+                    🧾 Orders: {selectedSalesSummary.totalOrders}
+                  </p>
+                </div>
+                <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-2xl bg-slate-100 text-sm">
+                  📦
+                </span>
+              </div>
+            </div>
             {statCard(
               "🔥 Best Seller",
               selectedSalesSummary.bestSeller,
@@ -4109,7 +4229,59 @@ function renderBillingView() {
   function renderMenuItemsPopup() {
     return (
       <div className="space-y-4 pb-4">
-        {sectionTitle("Menu Items", "Add, edit and delete restaurant menu", "🍽️")}
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3.5">
+            <div className="shrink-0">{iconBubble("🍽️", "bg-blue-50")}</div>
+            <div>
+              <h2 className="text-[17px] font-extrabold tracking-tight text-slate-900">Menu Items</h2>
+              <p className="text-xs leading-5 text-slate-500">Add, edit and delete restaurant menu</p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setShowProfitSetupInMenuItems((prev) => !prev)}
+            className={`shrink-0 rounded-2xl px-3 py-2 text-xs font-bold transition ${
+              showProfitSetupInMenuItems
+                ? "bg-emerald-600 text-white shadow-sm"
+                : "border border-slate-200 bg-white text-slate-700"
+            }`}
+          >
+            Profit % Setup
+          </button>
+        </div>
+
+        {showProfitSetupInMenuItems && (
+          <div className="rounded-[26px] border border-emerald-200 bg-emerald-50 p-4 shadow-sm space-y-4">
+            <div className="rounded-[22px] border border-emerald-200 bg-white p-4">
+              <label className="mb-2 block text-sm font-semibold text-slate-700">Profit Percent</label>
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="0.01"
+                value={profitPercent}
+                onChange={(e) => setProfitPercent(Number(e.target.value))}
+                placeholder="Enter profit percent"
+                className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3"
+              />
+              <p className="mt-2 text-xs text-slate-500">
+                Today profit will be calculated from this value.
+              </p>
+            </div>
+
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={saveProfitPercent}
+                disabled={savingProfitPercent}
+                className={`rounded-2xl px-4 py-3 text-sm font-bold text-white ${savingProfitPercent ? "bg-slate-400" : "bg-emerald-600"}`}
+              >
+                {savingProfitPercent ? "Saving..." : "Save Profit %"}
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm space-y-4">
           <form onSubmit={handleAddMenuItem} className="space-y-3">
@@ -4142,6 +4314,7 @@ function renderBillingView() {
                 type="button"
                 onClick={() => {
                   setPopupView(null);
+                  setShowProfitSetupInMenuItems(false);
                   setShowHeaderMenu(false);
                 }}
                 className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700"
@@ -4296,6 +4469,7 @@ function renderBillingView() {
     if (popupView === "passwords") {
       return renderPasswordsPopup();
     }
+
 
     if (ownerView === "dashboard") {
       return renderDashboardView();
@@ -4520,11 +4694,12 @@ if (!ownerUnlocked) {
                     </button>
 
                     {showHeaderMenu && (
-                      <div className="absolute right-0 top-12 z-20 w-48 rounded-2xl border border-slate-200 bg-white p-2 shadow-[0_18px_40px_rgba(15,23,42,0.18)]">
+                      <div className="absolute right-0 top-12 z-20 w-[280px] rounded-2xl border border-slate-200 bg-white p-2 shadow-[0_18px_40px_rgba(15,23,42,0.18)]">
                         <button
                           type="button"
                           onClick={() => {
                             setPopupView("menuItems");
+                            setShowProfitSetupInMenuItems(false);
                             setShowHeaderMenu(false);
                             scrollMainContentToTop();
                           }}
@@ -4541,7 +4716,7 @@ if (!ownerUnlocked) {
                             setShowHeaderMenu(false);
                             scrollMainContentToTop();
                           }}
-                          className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                          className="mt-2 flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold text-slate-700 hover:bg-slate-100"
                         >
                           <span className="text-base">🔐</span>
                           Passwords

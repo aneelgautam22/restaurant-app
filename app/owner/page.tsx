@@ -48,7 +48,7 @@ type OwnerView =
   | "billing"
   | "paymentHistory";
 
-type PopupView = "menuItems" | "passwords" | "qrAccess" | null;
+type PopupView = "menuItems" | "passwords" | "qrAccess" | "profitPercent" | null;
 type SalesPeriod = "day" | "week" | "month";
 
 type DailyTrendPoint = {
@@ -146,6 +146,9 @@ useEffect(() => {
   const [newKitchenPassword, setNewKitchenPassword] = useState("");
   const [savingPasswords, setSavingPasswords] = useState(false);
   const [passwordsLoaded, setPasswordsLoaded] = useState(false);
+  const [profitPercent, setProfitPercent] = useState("40");
+  const [profitPercentInput, setProfitPercentInput] = useState("40");
+  const [savingProfitPercent, setSavingProfitPercent] = useState(false);
 
   const [hoveredTrendPoint, setHoveredTrendPoint] = useState<HoveredTrendPoint>(null);
   const [hoveredHourlyPoint, setHoveredHourlyPoint] = useState<HoveredHourlyPoint>(null);
@@ -155,6 +158,14 @@ useEffect(() => {
   const [tablePaymentMethods, setTablePaymentMethods] = useState<
     Record<string, "cash" | "qr" | "card">
   >({});
+
+  const [paymentConfirmModal, setPaymentConfirmModal] = useState<{
+    tableNo: string;
+    paymentMethod: "cash" | "qr" | "card";
+    total: number;
+  } | null>(null);
+
+  const [successToast, setSuccessToast] = useState<string | null>(null);
 
   const [dashboardMobileTab, setDashboardMobileTab] = useState<"unpaid" | "activity">(
     "unpaid"
@@ -277,6 +288,10 @@ useEffect(() => {
     const fetchedOwnerPassword = restaurantData.owner_password || "";
     const fetchedWaiterPassword = restaurantData.waiter_password || "";
     const fetchedKitchenPassword = restaurantData.kitchen_password || "";
+    const fetchedProfitPercent =
+      restaurantData.profit_percent !== null && restaurantData.profit_percent !== undefined
+        ? String(restaurantData.profit_percent)
+        : "40";
 
     const setupComplete =
       restaurantData.is_setup_done === true ||
@@ -289,6 +304,8 @@ useEffect(() => {
 
     setRestaurantName(fetchedRestaurantName || "Restaurant");
     setOwnerPasswordFromDB(fetchedOwnerPassword);
+    setProfitPercent(fetchedProfitPercent);
+    setProfitPercentInput(fetchedProfitPercent);
     if (!passwordsLoaded) {
   setNewOwnerPassword(fetchedOwnerPassword);
   setNewWaiterPassword(fetchedWaiterPassword);
@@ -802,6 +819,49 @@ const todayPaymentBreakdown = useMemo(() => {
     };
   }, [totalRevenueToday, totalRevenueYesterday]);
 
+  const numericProfitPercent = Number(profitPercent || 0);
+  const todayProfit = Math.round(totalRevenueToday * (numericProfitPercent / 100));
+  const yesterdayProfit = Math.round(totalRevenueYesterday * (numericProfitPercent / 100));
+
+  const profitVsYesterday = useMemo(() => {
+    const diff = todayProfit - yesterdayProfit;
+
+    if (yesterdayProfit <= 0) {
+      if (todayProfit > 0) {
+        return {
+          text: `+Rs. ${diff} vs yesterday`,
+          className: "text-emerald-600",
+        };
+      }
+
+      return {
+        text: "Rs. 0 vs yesterday",
+        className: "text-slate-500",
+      };
+    }
+
+    const percentage = Math.abs((diff / yesterdayProfit) * 100).toFixed(1);
+
+    if (diff > 0) {
+      return {
+        text: `+${percentage}% vs yesterday`,
+        className: "text-emerald-600",
+      };
+    }
+
+    if (diff < 0) {
+      return {
+        text: `-${percentage}% vs yesterday`,
+        className: "text-rose-600",
+      };
+    }
+
+    return {
+      text: "0% vs yesterday",
+      className: "text-slate-500",
+    };
+  }, [todayProfit, yesterdayProfit]);
+
   const salesByItem: SalesItem[] = useMemo(() => {
     const map: Record<string, SalesItem> = {};
 
@@ -1118,11 +1178,6 @@ const todayPaymentBreakdown = useMemo(() => {
       return;
     }
 
-    const confirmPay = confirm(
-      `Mark all unpaid orders for table ${normalizedTableNo} as paid with ${paymentMethod.toUpperCase()}?`
-    );
-    if (!confirmPay) return;
-
     setMarkingPaidTable(normalizedTableNo);
 
     const orderIds = unpaidOrdersForTable.map((order) => order.id);
@@ -1145,7 +1200,41 @@ const todayPaymentBreakdown = useMemo(() => {
     }
 
     await fetchOrders();
-    alert(`Table ${normalizedTableNo} marked as paid`);
+    setSuccessToast(`Table ${normalizedTableNo} marked as paid`);
+    setTimeout(() => setSuccessToast(null), 2200);
+  }
+
+  async function saveProfitPercent() {
+    if (!restaurantId) {
+      alert("Invalid restaurant link");
+      return;
+    }
+
+    const numericValue = Number(profitPercentInput);
+
+    if (!profitPercentInput.trim() || Number.isNaN(numericValue) || numericValue < 0) {
+      alert("Please enter valid profit %");
+      return;
+    }
+
+    setSavingProfitPercent(true);
+
+    const { error } = await supabase
+      .from("restaurants")
+      .update({ profit_percent: numericValue })
+      .eq("id", restaurantId);
+
+    setSavingProfitPercent(false);
+
+    if (error) {
+      alert("Failed to update profit %");
+      return;
+    }
+
+    const normalizedValue = String(numericValue);
+    setProfitPercent(normalizedValue);
+    setProfitPercentInput(normalizedValue);
+    alert("Profit % updated successfully");
   }
 
   async function savePasswords() {
@@ -1328,8 +1417,8 @@ const todayPaymentBreakdown = useMemo(() => {
     }, 0);
 
     const totalOrders = selectedSalesOrders.length;
-
-    const avgOrderValue = totalOrders > 0 ? Math.round(totalSales / totalOrders) : 0;
+    const profitAmount = Math.round(totalSales * (numericProfitPercent / 100));
+    const previousProfitAmount = Math.round(previousSales * (numericProfitPercent / 100));
 
     const itemMap: Record<string, SalesItem> = {};
 
@@ -1379,16 +1468,49 @@ const todayPaymentBreakdown = useMemo(() => {
       }
     }
 
+    let profitComparisonText = "Rs. 0 vs previous period";
+    let profitComparisonClass = "text-slate-500";
+
+    if (previousProfitAmount <= 0) {
+      if (profitAmount > 0) {
+        profitComparisonText = `+Rs. ${profitAmount} vs previous period`;
+        profitComparisonClass = "text-emerald-600";
+      }
+    } else {
+      const profitDiff = profitAmount - previousProfitAmount;
+      const profitPercentage = Math.abs((profitDiff / previousProfitAmount) * 100).toFixed(1);
+
+      if (profitDiff > 0) {
+        profitComparisonText = `+${profitPercentage}% vs previous period`;
+        profitComparisonClass = "text-emerald-600";
+      } else if (profitDiff < 0) {
+        profitComparisonText = `-${profitPercentage}% vs previous period`;
+        profitComparisonClass = "text-rose-600";
+      } else {
+        profitComparisonText = "0% vs previous period";
+      }
+    }
+
+    const profitLabel =
+      salesPeriod === "day"
+        ? "Today Profit"
+        : salesPeriod === "week"
+        ? "Weekly Profit"
+        : "Monthly Profit";
+
     return {
       totalSales,
       totalOrders,
-      avgOrderValue,
+      profitAmount,
+      profitLabel,
       topItems,
       bestSeller: topItems[0]?.item_name || "-",
       comparisonText,
       comparisonClass,
+      profitComparisonText,
+      profitComparisonClass,
     };
-  }, [selectedSalesOrders, previousSalesOrders]);
+  }, [selectedSalesOrders, previousSalesOrders, numericProfitPercent, salesPeriod]);
 
   const selectedSalesTrend = useMemo(() => {
     const now = new Date();
@@ -1936,6 +2058,32 @@ function bottomNavButtonClass(view: OwnerView) {
     );
   }
 
+
+
+  function getTrendCardClass(comparisonClass: string) {
+    if (comparisonClass.includes("text-rose")) {
+      return "rounded-[22px] border border-rose-200 bg-rose-50 p-3.5 shadow-sm";
+    }
+
+    if (comparisonClass.includes("text-emerald")) {
+      return "rounded-[22px] border border-emerald-200 bg-emerald-50 p-3.5 shadow-sm";
+    }
+
+    return "rounded-[22px] border border-slate-200 bg-slate-50 p-3.5 shadow-sm";
+  }
+
+  function getProfitCardClass(comparisonClass: string) {
+    if (comparisonClass.includes("text-rose")) {
+      return "rounded-[22px] border border-rose-200 bg-rose-50 p-3.5 shadow-sm";
+    }
+
+    if (comparisonClass.includes("text-emerald")) {
+      return "rounded-[22px] border border-emerald-200 bg-emerald-50 p-3.5 shadow-sm";
+    }
+
+    return "rounded-[22px] border border-slate-200 bg-slate-50 p-3.5 shadow-sm";
+  }
+
   function getKitchenStatusBadgeClass(status: KitchenStatusKey) {
     if (status === "ready") return "bg-emerald-100 text-emerald-700";
     if (status === "preparing") return "bg-amber-100 text-amber-700";
@@ -2126,7 +2274,7 @@ function bottomNavButtonClass(view: OwnerView) {
 
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-[22px] border border-emerald-200 bg-emerald-50 p-3.5 shadow-sm">
+            <div className={getTrendCardClass(profitVsYesterday.className)}>
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <p className="text-[11px] font-medium text-slate-500">💰 Today Sales</p>
@@ -2193,6 +2341,23 @@ function bottomNavButtonClass(view: OwnerView) {
               </div>
             </div>
 
+            <div className={getTrendCardClass(salesVsYesterday.className)}>
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-medium text-slate-500">📈 Today Profit</p>
+                  <p className="mt-1 break-words text-lg font-bold text-slate-900">
+                    Rs. {todayProfit}
+                  </p>
+                  <p className={`mt-1 text-[11px] font-semibold ${profitVsYesterday.className}`}>
+                    {profitVsYesterday.text}
+                  </p>
+                </div>
+                <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-white/70 text-base">
+                  📈
+                </span>
+              </div>
+            </div>
+
             <div className="rounded-[22px] border border-rose-200 bg-rose-50 p-3.5 shadow-sm">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
@@ -2220,49 +2385,34 @@ function bottomNavButtonClass(view: OwnerView) {
                 </span>
               </div>
             </div>
-          </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <button
-              type="button"
-              onClick={() => setKitchenStatusExpanded((prev) => !prev)}
-              className="rounded-[20px] border border-slate-200 bg-white px-4 py-3 text-left shadow-sm"
-            >
-              <p className="text-[11px] font-medium text-slate-500">🍳 Kitchen Status</p>
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-[10px] font-semibold text-slate-700">
-                  <span className="h-2 w-2 rounded-full bg-slate-400" />
-                  {kitchenStatusSummary.pending}
-                </span>
-                <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold text-amber-700">
-                  <span className="h-2 w-2 rounded-full bg-amber-500" />
-                  {kitchenStatusSummary.preparing}
-                </span>
-                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-semibold text-emerald-700">
-                  <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                  {kitchenStatusSummary.ready}
-                </span>
-              </div>
-            </button>
-
-            <div className="rounded-[20px] border border-slate-200 bg-white px-4 py-3 shadow-sm">
-              <div className="flex items-center justify-between text-[12px]">
-                <div className="flex items-center gap-1.5 text-slate-500">
-                  <span>🍽️</span>
-                  <span>Items Sold</span>
+            <div className="rounded-[22px] border border-slate-200 bg-white p-3.5 shadow-sm">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-medium text-slate-500">🍽️ Items & Orders</p>
+                  <div className="mt-2 space-y-1 text-[12px]">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-1.5 text-slate-500">
+                        <span>🍽️</span>
+                        <span>Items Sold</span>
+                      </div>
+                      <span className="font-semibold text-slate-900">
+                        {totalItemsSoldToday}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-1.5 text-slate-500">
+                        <span>🧾</span>
+                        <span>Orders</span>
+                      </div>
+                      <span className="font-semibold text-slate-900">
+                        {totalOrdersToday}
+                      </span>
+                    </div>
+                  </div>
                 </div>
-                <span className="font-semibold text-slate-900">
-                  {totalItemsSoldToday}
-                </span>
-              </div>
-
-              <div className="mt-1 flex items-center justify-between text-[12px]">
-                <div className="flex items-center gap-1.5 text-slate-500">
-                  <span>🧾</span>
-                  <span>Orders</span>
-                </div>
-                <span className="font-semibold text-slate-900">
-                  {totalOrdersToday}
+                <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-slate-100 text-base">
+                  🍽️
                 </span>
               </div>
             </div>
@@ -2405,8 +2555,6 @@ function bottomNavButtonClass(view: OwnerView) {
   function renderSalesOverviewView() {
     const topItems = selectedSalesSummary.topItems;
     const highestQty = topItems.length > 0 ? topItems[0].total_quantity : 0;
-    const lowestQty =
-      topItems.length > 0 ? topItems[topItems.length - 1].total_quantity : 0;
 
     const titleMap: Record<SalesPeriod, string> = {
       day: "Today",
@@ -2462,7 +2610,7 @@ function bottomNavButtonClass(view: OwnerView) {
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-[22px] border border-emerald-200 bg-emerald-50 p-3.5 shadow-sm">
+            <div className={getTrendCardClass(selectedSalesSummary.comparisonClass)}>
               <p className="text-[11px] font-medium text-slate-500">💰 Total Sales</p>
               <p className="mt-1 text-lg font-bold text-slate-900">
                 Rs. {selectedSalesSummary.totalSales}
@@ -2478,12 +2626,15 @@ function bottomNavButtonClass(view: OwnerView) {
               "🧾",
               "bg-blue-50 border border-blue-200"
             )}
-            {statCard(
-              "📦 Avg Order",
-              `Rs. ${selectedSalesSummary.avgOrderValue}`,
-              "📦",
-              "bg-white border border-slate-200"
-            )}
+            <div className={getTrendCardClass(selectedSalesSummary.profitComparisonClass)}>
+              <p className="text-[11px] font-medium text-slate-500">📈 {selectedSalesSummary.profitLabel}</p>
+              <p className="mt-1 text-lg font-bold text-slate-900">
+                Rs. {selectedSalesSummary.profitAmount}
+              </p>
+              <p className={`mt-1 text-[11px] font-semibold ${selectedSalesSummary.profitComparisonClass}`}>
+                {selectedSalesSummary.profitComparisonText}
+              </p>
+            </div>
             {statCard(
               "🔥 Best Seller",
               selectedSalesSummary.bestSeller,
@@ -2927,7 +3078,11 @@ function bottomNavButtonClass(view: OwnerView) {
                   <button
                     type="button"
                     onClick={() =>
-                      markGroupedTableAsPaid(table.table_number, selectedPaymentMethod)
+                      setPaymentConfirmModal({
+                        tableNo: table.table_number,
+                        paymentMethod: selectedPaymentMethod,
+                        total: table.total,
+                      })
                     }
                     disabled={markingPaidTable === table.table_number}
                     className="w-full rounded-2xl bg-blue-600 py-3 text-sm font-semibold text-white shadow-[0_10px_25px_rgba(37,99,235,0.28)]"
@@ -3256,6 +3411,51 @@ function bottomNavButtonClass(view: OwnerView) {
     );
   }
 
+  function renderProfitPercentPopup() {
+    return (
+      <div className="space-y-4 pb-4">
+        <div className="rounded-[26px] border border-emerald-200 bg-white p-4 shadow-sm space-y-4">
+          <div className="flex items-center gap-3">
+            {iconBubble("📈", "bg-emerald-50")}
+            <div>
+              <h3 className="font-bold text-slate-900">Profit %</h3>
+              <p className="text-xs text-slate-500">Set overall profit percentage manually</p>
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-semibold text-slate-700">
+              Profit Percentage
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={profitPercentInput}
+                onChange={(e) => setProfitPercentInput(e.target.value)}
+                placeholder="Enter profit %"
+                className="w-full rounded-2xl border border-slate-200 px-4 py-3"
+              />
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600">
+                %
+              </div>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={saveProfitPercent}
+            disabled={savingProfitPercent}
+            className="w-full rounded-2xl bg-emerald-600 py-3 font-semibold text-white shadow-[0_10px_25px_rgba(5,150,105,0.24)]"
+          >
+            {savingProfitPercent ? "Saving..." : "Save Profit %"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   function renderPasswordsPopup() {
     return (
       <div className="space-y-4 pb-4">
@@ -3377,6 +3577,10 @@ function bottomNavButtonClass(view: OwnerView) {
 
     if (popupView === "passwords") {
       return renderPasswordsPopup();
+    }
+
+    if (popupView === "profitPercent") {
+      return renderProfitPercentPopup();
     }
 
     if (popupView === "qrAccess") {
@@ -3542,6 +3746,21 @@ if (!ownerUnlocked) {
   return (
     <main className="min-h-screen bg-slate-200 flex justify-center px-3">
       <div className={`${shellClass} h-screen overflow-hidden relative`}>
+        {successToast && (
+          <div className="pointer-events-none absolute left-1/2 top-4 z-[80] w-[calc(100%-24px)] max-w-[360px] -translate-x-1/2">
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 shadow-[0_14px_35px_rgba(16,185,129,0.18)]">
+              <div className="flex items-center gap-3">
+                <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-100 text-base text-emerald-700">
+                  ✅
+                </span>
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-emerald-700">Payment Updated</p>
+                  <p className="text-xs text-emerald-700/90">{successToast}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
         <div className="flex h-full flex-col px-3">
           <div className="shrink-0 pt-3 pb-3">
             <div className="rounded-[28px] border border-slate-200 bg-white p-3 shadow-[0_10px_35px_rgba(15,23,42,0.08)]">
@@ -3581,19 +3800,34 @@ if (!ownerUnlocked) {
                     </button>
 
                     {showHeaderMenu && (
-                      <div className="absolute right-0 top-12 z-20 w-48 rounded-2xl border border-slate-200 bg-white p-2 shadow-[0_18px_40px_rgba(15,23,42,0.18)]">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setPopupView("menuItems");
-                            setShowHeaderMenu(false);
-                            scrollMainContentToTop();
-                          }}
-                          className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold text-slate-700 hover:bg-slate-100"
-                        >
-                          <span className="text-base">🍽️</span>
-                          Menu Items
-                        </button>
+                      <div className="absolute right-0 top-12 z-20 w-[250px] rounded-2xl border border-slate-200 bg-white p-2 shadow-[0_18px_40px_rgba(15,23,42,0.18)]">
+                        <div className="grid grid-cols-2 gap-2 pb-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPopupView((prev) => (prev === "menuItems" ? null : "menuItems"));
+                              setShowHeaderMenu(false);
+                              scrollMainContentToTop();
+                            }}
+                            className={`flex items-center justify-center gap-2 rounded-xl px-3 py-3 text-center text-sm font-semibold ${popupView === "menuItems" ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
+                          >
+                            <span className="text-base">🍽️</span>
+                            Menu Items
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPopupView((prev) => (prev === "profitPercent" ? null : "profitPercent"));
+                              setShowHeaderMenu(false);
+                              scrollMainContentToTop();
+                            }}
+                            className={`flex items-center justify-center gap-2 rounded-xl px-3 py-3 text-center text-sm font-semibold ${popupView === "profitPercent" ? "bg-emerald-600 text-white" : "bg-emerald-100 text-emerald-700 hover:bg-emerald-200"}`}
+                          >
+                            <span className="text-base">📈</span>
+                            Profit %
+                          </button>
+                        </div>
 
                         <button
                           type="button"
@@ -3656,6 +3890,72 @@ if (!ownerUnlocked) {
             )}
           </div>
         </div>
+
+        {paymentConfirmModal && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/45 px-4">
+            <div className="w-full max-w-[360px] rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_24px_60px_rgba(15,23,42,0.24)]">
+              <div className="flex items-start gap-3">
+                <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-blue-100 text-xl">
+                  💳
+                </span>
+                <div className="min-w-0">
+                  <h3 className="text-lg font-bold text-slate-900">Confirm Payment</h3>
+                  <p className="mt-1 text-sm leading-6 text-slate-600">
+                    Table {paymentConfirmModal.tableNo} ko sabai unpaid orders paid mark garne?
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4 space-y-3">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium text-slate-500">Payment Method</span>
+                    <span className="rounded-full bg-blue-600 px-3 py-1 text-xs font-semibold text-white">
+                      {paymentConfirmModal.paymentMethod === "qr"
+                        ? "QR"
+                        : paymentConfirmModal.paymentMethod === "card"
+                        ? "CARD"
+                        : "CASH"}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium text-slate-500">Table Total</span>
+                    <span className="text-base font-bold text-slate-900">
+                      Rs. {paymentConfirmModal.total}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-5 grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setPaymentConfirmModal(null)}
+                  className="rounded-2xl border border-slate-200 bg-slate-100 py-3 text-sm font-semibold text-slate-700"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const current = paymentConfirmModal;
+                    setPaymentConfirmModal(null);
+                    if (current) {
+                      await markGroupedTableAsPaid(current.tableNo, current.paymentMethod);
+                    }
+                  }}
+                  className="rounded-2xl bg-blue-600 py-3 text-sm font-semibold text-white shadow-[0_10px_25px_rgba(37,99,235,0.28)]"
+                >
+                  Confirm
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
     {popupView !== "qrAccess" && (
     <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] z-30 rounded-[15px] border border-white/60 bg-white shadow-[0_18px_50px_rgba(15,23,42,0.16)]">

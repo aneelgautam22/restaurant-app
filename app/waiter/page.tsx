@@ -74,6 +74,16 @@ type GroupedTableOrder = {
   sourceOrders: OrderRow[];
 };
 
+
+type ConfirmModalState = {
+  open: boolean;
+  title: string;
+  message: string;
+  confirmText: string;
+  variant: "default" | "success" | "warning";
+  onConfirm: null | (() => void | Promise<void>);
+};
+
 function WaiterPageContent() {
   const searchParams = useSearchParams();
   const restaurantIdParam = searchParams.get("id");
@@ -137,6 +147,15 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   const [toast, setToast] = useState("");
+  const [confirmModal, setConfirmModal] = useState<ConfirmModalState>({
+    open: false,
+    title: "",
+    message: "",
+    confirmText: "OK",
+    variant: "default",
+    onConfirm: null,
+  });
+
 
   const [orderDetailsOpen, setOrderDetailsOpen] = useState(false);
   const [orderDetailsView, setOrderDetailsView] = useState<"both" | "kot" | "customer">("both");
@@ -153,6 +172,28 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
   function showToast(message: string) {
     setToast(message);
     setTimeout(() => setToast(""), 2000);
+  }
+
+  function closeConfirmModal() {
+    setConfirmModal({
+      open: false,
+      title: "",
+      message: "",
+      confirmText: "OK",
+      variant: "default",
+      onConfirm: null,
+    });
+  }
+
+  function openConfirmModal(options: Omit<ConfirmModalState, "open">) {
+    setConfirmModal({
+      open: true,
+      title: options.title,
+      message: options.message,
+      confirmText: options.confirmText,
+      variant: options.variant,
+      onConfirm: options.onConfirm,
+    });
   }
 
   function isSameLocalDay(dateStr?: string | null) {
@@ -1207,39 +1248,43 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
       return;
     }
 
-    const confirmPay = confirm(
-      `Mark all unpaid orders for table ${normalizedTableNo} as paid with ${paymentMethod.toUpperCase()}?`
-    );
-    if (!confirmPay) return;
+    openConfirmModal({
+      title: "Confirm Payment",
+      message: `Mark all unpaid orders for table ${normalizedTableNo} as paid with ${paymentMethod.toUpperCase()}?`,
+      confirmText: "Mark as Paid",
+      variant: "success",
+      onConfirm: async () => {
+        closeConfirmModal();
+        setMarkingPaidTable(normalizedTableNo);
 
-    setMarkingPaidTable(normalizedTableNo);
+        const orderIds = unpaidOrdersForTable.map((order) => order.id);
 
-    const orderIds = unpaidOrdersForTable.map((order) => order.id);
+        const { error } = await supabase
+          .from("orders")
+          .update({
+            is_paid: true,
+            payment_method: paymentMethod,
+            paid_at: new Date().toISOString(),
+          })
+          .in("id", orderIds)
+          .eq("restaurant_id", restaurantId);
 
-    const { error } = await supabase
-      .from("orders")
-      .update({
-        is_paid: true,
-        payment_method: paymentMethod,
-        paid_at: new Date().toISOString(),
-      })
-      .in("id", orderIds)
-      .eq("restaurant_id", restaurantId);
+        setMarkingPaidTable(null);
 
-    setMarkingPaidTable(null);
+        if (error) {
+          alert("Failed to mark orders as paid");
+          return;
+        }
 
-    if (error) {
-      alert("Failed to mark orders as paid");
-      return;
-    }
+        await fetchOrders();
+        showToast(`Table ${normalizedTableNo} paid successfully`);
 
-    await fetchOrders();
-    showToast(`Table ${normalizedTableNo} paid successfully`);
-
-    setReadyNotifications((prev) =>
-      prev.filter((notification) => notification.tableNumber.trim() !== normalizedTableNo)
-    );
-    setSelectedTablePopup(null);
+        setReadyNotifications((prev) =>
+          prev.filter((notification) => notification.tableNumber.trim() !== normalizedTableNo)
+        );
+        setSelectedTablePopup(null);
+      },
+    });
   }
 
   async function handleTableMove() {
@@ -1271,33 +1316,37 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
       return;
     }
 
-    const confirmMove = confirm(
-      `Move all unpaid orders from table ${oldTable} to table ${newTable}?`
-    );
-    if (!confirmMove) return;
+    openConfirmModal({
+      title: "Move Table",
+      message: `Move all unpaid orders from table ${oldTable} to table ${newTable}?`,
+      confirmText: "Move Table",
+      variant: "warning",
+      onConfirm: async () => {
+        closeConfirmModal();
+        setMovingTable(true);
 
-    setMovingTable(true);
+        const orderIds = unpaidOrdersForOldTable.map((order) => order.id);
 
-    const orderIds = unpaidOrdersForOldTable.map((order) => order.id);
+        const { error } = await supabase
+          .from("orders")
+          .update({ table_number: newTable })
+          .in("id", orderIds)
+          .eq("restaurant_id", restaurantId);
 
-    const { error } = await supabase
-      .from("orders")
-      .update({ table_number: newTable })
-      .in("id", orderIds)
-      .eq("restaurant_id", restaurantId);
+        setMovingTable(false);
 
-    setMovingTable(false);
+        if (error) {
+          alert("Failed to move table");
+          return;
+        }
 
-    if (error) {
-      alert("Failed to move table");
-      return;
-    }
-
-    await fetchOrders();
-    setMoveFromTable("");
-    setMoveToTable("");
-    showToast(`Table moved from ${oldTable} to ${newTable}`);
-    setOrderModalOpen(false);
+        await fetchOrders();
+        setMoveFromTable("");
+        setMoveToTable("");
+        showToast(`Table moved from ${oldTable} to ${newTable}`);
+        setOrderModalOpen(false);
+      },
+    });
   }
 
   const currentReadyNotification = readyNotifications[0] || null;
@@ -3234,6 +3283,58 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
                     </button>
                   </div>
                 )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {confirmModal.open && (
+          <div className="fixed inset-0 z-[130] bg-black/55 px-4 flex items-center justify-center">
+            <div className="w-full max-w-sm rounded-[28px] border border-white/20 bg-white p-5 shadow-[0_24px_80px_rgba(0,0,0,0.35)]">
+              <div
+                className={`inline-flex rounded-full px-3 py-1 text-[11px] font-extrabold uppercase tracking-[0.18em] ${
+                  confirmModal.variant === "success"
+                    ? "bg-green-100 text-green-700"
+                    : confirmModal.variant === "warning"
+                    ? "bg-amber-100 text-amber-700"
+                    : "bg-slate-100 text-slate-700"
+                }`}
+              >
+                Confirm Action
+              </div>
+
+              <h3 className="mt-4 text-[24px] font-extrabold text-slate-900">
+                {confirmModal.title}
+              </h3>
+
+              <p className="mt-3 text-[15px] leading-7 text-slate-600">
+                {confirmModal.message}
+              </p>
+
+              <div className="mt-6 grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={closeConfirmModal}
+                  className="rounded-full bg-pink-100 px-4 py-3 text-sm font-extrabold text-purple-900 active:scale-[0.98] active:opacity-90"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await confirmModal.onConfirm?.();
+                  }}
+                  className={`rounded-full px-4 py-3 text-sm font-extrabold text-white active:scale-[0.98] active:opacity-90 ${
+                    confirmModal.variant === "success"
+                      ? "bg-gradient-to-r from-purple-700 to-fuchsia-600"
+                      : confirmModal.variant === "warning"
+                      ? "bg-gradient-to-r from-amber-500 to-orange-500"
+                      : "bg-slate-900"
+                  }`}
+                >
+                  {confirmModal.confirmText}
+                </button>
               </div>
             </div>
           </div>
