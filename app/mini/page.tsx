@@ -187,6 +187,9 @@ function OwnerPageContent() {
 
   const menuRef = useRef<HTMLDivElement | null>(null);
   const contentScrollRef = useRef<HTMLDivElement | null>(null);
+  const ordersRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const menuRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const orderIdsRef = useRef<number[]>([]);
 
   const getTodayLocalDate = () => {
     const today = new Date();
@@ -337,6 +340,28 @@ function OwnerPageContent() {
     if (contentScrollRef.current) {
       contentScrollRef.current.scrollTo({ top: 0, behavior: "auto" });
     }
+  }
+
+  function scheduleOrdersRefresh(delay = 120) {
+    if (ordersRefreshTimeoutRef.current) {
+      clearTimeout(ordersRefreshTimeoutRef.current);
+    }
+
+    ordersRefreshTimeoutRef.current = setTimeout(() => {
+      ordersRefreshTimeoutRef.current = null;
+      fetchOrders();
+    }, delay);
+  }
+
+  function scheduleMenuRefresh(delay = 120) {
+    if (menuRefreshTimeoutRef.current) {
+      clearTimeout(menuRefreshTimeoutRef.current);
+    }
+
+    menuRefreshTimeoutRef.current = setTimeout(() => {
+      menuRefreshTimeoutRef.current = null;
+      fetchMenu();
+    }, delay);
   }
 
   function changeView(view: OwnerView) {
@@ -599,7 +624,6 @@ function OwnerPageContent() {
 
     resetTakeOrderForm();
     setShowTakeOrderModal(false);
-
     await fetchOrders();
     showToast("Order sent to kitchen", "success");
   }
@@ -1016,6 +1040,7 @@ function printReceipt() {
       .order("created_at", { ascending: false });
 
     if (!error && data) {
+      orderIdsRef.current = (data as OrderRow[]).map((order) => order.id);
       setOrders(data as OrderRow[]);
     }
   }
@@ -1055,7 +1080,7 @@ function printReceipt() {
           filter: `restaurant_id=eq.${restaurantId}`,
         },
         () => {
-          fetchOrders();
+          scheduleOrdersRefresh(80);
         }
       )
       .subscribe();
@@ -1071,7 +1096,7 @@ function printReceipt() {
           filter: `restaurant_id=eq.${restaurantId}`,
         },
         () => {
-          fetchMenu();
+          scheduleMenuRefresh(80);
         }
       )
       .subscribe();
@@ -1081,23 +1106,35 @@ function printReceipt() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "order_items" },
-        () => {
-          fetchOrders();
+        (payload) => {
+          const newRecord = payload.new as { order_id?: number } | null;
+          const oldRecord = payload.old as { order_id?: number } | null;
+          const changedOrderId = newRecord?.order_id ?? oldRecord?.order_id;
+
+          if (!changedOrderId) return;
+
+          const belongsToRestaurant = orderIdsRef.current.includes(changedOrderId);
+          if (!belongsToRestaurant) return;
+
+          scheduleOrdersRefresh(80);
         }
       )
       .subscribe();
-
-    const interval = setInterval(() => {
-      fetchOrders();
-      fetchMenu();
-      fetchRestaurant();
-    }, 2000);
 
     return () => {
       supabase.removeChannel(ordersChannel);
       supabase.removeChannel(menuItemsChannel);
       supabase.removeChannel(orderItemsChannel);
-      clearInterval(interval);
+
+      if (ordersRefreshTimeoutRef.current) {
+        clearTimeout(ordersRefreshTimeoutRef.current);
+        ordersRefreshTimeoutRef.current = null;
+      }
+
+      if (menuRefreshTimeoutRef.current) {
+        clearTimeout(menuRefreshTimeoutRef.current);
+        menuRefreshTimeoutRef.current = null;
+      }
     };
   }, [restaurantId, isSetupDone]);
 
@@ -1569,6 +1606,10 @@ const todayPaymentBreakdown = useMemo(() => {
 
   const bestSellingItem = salesByItem.length > 0 ? salesByItem[0] : null;
 
+  useEffect(() => {
+    orderIdsRef.current = orders.map((order) => order.id);
+  }, [orders]);
+
   const paidOrders = useMemo(() => {
     return orders
       .filter((order) => order.is_paid === true)
@@ -1884,7 +1925,6 @@ async function updateKitchenTableStatus(
     return;
   }
 
-  await fetchOrders();
 }
 
   const kitchenStatusSummary = useMemo(() => {
