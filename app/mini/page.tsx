@@ -184,6 +184,8 @@ function OwnerPageContent() {
   const [kitchenStatusExpanded, setKitchenStatusExpanded] = useState(false);
   const [kitchenStatusFilter, setKitchenStatusFilter] = useState<"all" | KitchenStatusKey>("all");
   const [openedKitchenTables, setOpenedKitchenTables] = useState<Record<string, boolean>>({});
+  const [kitchenUpdatingTable, setKitchenUpdatingTable] = useState<string | null>(null);
+  const [kitchenUpdatingStatus, setKitchenUpdatingStatus] = useState<KitchenStatusKey | null>(null);
 
   const menuRef = useRef<HTMLDivElement | null>(null);
   const contentScrollRef = useRef<HTMLDivElement | null>(null);
@@ -1891,6 +1893,8 @@ async function updateKitchenTableStatus(
     return;
   }
 
+  if (kitchenUpdatingTable === tableNo) return;
+
   const targetOrders = orders.filter(
     (order) =>
       String(order.table_number || "").trim() === tableNo &&
@@ -1902,29 +1906,66 @@ async function updateKitchenTableStatus(
     return;
   }
 
+  const currentTableStatus = targetOrders.some((order) => order.status === "preparing")
+    ? "preparing"
+    : targetOrders.length > 0 && targetOrders.every((order) => order.status === "ready")
+      ? "ready"
+      : "pending";
+
+  if (currentTableStatus === nextStatus) {
+    return;
+  }
+
   const orderIds = targetOrders.map((order) => order.id);
+  const previousOrdersSnapshot = orders;
 
-  const { error: orderError } = await supabase
-    .from("orders")
-    .update({ status: nextStatus })
-    .in("id", orderIds)
-    .eq("restaurant_id", restaurantId);
+  setKitchenUpdatingTable(tableNo);
+  setKitchenUpdatingStatus(nextStatus);
 
-  if (orderError) {
-    showToast("Failed to update order status", "error");
+  setOrders((prev) =>
+    prev.map((order) => {
+      if (String(order.table_number || "").trim() !== tableNo || order.is_paid === true) {
+        return order;
+      }
+
+      return {
+        ...order,
+        status: nextStatus,
+        order_items: (order.order_items || []).map((item) => ({
+          ...item,
+          status: nextStatus,
+        })),
+      };
+    })
+  );
+
+  const [orderResult, itemResult] = await Promise.all([
+    supabase
+      .from("orders")
+      .update({ status: nextStatus })
+      .in("id", orderIds)
+      .eq("restaurant_id", restaurantId),
+    supabase
+      .from("order_items")
+      .update({ status: nextStatus })
+      .in("order_id", orderIds),
+  ]);
+
+  const orderError = orderResult.error;
+  const itemError = itemResult.error;
+
+  if (orderError || itemError) {
+    setOrders(previousOrdersSnapshot);
+    showToast("Failed to update kitchen status", "error");
+    setKitchenUpdatingTable(null);
+    setKitchenUpdatingStatus(null);
     return;
   }
 
-  const { error: itemError } = await supabase
-    .from("order_items")
-    .update({ status: nextStatus })
-    .in("order_id", orderIds);
-
-  if (itemError) {
-    showToast("Failed to update item status", "error");
-    return;
-  }
-
+  await fetchOrders();
+  showToast(`Table ${tableNo} moved to ${nextStatus}`, "success");
+  setKitchenUpdatingTable(null);
+  setKitchenUpdatingStatus(null);
 }
 
   const kitchenStatusSummary = useMemo(() => {
@@ -2840,7 +2881,10 @@ function renderKitchenStatusCards() {
         </div>
       ) : (
         <div className="space-y-3">
-          {kitchenQueue.map((table, index) => (
+          {kitchenQueue.map((table, index) => {
+            const isUpdatingKitchenTable = kitchenUpdatingTable === table.table_number;
+
+            return (
             <div
               key={`kitchen-queue-${table.table_number}`}
               className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-[0_10px_28px_rgba(15,23,42,0.08)]"
@@ -2912,36 +2956,44 @@ function renderKitchenStatusCards() {
               <div className="mt-3 grid grid-cols-3 gap-2">
                 <button
                   type="button"
+                  disabled={isUpdatingKitchenTable}
                   onClick={() => updateKitchenTableStatus(table.table_number, "pending")}
-                  className={`rounded-2xl py-2.5 text-xs font-bold ${
+                  className={`rounded-2xl py-2.5 text-xs font-bold transition ${
                     table.table_status === "pending"
                       ? "bg-slate-900 text-white"
                       : "border border-slate-300 bg-white text-slate-700"
-                  }`}
+                  } ${isUpdatingKitchenTable ? "cursor-not-allowed opacity-60" : "active:scale-[0.98]"}`}
                 >
-                  Pending
+                  {isUpdatingKitchenTable && kitchenUpdatingStatus === "pending" ? "Updating..." : "Pending"}
                 </button>
                 <button
                   type="button"
+                  disabled={isUpdatingKitchenTable}
                   onClick={() => updateKitchenTableStatus(table.table_number, "preparing")}
-                  className={`rounded-2xl py-2.5 text-xs font-bold ${
+                  className={`rounded-2xl py-2.5 text-xs font-bold transition ${
                     table.table_status === "preparing"
                       ? "bg-amber-500 text-white"
                       : "border border-amber-300 bg-amber-50 text-amber-700"
-                  }`}
+                  } ${isUpdatingKitchenTable ? "cursor-not-allowed opacity-60" : "active:scale-[0.98]"}`}
                 >
-                  Preparing
+                  {isUpdatingKitchenTable && kitchenUpdatingStatus === "preparing" ? "Updating..." : "Preparing"}
                 </button>
                 <button
                   type="button"
+                  disabled={isUpdatingKitchenTable}
                   onClick={() => updateKitchenTableStatus(table.table_number, "ready")}
-                  className="rounded-2xl bg-green-600 py-2.5 text-xs font-extrabold tracking-wide text-white shadow-md active:scale-95"
+                  className={`rounded-2xl py-2.5 text-xs font-extrabold tracking-wide text-white shadow-md transition ${
+                    table.table_status === "ready"
+                      ? "bg-emerald-700"
+                      : "bg-green-600"
+                  } ${isUpdatingKitchenTable ? "cursor-not-allowed opacity-60" : "active:scale-[0.98]"}`}
                 >
-                  ✅ Ready
+                  {isUpdatingKitchenTable && kitchenUpdatingStatus === "ready" ? "Updating..." : "✅ Ready"}
                 </button>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
