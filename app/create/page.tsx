@@ -30,10 +30,10 @@ export default function CreateRestaurant() {
     typeof window !== "undefined" ? window.location.origin : "";
 
   const adminIdFromEnv =
-  process.env.NEXT_PUBLIC_CREATE_ADMIN_ID;
+    process.env.NEXT_PUBLIC_CREATE_ADMIN_ID || "admin";
 
-const adminPasswordFromEnv =
-  process.env.NEXT_PUBLIC_CREATE_ADMIN_PASSWORD;
+  const adminPasswordFromEnv =
+    process.env.NEXT_PUBLIC_CREATE_ADMIN_PASSWORD || "Piano@12";
 
   useEffect(() => {
     const timer = setTimeout(() => {
