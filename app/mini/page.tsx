@@ -7,6 +7,8 @@ import AppSplash from "@/components/AppSplash";
 import PanelLoginCard from "@/components/PanelLoginCard";
 import { QRCodeCanvas } from "qrcode.react";
 import jsPDF from "jspdf";
+import { miniDB } from "@/lib/mini-db";
+import type { Table } from "dexie";
 
 type MenuItem = {
   id: number;
@@ -42,7 +44,7 @@ type SalesItem = {
   total_revenue: number;
 };
 
-type OwnerView =
+type MiniView =
   | "dashboard"
   | "order"
   | "kitchen"
@@ -106,16 +108,218 @@ type TakeOrderCartItem = {
   quantity: number;
 };
 
-function OwnerPageContent() {
+type SalesTrendPoint = {
+  label: string;
+  fullLabel: string;
+  sales: number;
+};
+
+type SalesDetailBoxPoint = {
+  key: string;
+  label: string;
+  sublabel: string;
+  sales: number;
+  cardClass: string;
+  badgeClass: string;
+  badgeText: string;
+};
+
+type LocalMenuItemRow = {
+  id?: number;
+  server_id?: number | null;
+  restaurant_id: number;
+  item_name: string;
+  price: number;
+  created_at?: string;
+  updated_at?: string;
+  sync_status?: "synced" | "pending_create" | "pending_update" | "pending_delete";
+};
+
+type LocalOrderRow = {
+  id?: number;
+  server_id?: number | null;
+  restaurant_id: number;
+  table_number: string;
+  status: string;
+  created_at: string;
+  updated_at?: string;
+  waiter_cleared?: boolean | null;
+  is_paid?: boolean | null;
+  payment_method?: string | null;
+  paid_at?: string | null;
+  remarks?: string | null;
+  sync_status?: "synced" | "pending_create" | "pending_update" | "pending_delete";
+};
+
+type LocalOrderItemRow = {
+  id?: number;
+  local_order_id: number;
+  server_order_id?: number | null;
+  server_id?: number | null;
+  item_name: string;
+  quantity: number;
+  unit_price?: number | null;
+  status?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  sync_status?: "synced" | "pending_create" | "pending_update" | "pending_delete";
+};
+
+type LocalSyncQueueRow = {
+  id?: number;
+  restaurant_id: number;
+  entity: "menu_item" | "order" | "order_item";
+  action: "create" | "update" | "delete";
+  local_id?: number | null;
+  server_id?: number | null;
+  payload?: string;
+  created_at: string;
+  processed: 0 | 1;
+};
+
+type LocalRestaurantCacheRow = {
+  id?: number;
+  restaurant_id: number;
+  name: string;
+  owner_password?: string;
+  waiter_password?: string;
+  kitchen_password?: string;
+  profit_percent?: number;
+  is_setup_done?: boolean;
+  updated_at?: string;
+};
+
+function MiniPageContent() {
   const searchParams = useSearchParams();
   const restaurantIdParam = searchParams.get("id");
-  const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
+  const [restaurantId, setRestaurantId] = useState<number | null>(null);
+  const [restaurantIdReady, setRestaurantIdReady] = useState(false);
 
-  const [ownerView, setOwnerView] = useState<OwnerView>("dashboard");
+  const localOrdersTable = miniDB.orders as Table<LocalOrderRow, number>;
+  const localOrderItemsTable = miniDB.order_items as Table<LocalOrderItemRow, number>;
+  const localMenuItemsTable = miniDB.menu_items as Table<LocalMenuItemRow, number>;
+  const localSyncQueueTable = miniDB.sync_queue as Table<LocalSyncQueueRow, number>;
+  const localRestaurantCacheTable = miniDB.restaurant_cache as Table<LocalRestaurantCacheRow, number>;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function resolveRestaurantId() {
+      setRestaurantIdReady(false);
+
+      const paramId = restaurantIdParam ? Number(restaurantIdParam) : null;
+
+      if (paramId && !Number.isNaN(paramId)) {
+        if (typeof window !== "undefined") {
+          localStorage.setItem("lastRestaurantId", String(paramId));
+        }
+
+        if (!cancelled) {
+          setRestaurantId(paramId);
+          setRestaurantIdReady(true);
+        }
+        return;
+      }
+
+      const savedMiniId =
+        typeof window !== "undefined" ? localStorage.getItem("mini:lastRestaurantId") : null;
+      const savedGlobalId =
+        typeof window !== "undefined" ? localStorage.getItem("lastRestaurantId") : null;
+      const savedId = savedMiniId || savedGlobalId;
+
+      if (savedId && !Number.isNaN(Number(savedId))) {
+        const normalizedSavedId = Number(savedId);
+
+        if (typeof window !== "undefined") {
+          localStorage.setItem("lastRestaurantId", String(normalizedSavedId));
+          localStorage.setItem("mini:lastRestaurantId", String(normalizedSavedId));
+        }
+
+        if (!cancelled) {
+          setRestaurantId(normalizedSavedId);
+          setRestaurantIdReady(true);
+        }
+        return;
+      }
+
+      try {
+        const [localOrders, localMenuItems, localQueueItems, cachedRestaurants] = await Promise.all([
+          localOrdersTable.toArray(),
+          localMenuItemsTable.toArray(),
+          localSyncQueueTable.toArray(),
+          localRestaurantCacheTable.toArray(),
+        ]);
+
+        const latestCachedRestaurant = [...cachedRestaurants]
+          .filter((item) => Number.isFinite(Number(item.restaurant_id)) && Number(item.restaurant_id) > 0)
+          .sort((a, b) => {
+            const aTime = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+            const bTime = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+            return bTime - aTime;
+          })[0];
+
+        const fallbackIds = [
+          latestCachedRestaurant?.restaurant_id ? Number(latestCachedRestaurant.restaurant_id) : null,
+          ...localQueueItems.map((item) => Number(item.restaurant_id)),
+          ...localOrders
+            .sort((a, b) => new Date(b.updated_at || b.created_at).getTime() - new Date(a.updated_at || a.created_at).getTime())
+            .map((item) => Number(item.restaurant_id)),
+          ...localMenuItems
+            .sort((a, b) => new Date(b.updated_at || b.created_at || 0).getTime() - new Date(a.updated_at || a.created_at || 0).getTime())
+            .map((item) => Number(item.restaurant_id)),
+        ].filter((id): id is number => {
+  return typeof id === "number" && Number.isFinite(id) && id > 0;
+});
+
+        const recoveredId = fallbackIds[0] || null;
+
+        if (recoveredId) {
+          if (typeof window !== "undefined") {
+            localStorage.setItem("lastRestaurantId", String(recoveredId));
+            localStorage.setItem("mini:lastRestaurantId", String(recoveredId));
+          }
+
+          if (!cancelled) {
+            setRestaurantId(recoveredId);
+            setRestaurantIdReady(true);
+          }
+          return;
+        }
+      } catch (error) {
+        console.error("Failed to recover cached restaurant id", error);
+      }
+
+      if (!cancelled) {
+        setRestaurantId(null);
+        setRestaurantIdReady(true);
+      }
+    }
+
+    resolveRestaurantId();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [restaurantIdParam]);
+
+  const [miniView, setMiniView] = useState<MiniView>("dashboard");
   const [popupView, setPopupView] = useState<PopupView>(null);
   const [showHeaderMenu, setShowHeaderMenu] = useState(false);
   const [isSwitching, setIsSwitching] = useState(false);
   const [showQR, setShowQR] = useState(false);
+  const [isOnline, setIsOnline] = useState(true);
+  useEffect(() => {
+  const updateNetwork = () => setIsOnline(navigator.onLine);
+
+  updateNetwork();
+  window.addEventListener("online", updateNetwork);
+  window.addEventListener("offline", updateNetwork);
+
+  return () => {
+    window.removeEventListener("online", updateNetwork);
+    window.removeEventListener("offline", updateNetwork);
+  };
+}, []);
 
   const [showTakeOrderModal, setShowTakeOrderModal] = useState(false);
   const [takeOrderTableNumber, setTakeOrderTableNumber] = useState("");
@@ -137,10 +341,19 @@ function OwnerPageContent() {
 
   const [restaurantName, setRestaurantName] = useState("");
  useEffect(() => {
-  if (!restaurantId) return;
+  if (!restaurantId || typeof window === "undefined") return;
 
   localStorage.setItem("lastRestaurantId", String(restaurantId));
+  localStorage.setItem("mini:lastRestaurantId", String(restaurantId));
   localStorage.setItem("lastPanel", "mini");
+
+  const url = new URL(window.location.href);
+  const currentId = url.searchParams.get("id");
+
+  if (currentId !== String(restaurantId)) {
+    url.searchParams.set("id", String(restaurantId));
+    window.history.replaceState({}, "", url.toString());
+  }
 }, [restaurantId]);
   const [restaurantExists, setRestaurantExists] = useState(true);
   const [isSetupDone, setIsSetupDone] = useState(false);
@@ -369,8 +582,8 @@ function OwnerPageContent() {
     }, delay);
   }
 
-  function changeView(view: OwnerView) {
-  if (ownerView === view && popupView === null) {
+  function changeView(view: MiniView) {
+  if (miniView === view && popupView === null) {
     scrollMainContentToTop();
     return;
   }
@@ -379,7 +592,7 @@ function OwnerPageContent() {
   setShowHeaderMenu(false);
 
   // 🔥 instant switch
-  setOwnerView(view);
+  setMiniView(view);
   setPopupView(null);
   scrollMainContentToTop();
 
@@ -509,63 +722,385 @@ function OwnerPageContent() {
     setTakeOrderItems((prev) => prev.filter((item) => item.id !== menuId));
   }
 
-  async function submitTakeOrder() {
-    if (!restaurantId) {
-      showToast("Invalid restaurant link", "error");
-      return;
+  async function getLocalOrderForUiId(uiOrderId: number) {
+    if (!restaurantId) return null;
+
+    const localOrders = await localOrdersTable
+      .where("restaurant_id")
+      .equals(restaurantId)
+      .toArray();
+
+    return (
+      localOrders.find((order) => order.server_id === uiOrderId) ||
+      localOrders.find((order) => order.id === uiOrderId) ||
+      null
+    );
+  }
+
+  async function enqueueSyncAction(
+    entity: "menu_item" | "order" | "order_item",
+    action: "create" | "update" | "delete",
+    options: {
+      localId?: number | null;
+      serverId?: number | null;
+      payload?: Record<string, unknown>;
+    } = {}
+  ) {
+    if (!restaurantId) return;
+
+    await localSyncQueueTable.add({
+      restaurant_id: restaurantId,
+      entity,
+      action,
+      local_id: options.localId ?? null,
+      server_id: options.serverId ?? null,
+      payload: JSON.stringify(options.payload || {}),
+      created_at: new Date().toISOString(),
+      processed: 0,
+    });
+  }
+
+  async function cleanupProcessedSyncQueue() {
+    if (!restaurantId) return;
+    const processedItems = (await localSyncQueueTable.where("restaurant_id").equals(restaurantId).toArray())
+      .filter((item) => item.processed === 1)
+      .map((item) => item.id)
+      .filter((id): id is number => typeof id === "number");
+
+    if (processedItems.length) {
+      await localSyncQueueTable.bulkDelete(processedItems);
+    }
+  }
+
+  async function processSyncQueue() {
+    if (!restaurantId || !isOnline) return;
+
+    const queueItems = (await localSyncQueueTable.where("restaurant_id").equals(restaurantId).toArray())
+      .filter((item) => item.processed === 0)
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+
+    for (const queueItem of queueItems) {
+      if (queueItem.entity === "menu_item") {
+        await syncPendingMenuItems();
+      } else {
+        await syncPendingOrders();
+      }
+
+      if (queueItem.id) {
+        await localSyncQueueTable.update(queueItem.id, { processed: 1 });
+      }
     }
 
-    if (!takeOrderTableNumber.trim()) {
-      showToast("Please enter table number", "error");
-      return;
-    }
+    await cleanupProcessedSyncQueue();
+  }
 
-    if (!/^\d+$/.test(takeOrderTableNumber.trim())) {
-      showToast("Please enter valid table number", "error");
-      return;
-    }
+  async function syncSingleLocalOrder(localOrderId: number) {
+    if (!restaurantId || !isOnline) return;
 
-    if (takeOrderItems.length === 0) {
-      showToast("Please add at least one item", "error");
-      return;
-    }
+    const localOrder = await localOrdersTable.get(localOrderId);
+    if (!localOrder || localOrder.restaurant_id !== restaurantId) return;
 
-    setSubmittingTakeOrder(true);
+    const localItems = await localOrderItemsTable
+      .where("local_order_id")
+      .equals(localOrderId)
+      .toArray();
 
-    const payload = {
-      table_number: takeOrderTableNumber.trim(),
-      remarks: takeOrderRemarks.trim() || null,
-      status: "pending",
-      waiter_cleared: false,
-      is_paid: false,
+    const orderPayload = {
+      restaurant_id: restaurantId,
+      table_number: String(localOrder.table_number || "").trim(),
+      status: localOrder.status || "pending",
+      remarks: localOrder.remarks || null,
+      waiter_cleared: localOrder.waiter_cleared ?? false,
+      is_paid: localOrder.is_paid ?? false,
+      payment_method: localOrder.payment_method || null,
+      paid_at: localOrder.paid_at || null,
     };
 
-    if (editingOrderId) {
+    let remoteOrderId = localOrder.server_id || null;
+
+    if (remoteOrderId) {
       const { error: updateOrderError } = await supabase
         .from("orders")
-        .update(payload)
-        .eq("id", editingOrderId)
+        .update(orderPayload)
+        .eq("id", remoteOrderId)
         .eq("restaurant_id", restaurantId);
 
       if (updateOrderError) {
-        setSubmittingTakeOrder(false);
-        showToast("Failed to update order", "error");
-        return;
+        throw updateOrderError;
       }
 
-      const { error: deleteItemsError } = await supabase
+      const { error: deleteRemoteItemsError } = await supabase
         .from("order_items")
         .delete()
-        .eq("order_id", editingOrderId);
+        .eq("order_id", remoteOrderId);
 
-      if (deleteItemsError) {
-        setSubmittingTakeOrder(false);
-        showToast("Failed to refresh order items", "error");
-        return;
+      if (deleteRemoteItemsError) {
+        throw deleteRemoteItemsError;
+      }
+    } else {
+      const { data: insertedOrder, error: insertOrderError } = await supabase
+        .from("orders")
+        .insert([orderPayload])
+        .select()
+        .single();
+
+      if (insertOrderError || !insertedOrder) {
+        throw insertOrderError || new Error("Failed to create order");
       }
 
-      const updatedItemsPayload = takeOrderItems.map((item) => ({
-        order_id: editingOrderId,
+      remoteOrderId = insertedOrder.id;
+
+      await localOrdersTable.update(localOrderId, {
+        server_id: remoteOrderId,
+        updated_at: new Date().toISOString(),
+      });
+    }
+
+    if (localItems.length > 0) {
+      const itemPayload = localItems.map((item) => ({
+        order_id: remoteOrderId,
+        item_name: item.item_name,
+        quantity: Number(item.quantity || 0),
+        unit_price: Number(item.unit_price || 0),
+        status: item.status || orderPayload.status,
+      }));
+
+      const { data: insertedItems, error: insertItemsError } = await supabase
+        .from("order_items")
+        .insert(itemPayload)
+        .select();
+
+      if (insertItemsError) {
+        throw insertItemsError;
+      }
+
+      const insertedList = Array.isArray(insertedItems) ? insertedItems : [];
+
+      for (let index = 0; index < localItems.length; index += 1) {
+        const localItem = localItems[index];
+        const remoteItem = insertedList[index];
+        await localOrderItemsTable.update(localItem.id!, {
+          server_order_id: remoteOrderId,
+          server_id: remoteItem?.id || null,
+          updated_at: new Date().toISOString(),
+          sync_status: "synced",
+        });
+      }
+    }
+
+    await localOrdersTable.update(localOrderId, {
+      server_id: remoteOrderId,
+      updated_at: new Date().toISOString(),
+      sync_status: "synced",
+    });
+  }
+
+  async function syncPendingMenuItems() {
+    if (!restaurantId || !isOnline) return;
+
+    const localMenuItems = await localMenuItemsTable
+      .where("restaurant_id")
+      .equals(restaurantId)
+      .toArray();
+
+    for (const localMenuItem of localMenuItems) {
+      const syncStatus = localMenuItem.sync_status || "synced";
+
+      if (syncStatus === "synced") continue;
+
+      if (syncStatus === "pending_delete") {
+        if (localMenuItem.server_id) {
+          const { error } = await supabase
+            .from("menu_items")
+            .delete()
+            .eq("id", localMenuItem.server_id)
+            .eq("restaurant_id", restaurantId);
+
+          if (error) throw error;
+        }
+
+        if (localMenuItem.id) {
+          await localMenuItemsTable.delete(localMenuItem.id);
+        }
+        continue;
+      }
+
+      if (localMenuItem.server_id) {
+        const { error } = await supabase
+          .from("menu_items")
+          .update({
+            item_name: localMenuItem.item_name,
+            price: Number(localMenuItem.price || 0),
+          })
+          .eq("id", localMenuItem.server_id)
+          .eq("restaurant_id", restaurantId);
+
+        if (error) throw error;
+
+        await localMenuItemsTable.update(localMenuItem.id!, {
+          updated_at: new Date().toISOString(),
+          sync_status: "synced",
+        });
+        continue;
+      }
+
+      const { data, error } = await supabase
+        .from("menu_items")
+        .insert([
+          {
+            restaurant_id: restaurantId,
+            item_name: localMenuItem.item_name,
+            price: Number(localMenuItem.price || 0),
+          },
+        ])
+        .select()
+        .single();
+
+      if (error || !data) throw error || new Error("Failed to create menu item");
+
+      await localMenuItemsTable.update(localMenuItem.id!, {
+        server_id: data.id,
+        created_at: data.created_at || localMenuItem.created_at,
+        updated_at: new Date().toISOString(),
+        sync_status: "synced",
+      });
+    }
+  }
+
+  async function syncPendingOrders() {
+    if (!restaurantId || !isOnline) return;
+
+    const localOrders = await localOrdersTable
+      .where("restaurant_id")
+      .equals(restaurantId)
+      .toArray();
+
+    for (const localOrder of localOrders) {
+      const syncStatus = localOrder.sync_status || "synced";
+      if (syncStatus === "synced") continue;
+
+      if (syncStatus === "pending_delete") {
+        if (localOrder.server_id) {
+          const { error: deleteItemsError } = await supabase
+            .from("order_items")
+            .delete()
+            .eq("order_id", localOrder.server_id);
+
+          if (deleteItemsError) throw deleteItemsError;
+
+          const { error: deleteOrderError } = await supabase
+            .from("orders")
+            .delete()
+            .eq("id", localOrder.server_id)
+            .eq("restaurant_id", restaurantId);
+
+          if (deleteOrderError) throw deleteOrderError;
+        }
+
+        const localItems = await localOrderItemsTable
+          .where("local_order_id")
+          .equals(localOrder.id!)
+          .toArray();
+
+        if (localItems.length > 0) {
+          await localOrderItemsTable.bulkDelete(
+            localItems
+              .map((item) => item.id)
+              .filter((id): id is number => typeof id === "number")
+          );
+        }
+
+        await localOrdersTable.delete(localOrder.id!);
+        continue;
+      }
+
+      await syncSingleLocalOrder(localOrder.id!);
+    }
+  }
+
+  async function syncLocalChanges() {
+    if (!restaurantId || !isOnline) return;
+    await processSyncQueue();
+    await syncPendingMenuItems();
+    await syncPendingOrders();
+    await cleanupProcessedSyncQueue();
+  }
+
+ async function submitTakeOrder() {
+  if (!restaurantId) {
+    showToast("Invalid restaurant link", "error");
+    return;
+  }
+
+  if (!takeOrderTableNumber.trim()) {
+    showToast("Please enter table number", "error");
+    return;
+  }
+
+  if (!/^\d+$/.test(takeOrderTableNumber.trim())) {
+    showToast("Please enter valid table number", "error");
+    return;
+  }
+
+  if (takeOrderItems.length === 0) {
+    showToast("Please add at least one item", "error");
+    return;
+  }
+
+  setSubmittingTakeOrder(true);
+
+  const now = new Date().toISOString();
+  const orderPayload = {
+    restaurant_id: restaurantId,
+    table_number: takeOrderTableNumber.trim(),
+    status: "pending",
+    remarks: takeOrderRemarks || null,
+    waiter_cleared: false,
+    is_paid: false,
+  };
+
+  try {
+    if (isOnline) {
+      let remoteOrderId: number | null = null;
+      let existingLocalOrder: LocalOrderRow | null = null;
+
+      if (editingOrderId) {
+        existingLocalOrder = await getLocalOrderForUiId(editingOrderId);
+      }
+
+      if (existingLocalOrder?.server_id) {
+        remoteOrderId = existingLocalOrder.server_id;
+
+        const { error: updateOrderError } = await supabase
+          .from("orders")
+          .update(orderPayload)
+          .eq("id", remoteOrderId)
+          .eq("restaurant_id", restaurantId);
+
+        if (updateOrderError) throw updateOrderError;
+
+        const { error: deleteRemoteItemsError } = await supabase
+          .from("order_items")
+          .delete()
+          .eq("order_id", remoteOrderId);
+
+        if (deleteRemoteItemsError) throw deleteRemoteItemsError;
+      } else {
+        const { data: insertedOrder, error: insertOrderError } = await supabase
+          .from("orders")
+          .insert([orderPayload])
+          .select()
+          .single();
+
+        if (insertOrderError || !insertedOrder) {
+          throw insertOrderError || new Error("Failed to create order");
+        }
+
+        remoteOrderId = insertedOrder.id;
+      }
+
+      const itemPayload = takeOrderItems.map((item) => ({
+        order_id: remoteOrderId,
         item_name: item.item_name,
         quantity: item.quantity,
         unit_price: item.price,
@@ -574,64 +1109,99 @@ function OwnerPageContent() {
 
       const { error: insertItemsError } = await supabase
         .from("order_items")
-        .insert(updatedItemsPayload);
+        .insert(itemPayload);
 
-      setSubmittingTakeOrder(false);
-
-      if (insertItemsError) {
-        showToast("Failed to update order items", "error");
-        return;
-      }
+      if (insertItemsError) throw insertItemsError;
 
       resetTakeOrderForm();
       setShowTakeOrderModal(false);
       await fetchOrders();
-      showToast("Order updated successfully", "success");
+      showToast("Order sent to kitchen", "success");
       return;
     }
 
-    const { data: orderData, error: orderError } = await supabase
-      .from("orders")
-      .insert([
-        {
-          restaurant_id: restaurantId,
-          ...payload,
-        },
-      ])
-      .select()
-      .single();
+    let localOrderId: number | null = null;
+    let existingLocalOrder: LocalOrderRow | null = null;
 
-    if (orderError || !orderData) {
-      setSubmittingTakeOrder(false);
-      showToast("Failed to create order", "error");
-      return;
+    if (editingOrderId) {
+      existingLocalOrder = await getLocalOrderForUiId(editingOrderId);
+      if (!existingLocalOrder?.id) {
+        throw new Error("Local order not found");
+      }
+
+      localOrderId = existingLocalOrder.id;
+
+      await localOrdersTable.update(localOrderId, {
+        table_number: takeOrderTableNumber.trim(),
+        remarks: takeOrderRemarks || null,
+        status: "pending",
+        waiter_cleared: false,
+        is_paid: false,
+        updated_at: now,
+        sync_status: existingLocalOrder.server_id ? "pending_update" : "pending_create",
+      });
+
+      const oldItems = await localOrderItemsTable
+        .where("local_order_id")
+        .equals(localOrderId)
+        .toArray();
+
+      if (oldItems.length) {
+        await localOrderItemsTable.bulkDelete(
+          oldItems
+            .map((item) => item.id)
+            .filter((id): id is number => typeof id === "number")
+        );
+      }
+    } else {
+      localOrderId = await localOrdersTable.add({
+        restaurant_id: restaurantId,
+        table_number: takeOrderTableNumber.trim(),
+        status: "pending",
+        remarks: takeOrderRemarks || null,
+        waiter_cleared: false,
+        is_paid: false,
+        created_at: now,
+        updated_at: now,
+        sync_status: "pending_create",
+      });
     }
 
-    const orderItemsPayload = takeOrderItems.map((item) => ({
-      order_id: orderData.id,
-      item_name: item.item_name,
-      quantity: item.quantity,
-      unit_price: item.price,
-      status: "pending",
-    }));
+    await localOrderItemsTable.bulkAdd(
+      takeOrderItems.map((item) => ({
+        local_order_id: localOrderId!,
+        server_order_id: existingLocalOrder?.server_id || null,
+        item_name: item.item_name,
+        quantity: item.quantity,
+        unit_price: item.price,
+        status: "pending",
+        created_at: now,
+        updated_at: now,
+        sync_status: "pending_create",
+      }))
+    );
 
-    const { error: orderItemsError } = await supabase
-      .from("order_items")
-      .insert(orderItemsPayload);
-
-    setSubmittingTakeOrder(false);
-
-    if (orderItemsError) {
-      await supabase.from("orders").delete().eq("id", orderData.id);
-      showToast("Failed to save order items", "error");
-      return;
-    }
+    await enqueueSyncAction("order", existingLocalOrder?.server_id ? "update" : "create", {
+      localId: localOrderId,
+      serverId: existingLocalOrder?.server_id || null,
+      payload: {
+        table_number: takeOrderTableNumber.trim(),
+        remarks: takeOrderRemarks || null,
+        items: takeOrderItems,
+      },
+    });
 
     resetTakeOrderForm();
     setShowTakeOrderModal(false);
     await fetchOrders();
-    showToast("Order sent to kitchen", "success");
+    showToast("Offline order saved", "success");
+  } catch (error) {
+    console.error(error);
+    showToast("Failed to save order", "error");
+  } finally {
+    setSubmittingTakeOrder(false);
   }
+}
 
   function getOrderDisplayStatus(order: OrderRow): KitchenStatusKey {
     const statuses = order.order_items?.map((item) => item.status || order.status) || [];
@@ -670,7 +1240,7 @@ function OwnerPageContent() {
     setShowHeaderMenu(false);
     setShowTakeOrderCart(false);
     setShowTakeOrderModal(true);
-    setOwnerView("order");
+    setMiniView("order");
     setEditingOrderLoading(false);
   }
 
@@ -700,34 +1270,77 @@ function OwnerPageContent() {
     const confirmCancel = await askConfirm(`Cancel order #${orderId} for table ${targetOrder.table_number}?`, "Yes, cancel", "Keep");
     if (!confirmCancel) return;
 
-    const { error: deleteItemsError } = await supabase
-      .from("order_items")
-      .delete()
-      .eq("order_id", orderId);
+    try {
+      const localOrder = await getLocalOrderForUiId(orderId);
+      if (!localOrder?.id) {
+        throw new Error("Local order not found");
+      }
 
-    if (deleteItemsError) {
-      showToast("Failed to cancel order items", "error");
-      return;
-    }
+      const localItems = await localOrderItemsTable
+        .where("local_order_id")
+        .equals(localOrder.id)
+        .toArray();
 
-    const { error: deleteOrderError } = await supabase
-      .from("orders")
-      .delete()
-      .eq("id", orderId)
-      .eq("restaurant_id", restaurantId);
+      if (isOnline && localOrder.server_id) {
+        const { error: deleteItemsError } = await supabase
+          .from("order_items")
+          .delete()
+          .eq("order_id", localOrder.server_id);
 
-    if (deleteOrderError) {
+        if (deleteItemsError) throw deleteItemsError;
+
+        const { error: deleteOrderError } = await supabase
+          .from("orders")
+          .delete()
+          .eq("id", localOrder.server_id)
+          .eq("restaurant_id", restaurantId);
+
+        if (deleteOrderError) throw deleteOrderError;
+      } else if (!isOnline) {
+        if (localOrder.server_id) {
+          await localOrdersTable.update(localOrder.id, {
+            updated_at: new Date().toISOString(),
+            sync_status: "pending_delete",
+          });
+
+          await enqueueSyncAction("order", "delete", {
+            localId: localOrder.id,
+            serverId: localOrder.server_id,
+          });
+        } else {
+          if (localItems.length) {
+            await localOrderItemsTable.bulkDelete(
+            localItems
+              .map((item) => item.id)
+              .filter((id): id is number => typeof id === "number")
+          );
+          }
+          await localOrdersTable.delete(localOrder.id);
+        }
+      }
+
+      if (isOnline || !localOrder.server_id) {
+        if (localItems.length) {
+          await localOrderItemsTable.bulkDelete(
+            localItems
+              .map((item) => item.id)
+              .filter((id): id is number => typeof id === "number")
+          );
+        }
+        await localOrdersTable.delete(localOrder.id);
+      }
+
+      if (editingOrderId === orderId) {
+        resetTakeOrderForm();
+        setShowTakeOrderModal(false);
+      }
+
+      await fetchOrders();
+      showToast(isOnline ? "Order cancelled" : "Order cancelled offline", "success");
+    } catch (error) {
+      console.error(error);
       showToast("Failed to cancel order", "error");
-      return;
     }
-
-    if (editingOrderId === orderId) {
-      resetTakeOrderForm();
-      setShowTakeOrderModal(false);
-    }
-
-    await fetchOrders();
-    showToast("Order cancelled", "success");
   }
 
 
@@ -771,304 +1384,750 @@ function printReceipt() {
     window.print();
   }
 
+  const RECEIPT_WIDTH_MM = 80;
+  const RECEIPT_MARGIN_MM = 4.5;
+  const RECEIPT_CONTENT_WIDTH_MM = RECEIPT_WIDTH_MM - RECEIPT_MARGIN_MM * 2;
+
+  function formatReceiptMoney(value: number) {
+    const normalized = Number(value || 0);
+    return Number.isInteger(normalized) ? String(normalized) : normalized.toFixed(2);
+  }
+
+  function createReceiptTempDoc() {
+    return new jsPDF({
+      orientation: "portrait",
+      unit: "mm",
+      format: [RECEIPT_WIDTH_MM, 260],
+    });
+  }
+
+  function estimateWrappedReceiptHeight(
+    value: string,
+    maxWidth: number,
+    fontSize: number,
+    lineHeight: number
+  ) {
+    const tempDoc = createReceiptTempDoc();
+    tempDoc.setFont("helvetica", "normal");
+    tempDoc.setFontSize(fontSize);
+    const lines = tempDoc.splitTextToSize(value || "", maxWidth) as string[];
+    return Math.max(lines.length, 1) * lineHeight;
+  }
+
+  function createReceiptDoc(height: number) {
+    return new jsPDF({
+      orientation: "portrait",
+      unit: "mm",
+      format: [RECEIPT_WIDTH_MM, Math.max(height, 95)],
+      compress: true,
+    });
+  }
+
   function downloadReceipt() {
     if (typeof window === "undefined" || !reportOrder) return;
 
-    const doc = new jsPDF({ unit: "pt", format: "a4" });
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const marginX = 40;
-    let y = 50;
+    const items = reportOrder.order_items || [];
+    const totalQty = items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+    const totalItems = items.length;
+    const restaurantTitle = (restaurantName || "Restaurant").trim() || "Restaurant";
 
-    const line = (textValue: string, x = marginX, fontSize = 11, align: "left" | "center" | "right" = "left") => {
-      doc.setFontSize(fontSize);
-      doc.text(textValue, align === "center" ? pageWidth / 2 : x, y, { align });
-      y += fontSize + 8;
-    };
+    let estimatedHeight = 8;
+    estimatedHeight += estimateWrappedReceiptHeight(restaurantTitle, RECEIPT_CONTENT_WIDTH_MM, 13, 5.2);
+    estimatedHeight += 5;
+    estimatedHeight += 7;
+    estimatedHeight += 4;
+    estimatedHeight += 3.5;
+    estimatedHeight += 12;
+    estimatedHeight += 3.5;
+    estimatedHeight += 5.5;
 
-    const divider = () => {
-      doc.setDrawColor(190, 190, 190);
-      doc.line(marginX, y, pageWidth - marginX, y);
-      y += 14;
-    };
-
-    const ensurePage = (extra = 20) => {
-      if (y + extra > doc.internal.pageSize.getHeight() - 40) {
-        doc.addPage();
-        y = 50;
-      }
-    };
-
-    line(`${restaurantName || "Restaurant"}`, marginX, 16, "center");
-    line(`KOT Bill`, marginX, 18, "center");
-    line(`Order #${reportOrder.id}`, marginX, 11, "center");
-    y += 4;
-    divider();
-
-    line(`Type: Dine In`);
-    line(`Table: ${reportOrder.table_number}`);
-    line(`Order By: Waiter`);
-    line(`Order At: ${new Date(reportOrder.created_at).toLocaleString()}`);
-    divider();
-
-    line(`S.N   Item`, marginX, 11);
-    doc.text(`Qty`, pageWidth - marginX, y - 19, { align: "right" });
-    divider();
-
-    (reportOrder.order_items || []).forEach((item, index) => {
-      ensurePage(40);
-      const itemLines = doc.splitTextToSize(`${index + 1}. ${item.item_name}`, pageWidth - marginX * 2 - 50);
-      doc.setFontSize(11);
-      doc.text(itemLines, marginX, y);
-      doc.text(String(item.quantity || 0), pageWidth - marginX, y, { align: "right" });
-      y += itemLines.length * 16 + 6;
+    items.forEach((item, index) => {
+      estimatedHeight += estimateWrappedReceiptHeight(
+        `${index + 1}. ${item.item_name}`,
+        RECEIPT_CONTENT_WIDTH_MM - 12,
+        10,
+        4.6
+      );
+      estimatedHeight += 1.8;
     });
 
-    divider();
-    line(`Total Dishes: ${(reportOrder.order_items || []).length}`);
-    line(
-      `Total Qty: ${(reportOrder.order_items || []).reduce((sum, item) => sum + Number(item.quantity || 0), 0)}`
-    );
+    estimatedHeight += 3.5;
+    estimatedHeight += 10;
 
     if (reportOrder.remarks) {
-      ensurePage(50);
-      divider();
-      line(`Remarks:`, marginX, 11);
-      const remarkLines = doc.splitTextToSize(reportOrder.remarks, pageWidth - marginX * 2);
-      doc.text(remarkLines, marginX, y);
-      y += remarkLines.length * 16 + 6;
+      estimatedHeight += 3.5;
+      estimatedHeight += 4.4;
+      estimatedHeight += estimateWrappedReceiptHeight(
+        reportOrder.remarks,
+        RECEIPT_CONTENT_WIDTH_MM,
+        9,
+        4.2
+      );
+      estimatedHeight += 1.2;
     }
 
-    divider();
-    line(`Viewed At: ${new Date().toLocaleString()}`);
-    y += 6;
-    line(`Thank You!`, marginX, 12, "center");
+    estimatedHeight += 3.5;
+    estimatedHeight += 12;
 
-    doc.save(`receipt-table-${reportOrder.table_number}-order-${reportOrder.id}.pdf`);
+    const doc = createReceiptDoc(estimatedHeight);
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const qtyX = pageWidth - RECEIPT_MARGIN_MM;
+    let y = 8;
+
+    const centerText = (
+      value: string,
+      fontSize = 10,
+      style: "normal" | "bold" = "normal",
+      gap = 4.2
+    ) => {
+      doc.setFont("helvetica", style);
+      doc.setFontSize(fontSize);
+      const lines = doc.splitTextToSize(value, RECEIPT_CONTENT_WIDTH_MM) as string[];
+      lines.forEach((line) => {
+        doc.text(line, pageWidth / 2, y, { align: "center" });
+        y += gap;
+      });
+    };
+
+    const leftText = (
+      value: string,
+      fontSize = 9,
+      style: "normal" | "bold" = "normal",
+      gap = 4.1
+    ) => {
+      doc.setFont("helvetica", style);
+      doc.setFontSize(fontSize);
+      const lines = doc.splitTextToSize(value, RECEIPT_CONTENT_WIDTH_MM) as string[];
+      lines.forEach((line) => {
+        doc.text(line, RECEIPT_MARGIN_MM, y);
+        y += gap;
+      });
+    };
+
+    const dashedDivider = (spaceAfter = 3.5) => {
+      doc.setDrawColor(80, 80, 80);
+      doc.setLineWidth(0.2);
+      doc.setLineDashPattern([1.2, 1.2], 0);
+      doc.line(RECEIPT_MARGIN_MM, y, pageWidth - RECEIPT_MARGIN_MM, y);
+      doc.setLineDashPattern([], 0);
+      y += spaceAfter;
+    };
+
+    centerText(restaurantTitle.toUpperCase(), 13, "bold", 5.2);
+    y += 0.8;
+    centerText("KOT BILL", 11.5, "bold", 4.8);
+    centerText(`Order #${reportOrder.id}`, 9, "normal", 4.1);
+    dashedDivider();
+
+    leftText(`Table : ${reportOrder.table_number}`, 9.3, "bold", 4.4);
+    leftText(`Time  : ${new Date(reportOrder.created_at).toLocaleString()}`, 8.4, "normal", 4.1);
+    dashedDivider();
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9.2);
+    doc.text("ITEM", RECEIPT_MARGIN_MM, y);
+    doc.text("QTY", qtyX, y, { align: "right" });
+    y += 2;
+    dashedDivider();
+
+    items.forEach((item, index) => {
+      const itemLines = doc.splitTextToSize(
+        `${index + 1}. ${item.item_name}`,
+        RECEIPT_CONTENT_WIDTH_MM - 12
+      ) as string[];
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      itemLines.forEach((line, lineIndex) => {
+        doc.text(line, RECEIPT_MARGIN_MM, y);
+        if (lineIndex === 0) {
+          doc.text(String(item.quantity || 0), qtyX, y, { align: "right" });
+        }
+        y += 4.6;
+      });
+      y += 1.8;
+    });
+
+    dashedDivider();
+    leftText(`Total Items : ${totalItems}`, 9, "bold", 4.4);
+    leftText(`Total Qty   : ${totalQty}`, 9, "bold", 4.4);
+
+    if (reportOrder.remarks) {
+      dashedDivider();
+      leftText("REMARKS", 8.8, "bold", 4.2);
+      leftText(reportOrder.remarks, 9, "normal", 4.2);
+    }
+
+    dashedDivider();
+    centerText("--- KITCHEN COPY ---", 8.8, "bold", 4.2);
+    centerText("--- THANK YOU ---", 9.6, "bold", 4.4);
+
+    doc.save(`kot-bill-table-${reportOrder.table_number}-order-${reportOrder.id}.pdf`);
   }
 
   function downloadPaidOrderBill() {
     if (typeof window === "undefined" || !selectedPaidOrder) return;
 
-    const doc = new jsPDF({ unit: "pt", format: "a4" });
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const marginX = 40;
-    let y = 50;
+    const items = selectedPaidOrder.order_items || [];
+    const totalAmount = getOrderTotal(selectedPaidOrder);
+    const totalQty = items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+    const restaurantTitle = (restaurantName || "Restaurant").trim() || "Restaurant";
 
-    const line = (textValue: string, x = marginX, fontSize = 11, align: "left" | "center" | "right" = "left") => {
-      doc.setFontSize(fontSize);
-      doc.text(textValue, align === "center" ? pageWidth / 2 : x, y, { align });
-      y += fontSize + 8;
-    };
+    let estimatedHeight = 8;
+    estimatedHeight += estimateWrappedReceiptHeight(restaurantTitle, RECEIPT_CONTENT_WIDTH_MM, 13, 5.2);
+    estimatedHeight += 5;
+    estimatedHeight += 7;
+    estimatedHeight += 4;
+    estimatedHeight += 3.5;
+    estimatedHeight += 16;
+    estimatedHeight += 3.5;
+    estimatedHeight += 5.5;
 
-    const divider = () => {
-      doc.setDrawColor(190, 190, 190);
-      doc.line(marginX, y, pageWidth - marginX, y);
-      y += 14;
-    };
-
-    const ensurePage = (extra = 20) => {
-      if (y + extra > doc.internal.pageSize.getHeight() - 40) {
-        doc.addPage();
-        y = 50;
-      }
-    };
-
-    line(`${restaurantName || "Restaurant"}`, marginX, 16, "center");
-    line(`Customer Bill`, marginX, 18, "center");
-    line(`Order #${selectedPaidOrder.id}`, marginX, 11, "center");
-    y += 4;
-    divider();
-
-    line(`Table: ${selectedPaidOrder.table_number}`);
-    line(
-      `Paid At: ${selectedPaidOrder.paid_at ? new Date(selectedPaidOrder.paid_at).toLocaleString() : "-"}`
-    );
-    line(`Payment: ${formatPaymentMethod(selectedPaidOrder.payment_method)}`);
-    divider();
-
-    line(`Item`, marginX, 11);
-    doc.text(`Qty`, pageWidth - marginX - 70, y - 19, { align: "right" });
-    doc.text(`Amount`, pageWidth - marginX, y - 19, { align: "right" });
-    divider();
-
-    (selectedPaidOrder.order_items || []).forEach((item) => {
-      ensurePage(40);
-      const itemLines = doc.splitTextToSize(`${item.item_name}`, pageWidth - marginX * 2 - 110);
-      const amount = Number(item.quantity || 0) * Number(item.unit_price || 0);
-      doc.setFontSize(11);
-      doc.text(itemLines, marginX, y);
-      doc.text(String(item.quantity || 0), pageWidth - marginX - 70, y, { align: "right" });
-      doc.text(`Rs. ${amount}`, pageWidth - marginX, y, { align: "right" });
-      y += itemLines.length * 16 + 6;
+    items.forEach((item) => {
+      estimatedHeight += estimateWrappedReceiptHeight(
+        item.item_name,
+        RECEIPT_CONTENT_WIDTH_MM - 25,
+        10,
+        4.6
+      );
+      estimatedHeight += 1.8;
     });
 
-    divider();
-    doc.setFontSize(13);
-    doc.text(`Total: Rs. ${getOrderTotal(selectedPaidOrder)}`, pageWidth - marginX, y, {
-      align: "right",
-    });
-    y += 22;
+    estimatedHeight += 3.5;
+    estimatedHeight += 7;
+    estimatedHeight += 5;
+    estimatedHeight += 4.4;
 
     if (selectedPaidOrder.remarks) {
-      ensurePage(50);
-      divider();
-      line(`Remarks:`, marginX, 11);
-      const remarkLines = doc.splitTextToSize(selectedPaidOrder.remarks, pageWidth - marginX * 2);
-      doc.text(remarkLines, marginX, y);
-      y += remarkLines.length * 16 + 6;
+      estimatedHeight += 3.5;
+      estimatedHeight += 4.4;
+      estimatedHeight += estimateWrappedReceiptHeight(
+        selectedPaidOrder.remarks,
+        RECEIPT_CONTENT_WIDTH_MM,
+        9,
+        4.2
+      );
+      estimatedHeight += 1.2;
     }
 
-    y += 8;
-    line(`Thank You!`, marginX, 12, "center");
+    estimatedHeight += 3.5;
+    estimatedHeight += 10;
+
+    const doc = createReceiptDoc(estimatedHeight);
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const qtyX = pageWidth - RECEIPT_MARGIN_MM - 16;
+    const amtX = pageWidth - RECEIPT_MARGIN_MM;
+    let y = 8;
+
+    const centerText = (
+      value: string,
+      fontSize = 10,
+      style: "normal" | "bold" = "normal",
+      gap = 4.2
+    ) => {
+      doc.setFont("helvetica", style);
+      doc.setFontSize(fontSize);
+      const lines = doc.splitTextToSize(value, RECEIPT_CONTENT_WIDTH_MM) as string[];
+      lines.forEach((line) => {
+        doc.text(line, pageWidth / 2, y, { align: "center" });
+        y += gap;
+      });
+    };
+
+    const leftText = (
+      value: string,
+      fontSize = 9,
+      style: "normal" | "bold" = "normal",
+      gap = 4.1
+    ) => {
+      doc.setFont("helvetica", style);
+      doc.setFontSize(fontSize);
+      const lines = doc.splitTextToSize(value, RECEIPT_CONTENT_WIDTH_MM) as string[];
+      lines.forEach((line) => {
+        doc.text(line, RECEIPT_MARGIN_MM, y);
+        y += gap;
+      });
+    };
+
+    const dashedDivider = (spaceAfter = 3.5) => {
+      doc.setDrawColor(80, 80, 80);
+      doc.setLineWidth(0.2);
+      doc.setLineDashPattern([1.2, 1.2], 0);
+      doc.line(RECEIPT_MARGIN_MM, y, pageWidth - RECEIPT_MARGIN_MM, y);
+      doc.setLineDashPattern([], 0);
+      y += spaceAfter;
+    };
+
+    centerText(restaurantTitle.toUpperCase(), 13, "bold", 5.2);
+    y += 0.8;
+    centerText("CUSTOMER BILL", 11.5, "bold", 4.8);
+    centerText(`Order #${selectedPaidOrder.id}`, 9, "normal", 4.1);
+    dashedDivider();
+
+    leftText(`Table   : ${selectedPaidOrder.table_number}`, 9.3, "bold", 4.4);
+    leftText(`Payment : ${formatPaymentMethod(selectedPaidOrder.payment_method)}`, 9.1, "bold", 4.3);
+    leftText(
+      `Paid At : ${selectedPaidOrder.paid_at ? new Date(selectedPaidOrder.paid_at).toLocaleString() : "-"}`,
+      8.3,
+      "normal",
+      4.1
+    );
+    dashedDivider();
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8.8);
+    doc.text("ITEM", RECEIPT_MARGIN_MM, y);
+    doc.text("QTY", qtyX, y, { align: "right" });
+    doc.text("AMT", amtX, y, { align: "right" });
+    y += 2;
+    dashedDivider();
+
+    items.forEach((item) => {
+      const amount = Number(item.quantity || 0) * Number(item.unit_price || 0);
+      const itemLines = doc.splitTextToSize(item.item_name, RECEIPT_CONTENT_WIDTH_MM - 25) as string[];
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      itemLines.forEach((line, lineIndex) => {
+        doc.text(line, RECEIPT_MARGIN_MM, y);
+        if (lineIndex === 0) {
+          doc.text(String(item.quantity || 0), qtyX, y, { align: "right" });
+          doc.text(formatReceiptMoney(amount), amtX, y, { align: "right" });
+        }
+        y += 4.6;
+      });
+      y += 1.8;
+    });
+
+    dashedDivider();
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10.5);
+    doc.text("TOTAL QTY", RECEIPT_MARGIN_MM, y);
+    doc.text(String(totalQty), amtX, y, { align: "right" });
+    y += 5;
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(11.5);
+    doc.text("TOTAL", RECEIPT_MARGIN_MM, y);
+    doc.text(`Rs. ${formatReceiptMoney(totalAmount)}`, amtX, y, { align: "right" });
+    y += 4.4;
+
+    if (selectedPaidOrder.remarks) {
+      dashedDivider();
+      leftText("REMARKS", 8.8, "bold", 4.2);
+      leftText(selectedPaidOrder.remarks, 9, "normal", 4.2);
+    }
+
+    dashedDivider();
+    centerText("--- THANK YOU ---", 9.8, "bold", 4.4);
+    centerText("Please Visit Again", 8.8, "normal", 4.1);
 
     doc.save(`customer-bill-table-${selectedPaidOrder.table_number}-order-${selectedPaidOrder.id}.pdf`);
   }
 
-  async function markOrderAsPaidFromReport() {
-    if (!restaurantId || !reportOrder) {
-      showToast("Invalid order", "error");
-      return;
+async function markOrderAsPaidFromReport() {
+  if (!restaurantId || !reportOrder) {
+    showToast("Invalid order", "error");
+    return;
+  }
+
+  const confirmPay = await askConfirm(
+    `Table ${reportOrder.table_number} ko order #${reportOrder.id} lai ${reportPaymentMethod.toUpperCase()} bata paid mark garne?`,
+    "Mark paid",
+    "Back"
+  );
+  if (!confirmPay) return;
+
+  setMarkingReportPaid(true);
+
+  const now = new Date().toISOString();
+
+  try {
+    const targetLocalOrder = await getLocalOrderForUiId(reportOrder.id);
+    if (!targetLocalOrder) {
+      throw new Error("Local order not found");
     }
 
-    const confirmPay = await askConfirm(`Table ${reportOrder.table_number} ko order #${reportOrder.id} lai ${reportPaymentMethod.toUpperCase()} bata paid mark garne?`, "Mark paid", "Back");
-    if (!confirmPay) return;
+    if (isOnline && targetLocalOrder.server_id) {
+      const { error } = await supabase
+        .from("orders")
+        .update({
+          is_paid: true,
+          payment_method: reportPaymentMethod,
+          paid_at: now,
+        })
+        .eq("id", targetLocalOrder.server_id)
+        .eq("restaurant_id", restaurantId);
 
-    setMarkingReportPaid(true);
-
-    const { error } = await supabase
-      .from("orders")
-      .update({
+      if (error) throw error;
+    } else {
+      await localOrdersTable.update(targetLocalOrder.id!, {
         is_paid: true,
         payment_method: reportPaymentMethod,
-        paid_at: new Date().toISOString(),
-      })
-      .eq("id", reportOrder.id)
-      .eq("restaurant_id", restaurantId);
+        paid_at: now,
+        updated_at: now,
+        sync_status: targetLocalOrder.server_id ? "pending_update" : "pending_create",
+      });
 
-    setMarkingReportPaid(false);
-
-    if (error) {
-      showToast("Failed to mark order as paid", "error");
-      return;
+      await enqueueSyncAction("order", targetLocalOrder.server_id ? "update" : "create", {
+        localId: targetLocalOrder.id!,
+        serverId: targetLocalOrder.server_id || null,
+        payload: { is_paid: true, payment_method: reportPaymentMethod, paid_at: now },
+      });
     }
 
     await fetchOrders();
     setReportOrder(null);
     setReportPaymentMethod("cash");
     showToast("Order marked as paid", "success");
+  } catch (error) {
+    console.error(error);
+    showToast("Failed to mark order as paid", "error");
+  } finally {
+    setMarkingReportPaid(false);
   }
-
-  async function fetchRestaurant(showLoader = false) {
-    if (!restaurantId) {
-      setRestaurantExists(false);
-      setCheckingRestaurant(false);
-      return;
-    }
-
-    if (showLoader) {
-      setCheckingRestaurant(true);
-    }
-
-    const { data, error } = await supabase
-      .from("restaurants")
-      .select("*")
-      .eq("id", restaurantId)
-      .single();
-
-    if (error || !data) {
-      setRestaurantExists(false);
-      setCheckingRestaurant(false);
-      return;
-    }
-
-    const restaurantData = data as Record<string, any>;
-
-    setRestaurantExists(true);
-
-    const fetchedRestaurantName =
-      restaurantData.name ||
-      restaurantData.restaurant_name ||
-      restaurantData.restaurant ||
-      restaurantData.title ||
-      "";
-
-    const fetchedOwnerPassword = restaurantData.owner_password || "";
-    const fetchedWaiterPassword = restaurantData.waiter_password || "";
-    const fetchedKitchenPassword = restaurantData.kitchen_password || "";
-    const fetchedProfitPercent = Number(restaurantData.profit_percent ?? 40);
-
-    const setupComplete =
-      restaurantData.is_setup_done === true ||
-      (!!fetchedRestaurantName &&
-        fetchedOwnerPassword !== "setup_pending" &&
-        fetchedWaiterPassword !== "setup_pending" &&
-        fetchedKitchenPassword !== "setup_pending");
-
-    setIsSetupDone(setupComplete);
-
-    setRestaurantName(fetchedRestaurantName || "Restaurant");
-    setOwnerPasswordFromDB(fetchedOwnerPassword);
-    setProfitPercent(Number.isFinite(fetchedProfitPercent) ? fetchedProfitPercent : 40);
-    if (!passwordsLoaded) {
-  setNewOwnerPassword(fetchedOwnerPassword);
-  setNewWaiterPassword(fetchedWaiterPassword);
-  setNewKitchenPassword(fetchedKitchenPassword);
-  setPasswordsLoaded(true);
 }
 
-    if (!setupComplete) {
-      setSetupRestaurantName(fetchedRestaurantName || "");
-      setSetupOwnerPassword(
-        fetchedOwnerPassword === "setup_pending" ? "" : fetchedOwnerPassword
-      );
-      setSetupWaiterPassword(
-        fetchedWaiterPassword === "setup_pending" ? "" : fetchedWaiterPassword
-      );
-      setSetupKitchenPassword(
-        fetchedKitchenPassword === "setup_pending" ? "" : fetchedKitchenPassword
-      );
-      setOwnerUnlocked(false);
+async function fetchRestaurant(showLoader = false) {
+  if (!restaurantId) {
+    setCheckingRestaurant(true);
+    setRestaurantExists(true);
+    return;
+  }
 
-      if (typeof window !== "undefined") {
-        localStorage.removeItem(`owner_logged_in_${restaurantId}`);
+  if (showLoader) {
+    setCheckingRestaurant(true);
+  }
+
+  if (!isOnline) {
+    const localRestaurant = await localRestaurantCacheTable
+      .where("restaurant_id")
+      .equals(restaurantId)
+      .first();
+
+    if (!localRestaurant) {
+      const [localOrders, localMenuItems, localQueueItems] = await Promise.all([
+        localOrdersTable.where("restaurant_id").equals(restaurantId).toArray(),
+        localMenuItemsTable.where("restaurant_id").equals(restaurantId).toArray(),
+        localSyncQueueTable.where("restaurant_id").equals(restaurantId).toArray(),
+      ]);
+
+      const hasOfflineData =
+        localOrders.length > 0 || localMenuItems.length > 0 || localQueueItems.length > 0;
+
+      if (!hasOfflineData) {
+        setRestaurantExists(false);
+        setCheckingRestaurant(false);
+        return;
       }
+
+      setRestaurantExists(true);
+      setIsSetupDone(true);
+      setRestaurantName("Restaurant");
+      setProfitPercent(40);
+      setCheckingRestaurant(false);
+      return;
+    }
+
+    setRestaurantExists(true);
+    setIsSetupDone(true);
+    setRestaurantName(localRestaurant.name || "Restaurant");
+    setOwnerPasswordFromDB(localRestaurant.owner_password || "");
+    setProfitPercent(Number(localRestaurant.profit_percent ?? 40));
+
+    if (!passwordsLoaded) {
+      setNewOwnerPassword(localRestaurant.owner_password || "");
+      setNewWaiterPassword(localRestaurant.waiter_password || "");
+      setNewKitchenPassword(localRestaurant.kitchen_password || "");
+      setPasswordsLoaded(true);
     }
 
     setCheckingRestaurant(false);
+    return;
   }
 
-  async function fetchOrders() {
-    if (!restaurantId || !isSetupDone) return;
+  const { data, error } = await supabase
+    .from("restaurants")
+    .select("*")
+    .eq("id", restaurantId)
+    .single();
 
-    const { data, error } = await supabase
-      .from("orders")
-      .select("*, order_items(*)")
-      .eq("restaurant_id", restaurantId)
-      .order("created_at", { ascending: false });
+  if (error || !data) {
+    setRestaurantExists(false);
+    setCheckingRestaurant(false);
+    return;
+  }
 
-    if (!error && data) {
-      orderIdsRef.current = (data as OrderRow[]).map((order) => order.id);
-      setOrders(data as OrderRow[]);
+  const restaurantData = data as Record<string, unknown> & {
+    name?: string;
+    restaurant_name?: string;
+    restaurant?: string;
+    title?: string;
+    owner_password?: string;
+    waiter_password?: string;
+    kitchen_password?: string;
+    profit_percent?: number | string | null;
+    is_setup_done?: boolean;
+  };
+
+  setRestaurantExists(true);
+
+  const fetchedRestaurantName =
+    restaurantData.name ||
+    restaurantData.restaurant_name ||
+    restaurantData.restaurant ||
+    restaurantData.title ||
+    "";
+
+  const fetchedOwnerPassword = restaurantData.owner_password || "";
+  const fetchedWaiterPassword = restaurantData.waiter_password || "";
+  const fetchedKitchenPassword = restaurantData.kitchen_password || "";
+  const fetchedProfitPercent = Number(restaurantData.profit_percent ?? 40);
+
+  const setupComplete =
+    restaurantData.is_setup_done === true ||
+    (!!fetchedRestaurantName &&
+      fetchedOwnerPassword !== "setup_pending" &&
+      fetchedWaiterPassword !== "setup_pending" &&
+      fetchedKitchenPassword !== "setup_pending");
+
+  await localRestaurantCacheTable.where("restaurant_id").equals(restaurantId).delete();
+
+  await localRestaurantCacheTable.add({
+    restaurant_id: restaurantId,
+    name: fetchedRestaurantName || "Restaurant",
+    owner_password: fetchedOwnerPassword,
+    waiter_password: fetchedWaiterPassword,
+    kitchen_password: fetchedKitchenPassword,
+    profit_percent: Number.isFinite(fetchedProfitPercent) ? fetchedProfitPercent : 40,
+    is_setup_done: setupComplete,
+    updated_at: new Date().toISOString(),
+  });
+
+  setIsSetupDone(setupComplete);
+  setRestaurantName(fetchedRestaurantName || "Restaurant");
+  setOwnerPasswordFromDB(fetchedOwnerPassword);
+  setProfitPercent(Number.isFinite(fetchedProfitPercent) ? fetchedProfitPercent : 40);
+
+  if (!passwordsLoaded) {
+    setNewOwnerPassword(fetchedOwnerPassword);
+    setNewWaiterPassword(fetchedWaiterPassword);
+    setNewKitchenPassword(fetchedKitchenPassword);
+    setPasswordsLoaded(true);
+  }
+
+  if (!setupComplete) {
+    setSetupRestaurantName(fetchedRestaurantName || "");
+    setSetupOwnerPassword(
+      fetchedOwnerPassword === "setup_pending" ? "" : fetchedOwnerPassword
+    );
+    setSetupWaiterPassword(
+      fetchedWaiterPassword === "setup_pending" ? "" : fetchedWaiterPassword
+    );
+    setSetupKitchenPassword(
+      fetchedKitchenPassword === "setup_pending" ? "" : fetchedKitchenPassword
+    );
+    setOwnerUnlocked(false);
+
+    if (typeof window !== "undefined") {
+      localStorage.removeItem(`owner_logged_in_${restaurantId}`);
     }
   }
 
-  async function fetchMenu() {
-    if (!restaurantId || !isSetupDone) return;
+  setCheckingRestaurant(false);
+}
 
-    const { data, error } = await supabase
-      .from("menu_items")
-      .select("*")
-      .eq("restaurant_id", restaurantId)
-      .order("item_name", { ascending: true });
+async function fetchOrders() {
+  if (!restaurantId || !isSetupDone) return;
 
-    if (!error && data) {
-      setMenuItems(data as MenuItem[]);
+  if (!isOnline) {
+    const localOrders = await localOrdersTable
+      .where("restaurant_id")
+      .equals(restaurantId)
+      .toArray();
+
+    const localOrderIds = localOrders
+      .map((order) => order.id)
+      .filter((id): id is number => typeof id === "number");
+    const allLocalItems = await localOrderItemsTable.toArray();
+    const localItems = allLocalItems.filter((item) => localOrderIds.includes(item.local_order_id));
+
+    const mappedOrders = localOrders
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .map((order) => ({
+        id: order.server_id || order.id || 0,
+        table_number: order.table_number,
+        status: order.status,
+        created_at: order.created_at,
+        waiter_cleared: order.waiter_cleared ?? false,
+        is_paid: order.is_paid ?? false,
+        payment_method: order.payment_method ?? null,
+        paid_at: order.paid_at ?? null,
+        remarks: order.remarks ?? null,
+        order_items: localItems
+          .filter((item) => item.local_order_id === order.id)
+          .map((item) => ({
+            id: item.server_id || item.id || 0,
+            item_name: item.item_name,
+            quantity: Number(item.quantity || 0),
+            unit_price: Number(item.unit_price || 0),
+            status: item.status || order.status,
+          })),
+      }));
+
+    orderIdsRef.current = mappedOrders.map((order) => order.id);
+    setOrders(mappedOrders as OrderRow[]);
+    return;
+  }
+
+  try {
+    await syncLocalChanges();
+  } catch (error) {
+    console.error(error);
+  }
+
+  const { data, error } = await supabase
+    .from("orders")
+    .select("*, order_items(*)")
+    .eq("restaurant_id", restaurantId)
+    .order("created_at", { ascending: false });
+
+  if (!error && data) {
+    const remoteOrders = data as OrderRow[];
+
+    orderIdsRef.current = remoteOrders.map((order) => order.id);
+    setOrders(remoteOrders);
+
+    const existingLocalOrders = await localOrdersTable
+      .where("restaurant_id")
+      .equals(restaurantId)
+      .toArray();
+    const existingLocalOrderIds = existingLocalOrders
+      .map((order) => order.id)
+      .filter((id): id is number => typeof id === "number");
+
+    if (existingLocalOrderIds.length > 0) {
+      const allLocalItems = await localOrderItemsTable.toArray();
+      const targetLocalItemIds = allLocalItems
+        .filter((item) => existingLocalOrderIds.includes(item.local_order_id))
+        .map((item) => item.id)
+        .filter((id): id is number => typeof id === "number");
+
+      if (targetLocalItemIds.length > 0) {
+        await localOrderItemsTable.bulkDelete(targetLocalItemIds);
+      }
+    }
+
+    await localOrdersTable.where("restaurant_id").equals(restaurantId).delete();
+
+    for (const order of remoteOrders) {
+      const localOrderId = await localOrdersTable.add({
+        server_id: order.id,
+        restaurant_id: restaurantId,
+        table_number: order.table_number,
+        status: order.status,
+        remarks: order.remarks || null,
+        waiter_cleared: order.waiter_cleared ?? false,
+        is_paid: order.is_paid ?? false,
+        payment_method: order.payment_method || null,
+        paid_at: order.paid_at || null,
+        created_at: order.created_at,
+        updated_at: new Date().toISOString(),
+        sync_status: "synced",
+      });
+
+      if (order.order_items?.length) {
+        await localOrderItemsTable.bulkAdd(
+          order.order_items.map((item) => ({
+            local_order_id: localOrderId,
+            server_order_id: order.id,
+            server_id: item.id,
+            item_name: item.item_name,
+            quantity: Number(item.quantity || 0),
+            unit_price: Number(item.unit_price || 0),
+            status: item.status || order.status,
+            created_at: order.created_at,
+            updated_at: new Date().toISOString(),
+            sync_status: "synced",
+          }))
+        );
+      }
     }
   }
+}
+
+async function fetchMenu() {
+  if (!restaurantId || !isSetupDone) return;
+
+  if (!isOnline) {
+    const localMenu = await localMenuItemsTable
+      .where("restaurant_id")
+      .equals(restaurantId)
+      .toArray();
+
+    setMenuItems(
+      localMenu
+        .filter((item) => item.sync_status !== "pending_delete")
+        .map((item) => ({
+          id: item.server_id || item.id || 0,
+          item_name: item.item_name,
+          price: Number(item.price || 0),
+          created_at: item.created_at,
+        }))
+    );
+    return;
+  }
+
+  try {
+    await syncLocalChanges();
+  } catch (error) {
+    console.error(error);
+  }
+
+  const { data, error } = await supabase
+    .from("menu_items")
+    .select("*")
+    .eq("restaurant_id", restaurantId)
+    .order("item_name", { ascending: true });
+
+  if (!error && data) {
+    const remoteMenu = data as MenuItem[];
+    setMenuItems(remoteMenu);
+
+    await localMenuItemsTable.where("restaurant_id").equals(restaurantId).delete();
+
+    if (remoteMenu.length) {
+      await localMenuItemsTable.bulkAdd(
+        remoteMenu.map((item) => ({
+          server_id: item.id,
+          restaurant_id: restaurantId,
+          item_name: item.item_name,
+          price: Number(item.price || 0),
+          created_at: item.created_at,
+          updated_at: new Date().toISOString(),
+          sync_status: "synced",
+        }))
+      );
+    }
+  }
+}
 
   useEffect(() => {
-    fetchRestaurant(true);
-  }, [restaurantId]);
+  fetchRestaurant(true);
+}, [restaurantId, isOnline]);
+
+  useEffect(() => {
+    if (!restaurantId || !isSetupDone || !isOnline) return;
+
+    syncLocalChanges()
+      .then(() => {
+        fetchOrders();
+        fetchMenu();
+      })
+      .catch((error) => {
+        console.error(error);
+      });
+  }, [restaurantId, isSetupDone, isOnline]);
 
   useEffect(() => {
     if (!restaurantId || !isSetupDone) return;
@@ -1077,7 +2136,7 @@ function printReceipt() {
     fetchMenu();
 
     const ordersChannel = supabase
-      .channel(`owner-orders-${restaurantId}`)
+      .channel(`mini-orders-${restaurantId}`)
       .on(
         "postgres_changes",
         {
@@ -1093,7 +2152,7 @@ function printReceipt() {
       .subscribe();
 
     const menuItemsChannel = supabase
-      .channel(`owner-menu-${restaurantId}`)
+      .channel(`mini-menu-${restaurantId}`)
       .on(
         "postgres_changes",
         {
@@ -1109,7 +2168,7 @@ function printReceipt() {
       .subscribe();
 
     const orderItemsChannel = supabase
-      .channel(`owner-order-items-${restaurantId}`)
+      .channel(`mini-order-items-${restaurantId}`)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "order_items" },
@@ -1212,7 +2271,7 @@ function printReceipt() {
     if (ownerPasswordInput === ownerPasswordFromDB) {
       setOwnerUnlocked(true);
       setOwnerPasswordInput("");
-      setOwnerView("dashboard");
+      setMiniView("dashboard");
 
       if (restaurantId) {
         localStorage.setItem(`owner_logged_in_${restaurantId}`, "true");
@@ -1230,7 +2289,7 @@ function printReceipt() {
     }
 
     setOwnerUnlocked(false);
-    setOwnerView("dashboard");
+    setMiniView("dashboard");
     setPopupView(null);
     setShowHeaderMenu(false);
     setEditingMenuId(null);
@@ -1261,23 +2320,41 @@ function printReceipt() {
       return;
     }
 
-    const { error } = await supabase.from("menu_items").insert([
-      {
-        restaurant_id: restaurantId,
-        item_name: newItemName.trim(),
-        price: Number(newItemPrice),
-      },
-    ]);
+    try {
+      if (isOnline) {
+        const { error } = await supabase.from("menu_items").insert([
+          {
+            restaurant_id: restaurantId,
+            item_name: newItemName.trim(),
+            price: Number(newItemPrice),
+          },
+        ]);
 
-    if (error) {
+        if (error) throw error;
+      } else {
+        const localId = await localMenuItemsTable.add({
+          restaurant_id: restaurantId,
+          item_name: newItemName.trim(),
+          price: Number(newItemPrice),
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          sync_status: "pending_create",
+        });
+
+        await enqueueSyncAction("menu_item", "create", {
+          localId,
+          payload: { item_name: newItemName.trim(), price: Number(newItemPrice) },
+        });
+      }
+
+      setNewItemName("");
+      setNewItemPrice("");
+      await fetchMenu();
+      showToast("Menu item added", "success");
+    } catch (error) {
+      console.error(error);
       showToast("Failed to add menu item", "error");
-      return;
     }
-
-    setNewItemName("");
-    setNewItemPrice("");
-    fetchMenu();
-    showToast("Menu item added", "success");
   }
 
   function startEditMenuItem(menu: MenuItem) {
@@ -1308,23 +2385,54 @@ function printReceipt() {
       return;
     }
 
-    const { error } = await supabase
-      .from("menu_items")
-      .update({
-        item_name: editingItemName.trim(),
-        price: Number(editingItemPrice),
-      })
-      .eq("id", id)
-      .eq("restaurant_id", restaurantId);
+    try {
+      const localMenuItems = await localMenuItemsTable
+        .where("restaurant_id")
+        .equals(restaurantId)
+        .toArray();
 
-    if (error) {
+      const targetLocalMenu =
+        localMenuItems.find((item) => item.server_id === id) ||
+        localMenuItems.find((item) => item.id === id);
+
+      if (isOnline) {
+        const remoteId = targetLocalMenu?.server_id || id;
+        const { error } = await supabase
+          .from("menu_items")
+          .update({
+            item_name: editingItemName.trim(),
+            price: Number(editingItemPrice),
+          })
+          .eq("id", remoteId)
+          .eq("restaurant_id", restaurantId);
+
+        if (error) throw error;
+      } else {
+        if (!targetLocalMenu?.id) {
+          throw new Error("Local menu item not found");
+        }
+
+        await localMenuItemsTable.update(targetLocalMenu.id, {
+          item_name: editingItemName.trim(),
+          price: Number(editingItemPrice),
+          updated_at: new Date().toISOString(),
+          sync_status: targetLocalMenu.server_id ? "pending_update" : "pending_create",
+        });
+
+        await enqueueSyncAction("menu_item", targetLocalMenu.server_id ? "update" : "create", {
+          localId: targetLocalMenu.id,
+          serverId: targetLocalMenu.server_id || null,
+          payload: { item_name: editingItemName.trim(), price: Number(editingItemPrice) },
+        });
+      }
+
+      cancelEditMenuItem();
+      await fetchMenu();
+      showToast("Menu item updated", "success");
+    } catch (error) {
+      console.error(error);
       showToast("Failed to update menu item", "error");
-      return;
     }
-
-    cancelEditMenuItem();
-    fetchMenu();
-    showToast("Menu item updated", "success");
   }
 
   async function deleteMenuItem(id: number) {
@@ -1336,19 +2444,49 @@ function printReceipt() {
     const confirmDelete = await askConfirm("Delete this menu item?", "Delete", "Keep");
     if (!confirmDelete) return;
 
-    const { error } = await supabase
-      .from("menu_items")
-      .delete()
-      .eq("id", id)
-      .eq("restaurant_id", restaurantId);
+    try {
+      const localMenuItems = await localMenuItemsTable
+        .where("restaurant_id")
+        .equals(restaurantId)
+        .toArray();
 
-    if (error) {
+      const targetLocalMenu =
+        localMenuItems.find((item) => item.server_id === id) ||
+        localMenuItems.find((item) => item.id === id);
+
+      if (isOnline) {
+        const remoteId = targetLocalMenu?.server_id || id;
+        const { error } = await supabase
+          .from("menu_items")
+          .delete()
+          .eq("id", remoteId)
+          .eq("restaurant_id", restaurantId);
+
+        if (error) throw error;
+      } else {
+        if (!targetLocalMenu?.id) throw new Error("Local menu item not found");
+
+        if (targetLocalMenu.server_id) {
+          await localMenuItemsTable.update(targetLocalMenu.id, {
+            updated_at: new Date().toISOString(),
+            sync_status: "pending_delete",
+          });
+
+          await enqueueSyncAction("menu_item", "delete", {
+            localId: targetLocalMenu.id,
+            serverId: targetLocalMenu.server_id,
+          });
+        } else {
+          await localMenuItemsTable.delete(targetLocalMenu.id);
+        }
+      }
+
+      await fetchMenu();
+      showToast("Menu item deleted", "success");
+    } catch (error) {
+      console.error(error);
       showToast("Failed to delete menu item", "error");
-      return;
     }
-
-    fetchMenu();
-    showToast("Menu item deleted", "success");
   }
 
   function getLocalDateString(dateValue: string) {
@@ -1485,7 +2623,7 @@ function printReceipt() {
   useEffect(() => {
     if (typeof document === "undefined") return;
 
-    if (showTakeOrderModal || reportOrder || showQR) {
+    if (showTakeOrderModal || reportOrder || selectedPaidOrder || showQR) {
       document.body.style.overflow = "hidden";
     } else {
       document.body.style.overflow = "";
@@ -1633,6 +2771,18 @@ const todayPaymentBreakdown = useMemo(() => {
       className: "text-slate-500",
     };
   }, [totalRevenueToday, totalRevenueYesterday]);
+
+  function getComparisonCardClass(comparisonClass: string) {
+    if (comparisonClass.includes("emerald")) {
+      return "border-emerald-200 bg-emerald-50";
+    }
+
+    if (comparisonClass.includes("rose")) {
+      return "border-rose-200 bg-rose-50";
+    }
+
+    return "border-slate-300 bg-slate-100";
+  }
 
   const salesByItem: SalesItem[] = useMemo(() => {
     const map: Record<string, SalesItem> = {};
@@ -1956,18 +3106,8 @@ async function updateKitchenTableStatus(
     return;
   }
 
-  const currentTableStatus = targetOrders.some((order) => order.status === "preparing")
-    ? "preparing"
-    : targetOrders.length > 0 && targetOrders.every((order) => order.status === "ready")
-      ? "ready"
-      : "pending";
-
-  if (currentTableStatus === nextStatus) {
-    return;
-  }
-
-  const orderIds = targetOrders.map((order) => order.id);
   const previousOrdersSnapshot = orders;
+  const now = new Date().toISOString();
 
   setKitchenUpdatingTable(tableNo);
   setKitchenUpdatingStatus(nextStatus);
@@ -1989,33 +3129,79 @@ async function updateKitchenTableStatus(
     })
   );
 
-  const [orderResult, itemResult] = await Promise.all([
-    supabase
-      .from("orders")
-      .update({ status: nextStatus })
-      .in("id", orderIds)
-      .eq("restaurant_id", restaurantId),
-    supabase
-      .from("order_items")
-      .update({ status: nextStatus })
-      .in("order_id", orderIds),
-  ]);
+  try {
+    const localOrders = await localOrdersTable
+      .where("restaurant_id")
+      .equals(restaurantId)
+      .toArray();
 
-  const orderError = orderResult.error;
-  const itemError = itemResult.error;
+    const targetLocalOrders = localOrders.filter(
+      (order) =>
+        String(order.table_number || "").trim() === tableNo &&
+        order.is_paid !== true
+    );
 
-  if (orderError || itemError) {
+    if (isOnline) {
+      const remoteIds = targetLocalOrders
+        .map((order) => order.server_id)
+        .filter((id): id is number => !!id);
+
+      if (remoteIds.length > 0) {
+        const [orderResult, itemResult] = await Promise.all([
+          supabase
+            .from("orders")
+            .update({ status: nextStatus })
+            .in("id", remoteIds)
+            .eq("restaurant_id", restaurantId),
+          supabase
+            .from("order_items")
+            .update({ status: nextStatus })
+            .in("order_id", remoteIds),
+        ]);
+
+        if (orderResult.error || itemResult.error) {
+          throw orderResult.error || itemResult.error;
+        }
+      }
+    } else {
+      for (const localOrder of targetLocalOrders) {
+        await localOrdersTable.update(localOrder.id!, {
+          status: nextStatus,
+          updated_at: now,
+          sync_status: localOrder.server_id ? "pending_update" : "pending_create",
+        });
+
+        const localItems = await localOrderItemsTable
+          .where("local_order_id")
+          .equals(localOrder.id!)
+          .toArray();
+
+        for (const item of localItems) {
+          await localOrderItemsTable.update(item.id!, {
+            status: nextStatus,
+            updated_at: now,
+            sync_status: item.server_id ? "pending_update" : "pending_create",
+          });
+        }
+
+        await enqueueSyncAction("order", localOrder.server_id ? "update" : "create", {
+          localId: localOrder.id!,
+          serverId: localOrder.server_id || null,
+          payload: { status: nextStatus },
+        });
+      }
+    }
+
+    await fetchOrders();
+    showToast(`Table ${tableNo} moved to ${nextStatus}`, "success");
+  } catch (error) {
+    console.error(error);
     setOrders(previousOrdersSnapshot);
     showToast("Failed to update kitchen status", "error");
+  } finally {
     setKitchenUpdatingTable(null);
     setKitchenUpdatingStatus(null);
-    return;
   }
-
-  await fetchOrders();
-  showToast(`Table ${tableNo} moved to ${nextStatus}`, "success");
-  setKitchenUpdatingTable(null);
-  setKitchenUpdatingStatus(null);
 }
 
   const kitchenStatusSummary = useMemo(() => {
@@ -2043,64 +3229,107 @@ async function updateKitchenTableStatus(
     );
   }, [groupedTableOrders, tableSearch]);
 
-  async function markGroupedTableAsPaid(
-    tableNo: string,
-    paymentMethod: "cash" | "qr" | "card"
-  ) {
-    if (!restaurantId) {
-      showToast("Invalid restaurant link", "error");
-      return;
-    }
+async function markGroupedTableAsPaid(
+  tableNo: string,
+  paymentMethod: "cash" | "qr" | "card"
+) {
+  if (!restaurantId) {
+    showToast("Invalid restaurant link", "error");
+    return;
+  }
 
-    const normalizedTableNo = tableNo.trim();
+  const normalizedTableNo = tableNo.trim();
 
-    if (!normalizedTableNo) {
-      showToast("Invalid table number", "error");
-      return;
-    }
+  if (!normalizedTableNo) {
+    showToast("Invalid table number", "error");
+    return;
+  }
 
-    const unpaidOrdersForTable = orders.filter(
+  const unpaidOrdersForTable = orders.filter(
+    (order) =>
+      String(order.table_number).trim() === normalizedTableNo &&
+      order.is_paid !== true
+  );
+
+  if (unpaidOrdersForTable.length === 0) {
+    showToast("No unpaid orders found for this table", "error");
+    return;
+  }
+
+  const confirmPay = await askConfirm(
+    `Mark all unpaid orders for table ${normalizedTableNo} as paid with ${paymentMethod.toUpperCase()}?`,
+    "Mark paid",
+    "Back"
+  );
+  if (!confirmPay) return;
+
+  setMarkingPaidTable(normalizedTableNo);
+
+  const now = new Date().toISOString();
+
+  try {
+    const localOrders = await localOrdersTable
+      .where("restaurant_id")
+      .equals(restaurantId)
+      .toArray();
+
+    const targetLocalOrders = localOrders.filter(
       (order) =>
         String(order.table_number).trim() === normalizedTableNo &&
         order.is_paid !== true
     );
 
-    if (unpaidOrdersForTable.length === 0) {
-      showToast("No unpaid orders found for this table", "error");
-      return;
-    }
+    if (isOnline) {
+      const remoteIds = targetLocalOrders
+        .map((order) => order.server_id)
+        .filter((id): id is number => !!id);
 
-    const confirmPay = await askConfirm(
-      `Mark all unpaid orders for table ${normalizedTableNo} as paid with ${paymentMethod.toUpperCase()}?`,
-      "Mark paid",
-      "Back"
-    );
-    if (!confirmPay) return;
+      if (remoteIds.length > 0) {
+        const { error } = await supabase
+          .from("orders")
+          .update({
+            is_paid: true,
+            payment_method: paymentMethod,
+            paid_at: now,
+          })
+          .in("id", remoteIds)
+          .eq("restaurant_id", restaurantId);
 
-    setMarkingPaidTable(normalizedTableNo);
+        if (error) {
+          throw error;
+        }
+      }
+    } else {
+      for (const localOrder of targetLocalOrders) {
+        await localOrdersTable.update(localOrder.id!, {
+          is_paid: true,
+          payment_method: paymentMethod,
+          paid_at: now,
+          updated_at: now,
+          sync_status: localOrder.server_id ? "pending_update" : "pending_create",
+        });
 
-    const orderIds = unpaidOrdersForTable.map((order) => order.id);
-
-    const { error } = await supabase
-      .from("orders")
-      .update({
-        is_paid: true,
-        payment_method: paymentMethod,
-        paid_at: new Date().toISOString(),
-      })
-      .in("id", orderIds)
-      .eq("restaurant_id", restaurantId);
-
-    setMarkingPaidTable(null);
-
-    if (error) {
-      showToast("Failed to mark orders as paid", "error");
-      return;
+        await enqueueSyncAction("order", localOrder.server_id ? "update" : "create", {
+          localId: localOrder.id!,
+          serverId: localOrder.server_id || null,
+          payload: {
+            is_paid: true,
+            payment_method: paymentMethod,
+            paid_at: now,
+          },
+        });
+      }
     }
 
     await fetchOrders();
     showToast(`Table ${normalizedTableNo} marked as paid`, "success");
+  } catch (error) {
+    console.error(error);
+    showToast("Failed to mark orders as paid", "error");
+  } finally {
+    setMarkingPaidTable(null);
   }
+}
 
   async function savePasswords() {
     if (!restaurantId) {
@@ -2115,22 +3344,47 @@ async function updateKitchenTableStatus(
 
     setSavingPasswords(true);
 
-    const { error } = await supabase
-      .from("restaurants")
-      .update({
-        owner_password: newOwnerPassword.trim(),
-      })
-      .eq("id", restaurantId);
+    try {
+      if (isOnline) {
+        const { error } = await supabase
+          .from("restaurants")
+          .update({
+            owner_password: newOwnerPassword.trim(),
+            waiter_password: newWaiterPassword.trim(),
+            kitchen_password: newKitchenPassword.trim(),
+          })
+          .eq("id", restaurantId);
 
-    setSavingPasswords(false);
+        if (error) throw error;
+      }
 
-    if (error) {
-      showToast("Failed to update owner password", "error");
-      return;
+      const localRestaurant = await localRestaurantCacheTable
+        .where("restaurant_id")
+        .equals(restaurantId)
+        .first();
+
+      if (localRestaurant?.id) {
+        await localRestaurantCacheTable.update(localRestaurant.id, {
+          owner_password: newOwnerPassword.trim(),
+          waiter_password: newWaiterPassword.trim(),
+          kitchen_password: newKitchenPassword.trim(),
+          updated_at: new Date().toISOString(),
+        });
+      }
+
+      setOwnerPasswordFromDB(newOwnerPassword.trim());
+      showToast(
+        isOnline
+          ? "Passwords updated successfully"
+          : "Passwords updated only in this device cache",
+        "success"
+      );
+    } catch (error) {
+      console.error(error);
+      showToast("Failed to update passwords", "error");
+    } finally {
+      setSavingPasswords(false);
     }
-
-    setOwnerPasswordFromDB(newOwnerPassword.trim());
-    showToast("Owner password updated successfully", "success");
   }
 
 
@@ -2147,21 +3401,42 @@ async function updateKitchenTableStatus(
 
     setSavingProfitPercent(true);
 
-    const { error } = await supabase
-      .from("restaurants")
-      .update({
-        profit_percent: Number(profitPercent),
-      })
-      .eq("id", restaurantId);
+    try {
+      if (isOnline) {
+        const { error } = await supabase
+          .from("restaurants")
+          .update({
+            profit_percent: Number(profitPercent),
+          })
+          .eq("id", restaurantId);
 
-    setSavingProfitPercent(false);
+        if (error) throw error;
+      }
 
-    if (error) {
+      const localRestaurant = await localRestaurantCacheTable
+        .where("restaurant_id")
+        .equals(restaurantId)
+        .first();
+
+      if (localRestaurant?.id) {
+        await localRestaurantCacheTable.update(localRestaurant.id, {
+          profit_percent: Number(profitPercent),
+          updated_at: new Date().toISOString(),
+        });
+      }
+
+      showToast(
+        isOnline
+          ? "Profit percent updated successfully"
+          : "Profit percent updated only in this device cache",
+        "success"
+      );
+    } catch (error) {
+      console.error(error);
       showToast("Failed to update profit percent", "error");
-      return;
+    } finally {
+      setSavingProfitPercent(false);
     }
-
-    showToast("Profit percent updated successfully", "success");
   }
 
   function formatPaymentMethod(method?: string | null) {
@@ -2428,7 +3703,7 @@ async function updateKitchenTableStatus(
         salesByHour[hour] = (salesByHour[hour] || 0) + total;
       });
 
-      const points = [];
+      const points: SalesTrendPoint[] = [];
       for (let hour = 0; hour <= 23; hour++) {
         points.push({
           label: formatHourShort(hour),
@@ -2453,7 +3728,7 @@ async function updateKitchenTableStatus(
         salesByDate[key] = (salesByDate[key] || 0) + total;
       });
 
-      const points = [];
+      const points: SalesTrendPoint[] = [];
       for (let i = 6; i >= 0; i--) {
         const d = addDays(startOfDay(now), -i);
         const key = getLocalDateString(d.toISOString());
@@ -2480,7 +3755,7 @@ async function updateKitchenTableStatus(
     });
 
     const totalDays = now.getDate();
-    const points = [];
+    const points: SalesTrendPoint[] = [];
     for (let day = 1; day <= totalDays; day++) {
       const d = new Date(now.getFullYear(), now.getMonth(), day);
       const key = getLocalDateString(d.toISOString());
@@ -2624,8 +3899,8 @@ async function updateKitchenTableStatus(
     );
   }
 
-function bottomNavButtonClass(view: OwnerView) {
-  const active = ownerView === view;
+function bottomNavButtonClass(view: MiniView) {
+  const active = miniView === view;
   return `flex flex-col items-center justify-center gap-1 rounded-[20px] px-2 py-2.5 text-[12px] font-semibold transition-all ${
     active
       ? "bg-slate-900 text-white shadow-[0_14px_34px_rgba(15,23,42,0.24)]"
@@ -3128,7 +4403,7 @@ function renderDashboardView() {
 
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-[22px] border border-emerald-200 bg-emerald-50 p-3.5 shadow-sm">
+            <div className={`rounded-[22px] border p-3.5 shadow-sm ${getComparisonCardClass(salesVsYesterday.className)}`}>
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <p className="text-[11px] font-medium text-slate-500">💰 Today Sales</p>
@@ -3225,7 +4500,7 @@ function renderDashboardView() {
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-[20px] border border-emerald-200 bg-emerald-50 px-4 py-3 shadow-sm">
+            <div className={`rounded-[20px] border px-4 py-3 shadow-sm ${getComparisonCardClass(profitVsYesterday.className)}`}>
               <p className="text-[11px] font-medium text-slate-500">💸 Today Profit</p>
               <p className="mt-1 text-lg font-bold text-slate-900">Rs. {todayProfit}</p>
               <p className={`mt-1 text-[11px] font-semibold ${profitVsYesterday.className}`}>
@@ -3448,7 +4723,7 @@ function renderDashboardView() {
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-[22px] border border-emerald-200 bg-emerald-50 p-3.5 shadow-sm">
+            <div className={`rounded-[22px] border p-3.5 shadow-sm ${getComparisonCardClass(selectedSalesSummary.comparisonClass)}`}>
               <p className="text-[11px] font-medium text-slate-500">💰 Total Sales</p>
               <p className="mt-1 text-lg font-bold text-slate-900">
                 Rs. {selectedSalesSummary.totalSales}
@@ -3458,7 +4733,7 @@ function renderDashboardView() {
               </p>
             </div>
 
-            <div className="rounded-[22px] border border-green-200 bg-green-50 p-3.5 shadow-sm">
+            <div className={`rounded-[22px] border p-3.5 shadow-sm ${getComparisonCardClass(selectedSalesSummary.profitComparisonClass)}`}>
               <p className="text-[11px] font-medium text-slate-500">💸 {selectedSalesSummary.periodProfitLabel}</p>
               <p className="mt-1 text-lg font-bold text-slate-900">
                 Rs. {selectedSalesSummary.totalProfit}
@@ -4471,50 +5746,65 @@ function renderBillingView() {
     }
 
 
-    if (ownerView === "dashboard") {
+    if (miniView === "dashboard") {
       return renderDashboardView();
     }
 
-    if (ownerView === "order") {
+    if (miniView === "order") {
       return renderOrderView();
     }
 
-    if (ownerView === "kitchen") {
+    if (miniView === "kitchen") {
       return renderKitchenView();
     }
 
-    if (ownerView === "salesOverview") {
+    if (miniView === "salesOverview") {
       return renderSalesOverviewView();
     }
 
-    if (ownerView === "report") {
+    if (miniView === "report") {
       return renderReportView();
     }
 
-    if (ownerView === "billing") {
+    if (miniView === "billing") {
       return renderBillingView();
     }
 
     return renderPaymentHistoryView();
   }
 
-  const shellClass =
+const shellClass =
   "mx-auto w-full max-w-[430px] min-h-screen bg-slate-100 shadow-[0_20px_60px_rgba(15,23,42,0.10)] text-[15px]";
 
-  if (!restaurantId) {
-    return (
-      <>
-        {renderFeedbackOverlays()}
-        <main className="min-h-screen bg-slate-200 flex justify-center px-3">
+if (!restaurantIdReady) {
+  return null;
+}
+
+if (!restaurantId) {
+  return (
+    <>
+      {renderFeedbackOverlays()}
+      <main className="min-h-screen bg-slate-200 flex justify-center px-3">
         <div className={`${shellClass} flex items-center justify-center p-4`}>
-          <div className="rounded-3xl bg-white p-5 text-center text-sm font-medium text-red-600 shadow border border-slate-200">
-            Invalid restaurant link. Please use the correct restaurant URL.
+          <div className="rounded-3xl bg-white p-5 text-center text-sm shadow border border-slate-200">
+            <div className="font-semibold text-slate-900">Restaurant ID loading...</div>
+            <div className="mt-2 text-slate-600">
+              Open this page once with the full link like /mini?id=1 while online, then offline refresh will work from cache.
+            </div>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="mt-4 rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+            >
+              Retry
+            </button>
           </div>
         </div>
       </main>
-      </>
-    );
-  }
+    </>
+  );
+}
+
 if (showSplash) {
   return <AppSplash />;
 }
@@ -4539,8 +5829,15 @@ if (showSplash) {
         {renderFeedbackOverlays()}
         <main className="min-h-screen bg-slate-200 flex justify-center px-3">
         <div className={`${shellClass} flex items-center justify-center p-4`}>
-          <div className="rounded-3xl bg-white p-5 text-center text-sm font-medium text-red-600 shadow border border-slate-200">
-            Restaurant link not found. Please use the correct restaurant URL.
+          <div className="rounded-3xl bg-white p-5 text-center text-sm shadow border border-slate-200">
+            <div className="font-medium text-red-600">Restaurant link not found. Please use the correct restaurant URL.</div>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="mt-4 rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+            >
+              Retry
+            </button>
           </div>
         </div>
       </main>
@@ -5638,10 +6935,10 @@ if (!ownerUnlocked) {
   );
 }
 
-export default function OwnerPage() {
+export default function MiniPage() {
   return (
     <Suspense fallback={<div>Loading...</div>}>
-      <OwnerPageContent />
+      <MiniPageContent />
     </Suspense>
   );
 }
