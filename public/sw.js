@@ -13,7 +13,7 @@ self.addEventListener("fetch", (event) => {
 
   if (req.method !== "GET") return;
 
-  // 🔥 HTML page
+  // HTML page
   if (req.mode === "navigate") {
     event.respondWith(
       fetch(req)
@@ -27,7 +27,7 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // 🔥 JS / CSS / _next files (VERY IMPORTANT)
+  // JS / CSS / _next files
   if (
     req.url.includes("_next") ||
     req.url.endsWith(".js") ||
@@ -48,8 +48,59 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // 🔥 others (images etc)
-  event.respondWith(
-    fetch(req).catch(() => caches.match(req))
+  // images and other files
+  event.respondWith(fetch(req).catch(() => caches.match(req)));
+});
+
+// Push notification received
+self.addEventListener("push", (event) => {
+  let data = {
+    title: "Order Ready",
+    body: "A table order is ready",
+    url: "/",
+  };
+
+  try {
+    if (event.data) {
+      data = event.data.json();
+    }
+  } catch (error) {}
+
+  event.waitUntil(
+    self.registration.showNotification(data.title, {
+      body: data.body,
+      icon: "/icon-192.png",
+      badge: "/icon-192.png",
+      vibrate: [200, 100, 200],
+      requireInteraction: true,
+      data: {
+        url: data.url || "/",
+      },
+    })
+  );
+});
+
+// Notification click
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+
+  const targetUrl = event.notification?.data?.url || "/";
+
+  event.waitUntil(
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientList) => {
+      for (const client of clientList) {
+        if ("focus" in client) {
+          client.focus();
+          if ("navigate" in client) {
+            client.navigate(targetUrl);
+          }
+          return;
+        }
+      }
+
+      if (clients.openWindow) {
+        return clients.openWindow(targetUrl);
+      }
+    })
   );
 });

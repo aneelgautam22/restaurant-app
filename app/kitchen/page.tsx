@@ -29,12 +29,12 @@ function KitchenPageContent() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [restaurantName, setRestaurantName] = useState("");
-useEffect(() => {
-  if (!restaurantId) return;
+  useEffect(() => {
+    if (!restaurantId) return;
 
-  localStorage.setItem("lastRestaurantId", String(restaurantId));
-  localStorage.setItem("lastPanel", "kitchen");
-}, [restaurantId]);
+    localStorage.setItem("lastRestaurantId", String(restaurantId));
+    localStorage.setItem("lastPanel", "kitchen");
+  }, [restaurantId]);
   const [showSplash, setShowSplash] = useState(true);
 
   const [password, setPassword] = useState("");
@@ -234,6 +234,9 @@ useEffect(() => {
     itemId: number,
     status: "pending" | "preparing" | "ready"
   ) {
+    const targetOrder = orders.find((order) => order.id === orderId);
+    const tableNo = String(targetOrder?.table_number || "").trim();
+
     const { error } = await supabase
       .from("order_items")
       .update({ status })
@@ -246,6 +249,24 @@ useEffect(() => {
     }
 
     await updateOrderStatusFromItems(orderId);
+
+    if (status === "ready" && restaurantId && tableNo) {
+      try {
+        await fetch("/api/push/order-ready", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            restaurant_id: restaurantId,
+            table: tableNo,
+          }),
+        });
+      } catch (pushError) {
+        console.error("Failed to send order ready push:", pushError);
+      }
+    }
+
     fetchOrders();
   }
 
@@ -322,27 +343,26 @@ useEffect(() => {
     );
   }
 
- if (!unlocked) {
-  return (
-    <PanelLoginCard
-      restaurantName={restaurantName}
-      panelTitle="Kitchen Panel"
-      panelDescription="Access live kitchen orders and update preparation status."
-      passwordLabel="Kitchen Password"
-      passwordPlaceholder="Enter kitchen password"
-      passwordValue={password}
-      onPasswordChange={setPassword}
-      onSubmit={handleUnlock}
-      buttonText="Enter Kitchen Panel"
-      theme="kitchen"
-    />
-  );
-}
+  if (!unlocked) {
+    return (
+      <PanelLoginCard
+        restaurantName={restaurantName}
+        panelTitle="Kitchen Panel"
+        panelDescription="Access live kitchen orders and update preparation status."
+        passwordLabel="Kitchen Password"
+        passwordPlaceholder="Enter kitchen password"
+        passwordValue={password}
+        onPasswordChange={setPassword}
+        onSubmit={handleUnlock}
+        buttonText="Enter Kitchen Panel"
+        theme="kitchen"
+      />
+    );
+  }
 
   return (
     <>
       <audio ref={audioRef} src="/bell.mp3" preload="auto" />
-      
 
       <main className="min-h-screen bg-slate-100 px-3 py-3 sm:px-4 sm:py-4 md:px-6 md:py-6 2xl:px-10">
         <div className="mx-auto w-full max-w-[1800px] space-y-4 sm:space-y-5 md:space-y-6">
@@ -350,12 +370,12 @@ useEffect(() => {
             <div className="flex items-start justify-between gap-3 sm:items-center">
               <div className="flex min-w-0 items-center gap-3">
                 <div className="flex h-14 w-14 sm:h-16 sm:w-16 shrink-0 items-center justify-center overflow-hidden rounded-full bg-black shadow-md">
-  <img
-    src="/logo.png"
-    alt="Logo"
-    className="h-full w-full object-contain scale-110"
-  />
-</div>
+                  <img
+                    src="/logo.png"
+                    alt="Logo"
+                    className="h-full w-full object-contain scale-110"
+                  />
+                </div>
 
                 <div className="min-w-0">
                   <h1 className="truncate text-base sm:text-lg md:text-xl font-bold">
