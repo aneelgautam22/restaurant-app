@@ -392,40 +392,75 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
     return outputArray;
   }
 
-  async function subscribeWaiterPush() {
-    if (typeof window === "undefined") return;
+  function canUsePushNotifications() {
+    if (typeof window === "undefined") return false;
+    return (
+      window.isSecureContext &&
+      "Notification" in window &&
+      "serviceWorker" in navigator &&
+      "PushManager" in window
+    );
+  }
 
-    if (!("serviceWorker" in navigator)) {
-      throw new Error("Service worker not supported");
+  async function subscribeWaiterPush(): Promise<
+    "subscribed" | "already_subscribed" | "unsupported" | "denied"
+  > {
+    console.log("STEP 1: function called");
+
+    if (typeof window === "undefined") {
+      console.log("STEP 1A: window undefined");
+      return "unsupported";
     }
 
-    if (!("PushManager" in window)) {
-      throw new Error("Push notification not supported");
+    if (!canUsePushNotifications()) {
+      console.log("STEP 2: push not supported", {
+        isSecureContext: window.isSecureContext,
+        hasNotification: "Notification" in window,
+        hasServiceWorker: "serviceWorker" in navigator,
+        hasPushManager: "PushManager" in window,
+      });
+      return "unsupported";
     }
 
     const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+    console.log("STEP 3: vapid exists?", !!vapidKey);
 
     if (!vapidKey) {
-      throw new Error("Missing public VAPID key");
+      console.error("Missing public VAPID key");
+      return "unsupported";
     }
 
-    const permission = await Notification.requestPermission();
+    const currentPermission = Notification.permission;
+    console.log("STEP 4: current permission =", currentPermission);
+
+    let permission = currentPermission;
+
+    if (currentPermission === "default") {
+      permission = await Notification.requestPermission();
+      console.log("STEP 5: requested permission =", permission);
+    }
 
     if (permission !== "granted") {
-      throw new Error("Notification permission denied");
+      console.log("STEP 6: permission denied or not granted");
+      return "denied";
     }
 
+    console.log("STEP 7: waiting for service worker ready");
     const registration = await navigator.serviceWorker.ready;
 
     let subscription = await registration.pushManager.getSubscription();
+    const wasExisting = !!subscription;
+    console.log("STEP 8: existing subscription?", wasExisting);
 
     if (!subscription) {
+      console.log("STEP 9: creating new subscription");
       subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(vapidKey),
       });
     }
 
+    console.log("STEP 10: calling /api/push/subscribe");
     const response = await fetch("/api/push/subscribe", {
       method: "POST",
       headers: {
@@ -437,9 +472,16 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
       }),
     });
 
+    console.log("STEP 11: response status =", response.status);
+
     if (!response.ok) {
-      throw new Error("Failed to save notification subscription");
+      const message = await response
+        .text()
+        .catch(() => "Failed to save notification subscription");
+      throw new Error(message || "Failed to save notification subscription");
     }
+
+    return wasExisting ? "already_subscribed" : "subscribed";
   }
 
   async function enableSound() {
@@ -457,15 +499,34 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
         audioRef.current.volume = 1;
       }
 
-      await subscribeWaiterPush();
-
       setSoundEnabled(true);
       localStorage.setItem(`waiter_sound_enabled_${restaurantId}`, "true");
-      showToast("Waiter sound + notification enabled");
       setMenuOpen(false);
+      console.log("ENABLE SOUND CLICKED");
+
+
+      const pushResult = await subscribeWaiterPush();
+      console.log("SUBSCRIBE RESULT:", pushResult);
+
+      if (pushResult === "subscribed") {
+        showToast("Sound + notification enabled");
+        return;
+      }
+
+      if (pushResult === "already_subscribed") {
+        showToast("Sound already enabled");
+        return;
+      }
+
+      if (pushResult === "denied") {
+        showToast("Sound enabled. Allow notification from browser settings.");
+        return;
+      }
+
+      showToast("Sound enabled. Push notification not supported here.");
     } catch (error) {
       console.error(error);
-      alert("Could not enable notification. Please allow notification and tap again.");
+      showToast("Sound enabled, but notification setup failed.");
     }
   }
 
@@ -578,8 +639,35 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
 
   useEffect(() => {
     if (readyNotifications.length === 0) return;
+
     playNotificationBeep();
-  }, [readyNotifications.length, soundEnabled]);
+
+    const current = readyNotifications[0];
+
+    if (
+      typeof window !== "undefined" &&
+      canUsePushNotifications() &&
+      Notification.permission === "granted"
+    ) {
+      navigator.serviceWorker.ready
+        .then((registration) => {
+        return registration.showNotification("🍽️ Order Ready", {
+  body: `Table ${current.tableNumber} is ready`,
+  icon: "/icon-192.png",
+  badge: "/icon-192.png",
+  vibrate: [200, 100, 200],
+  tag: `ready-table-${current.tableNumber}`,
+  renotify: true,
+  data: {
+    url: `/waiter?id=${restaurantId}`,
+  },
+} as any);
+        })
+        .catch((error) => {
+          console.error("Local notification error:", error);
+        });
+    }
+  }, [readyNotifications, restaurantId, soundEnabled]);
 
   function closeCurrentReadyNotification() {
     setReadyNotifications((prev) => prev.slice(1));

@@ -23,6 +23,7 @@ export async function POST(req: Request) {
           JSON.stringify({
             title: "🍽️ Order Ready",
             body: `Table ${table} is ready`,
+            url: `/waiter?id=${restaurant_id}`,
           })
         );
       } catch (err) {

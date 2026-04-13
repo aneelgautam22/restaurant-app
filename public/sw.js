@@ -80,6 +80,24 @@ self.addEventListener("push", (event) => {
   );
 });
 
+// Manual test notification from page
+self.addEventListener("message", (event) => {
+  if (event.data?.type === "TEST_NOTIFICATION") {
+    event.waitUntil(
+      self.registration.showNotification("TEST 🔔", {
+        body: "Push working from SW!",
+        icon: "/icon-192.png",
+        badge: "/icon-192.png",
+        vibrate: [200, 100, 200],
+        requireInteraction: true,
+        data: {
+          url: "/waiter?id=1",
+        },
+      })
+    );
+  }
+});
+
 // Notification click
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
