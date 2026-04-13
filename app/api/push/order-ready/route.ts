@@ -21,8 +21,8 @@ export async function POST(req: Request) {
         await webpush.sendNotification(
           sub.subscription,
           JSON.stringify({
-            title: "🍽️ Order Ready",
-            body: `Table ${table} is ready`,
+          title: "🔔🔔 ORDER READY 🔔🔔",
+body: `Table ${table} ready! Pick now!`,
             url: `/waiter?id=${restaurant_id}`,
           })
         );
