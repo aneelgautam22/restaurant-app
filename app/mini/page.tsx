@@ -101,6 +101,23 @@ type GroupedTableOrder = {
   table_status: KitchenStatusKey;
 };
 
+
+
+type BillReceiptTable = {
+  table_number: string;
+  order_ids: number[];
+  remarks: string[];
+  items: {
+    item_name: string;
+    quantity: number;
+    total: number;
+    statuses: string[];
+  }[];
+  total: number;
+  unpaid_orders_count: number;
+  sourceOrders: OrderRow[];
+};
+
 type TakeOrderCartItem = {
   id: number;
   item_name: string;
@@ -1378,11 +1395,32 @@ function MiniPageContent() {
     setSelectedPaidOrder(null);
   }
 
-function printReceipt() {
-    if (typeof window === "undefined") return;
-    if (!reportOrder && !selectedPaidOrder) return;
-    window.print();
+  function convertOrderToBillReceipt(order: OrderRow | null): BillReceiptTable | null {
+    if (!order) return null;
+
+    const items = (order.order_items || []).map((item) => ({
+      item_name: item.item_name,
+      quantity: Number(item.quantity || 0),
+      total: Number(item.quantity || 0) * Number(item.unit_price || 0),
+      statuses: [item.status || order.status || "pending"],
+    }));
+
+    return {
+      table_number: String(order.table_number || ""),
+      order_ids: [order.id],
+      remarks: order.remarks && order.remarks.trim() ? [order.remarks.trim()] : [],
+      items,
+      total: items.reduce((sum, item) => sum + Number(item.total || 0), 0),
+      unpaid_orders_count: order.is_paid === true ? 0 : 1,
+      sourceOrders: [order],
+    };
   }
+
+  const reportOrderBillTable = useMemo(() => convertOrderToBillReceipt(reportOrder), [reportOrder]);
+  const selectedPaidOrderBillTable = useMemo(
+    () => convertOrderToBillReceipt(selectedPaidOrder),
+    [selectedPaidOrder]
+  );
 
   const RECEIPT_WIDTH_MM = 80;
   const RECEIPT_MARGIN_MM = 4.5;
@@ -1401,6 +1439,15 @@ function printReceipt() {
     });
   }
 
+  function createReceiptDoc(height: number) {
+    return new jsPDF({
+      orientation: "portrait",
+      unit: "mm",
+      format: [RECEIPT_WIDTH_MM, Math.max(height, 95)],
+      compress: true,
+    });
+  }
+
   function estimateWrappedReceiptHeight(
     value: string,
     maxWidth: number,
@@ -1414,21 +1461,32 @@ function printReceipt() {
     return Math.max(lines.length, 1) * lineHeight;
   }
 
-  function createReceiptDoc(height: number) {
-    return new jsPDF({
-      orientation: "portrait",
-      unit: "mm",
-      format: [RECEIPT_WIDTH_MM, Math.max(height, 95)],
-      compress: true,
+  function formatBillDate(dateStr?: string | null) {
+    if (!dateStr) return "-";
+    return new Date(dateStr).toLocaleString([], {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
     });
   }
 
-  function downloadReceipt() {
-    if (typeof window === "undefined" || !reportOrder) return;
+  function escapeHtml(value: string) {
+    return value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
 
-    const items = reportOrder.order_items || [];
-    const totalQty = items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
-    const totalItems = items.length;
+  function getPrimaryOrderTime(table: BillReceiptTable) {
+    return table.sourceOrders.map((order) => order.created_at).sort()[0] || null;
+  }
+
+
+  function estimatePrintReceiptHeight(table: BillReceiptTable, type: "kot" | "customer") {
     const restaurantTitle = (restaurantName || "Restaurant").trim() || "Restaurant";
 
     let estimatedHeight = 8;
@@ -1437,176 +1495,527 @@ function printReceipt() {
     estimatedHeight += 7;
     estimatedHeight += 4;
     estimatedHeight += 3.5;
-    estimatedHeight += 12;
+    estimatedHeight += type === "customer" ? 16 : 12;
     estimatedHeight += 3.5;
     estimatedHeight += 5.5;
 
-    items.forEach((item, index) => {
-      estimatedHeight += estimateWrappedReceiptHeight(
-        `${index + 1}. ${item.item_name}`,
-        RECEIPT_CONTENT_WIDTH_MM - 12,
-        10,
-        4.6
-      );
-      estimatedHeight += 1.8;
-    });
-
-    estimatedHeight += 3.5;
-    estimatedHeight += 10;
-
-    if (reportOrder.remarks) {
-      estimatedHeight += 3.5;
-      estimatedHeight += 4.4;
-      estimatedHeight += estimateWrappedReceiptHeight(
-        reportOrder.remarks,
-        RECEIPT_CONTENT_WIDTH_MM,
-        9,
-        4.2
-      );
-      estimatedHeight += 1.2;
-    }
-
-    estimatedHeight += 3.5;
-    estimatedHeight += 12;
-
-    const doc = createReceiptDoc(estimatedHeight);
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const qtyX = pageWidth - RECEIPT_MARGIN_MM;
-    let y = 8;
-
-    const centerText = (
-      value: string,
-      fontSize = 10,
-      style: "normal" | "bold" = "normal",
-      gap = 4.2
-    ) => {
-      doc.setFont("helvetica", style);
-      doc.setFontSize(fontSize);
-      const lines = doc.splitTextToSize(value, RECEIPT_CONTENT_WIDTH_MM) as string[];
-      lines.forEach((line) => {
-        doc.text(line, pageWidth / 2, y, { align: "center" });
-        y += gap;
-      });
-    };
-
-    const leftText = (
-      value: string,
-      fontSize = 9,
-      style: "normal" | "bold" = "normal",
-      gap = 4.1
-    ) => {
-      doc.setFont("helvetica", style);
-      doc.setFontSize(fontSize);
-      const lines = doc.splitTextToSize(value, RECEIPT_CONTENT_WIDTH_MM) as string[];
-      lines.forEach((line) => {
-        doc.text(line, RECEIPT_MARGIN_MM, y);
-        y += gap;
-      });
-    };
-
-    const dashedDivider = (spaceAfter = 3.5) => {
-      doc.setDrawColor(80, 80, 80);
-      doc.setLineWidth(0.2);
-      doc.setLineDashPattern([1.2, 1.2], 0);
-      doc.line(RECEIPT_MARGIN_MM, y, pageWidth - RECEIPT_MARGIN_MM, y);
-      doc.setLineDashPattern([], 0);
-      y += spaceAfter;
-    };
-
-    centerText(restaurantTitle.toUpperCase(), 13, "bold", 5.2);
-    y += 0.8;
-    centerText("KOT BILL", 11.5, "bold", 4.8);
-    centerText(`Order #${reportOrder.id}`, 9, "normal", 4.1);
-    dashedDivider();
-
-    leftText(`Table : ${reportOrder.table_number}`, 9.3, "bold", 4.4);
-    leftText(`Time  : ${new Date(reportOrder.created_at).toLocaleString()}`, 8.4, "normal", 4.1);
-    dashedDivider();
-
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(9.2);
-    doc.text("ITEM", RECEIPT_MARGIN_MM, y);
-    doc.text("QTY", qtyX, y, { align: "right" });
-    y += 2;
-    dashedDivider();
-
-    items.forEach((item, index) => {
-      const itemLines = doc.splitTextToSize(
-        `${index + 1}. ${item.item_name}`,
-        RECEIPT_CONTENT_WIDTH_MM - 12
-      ) as string[];
-
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(10);
-      itemLines.forEach((line, lineIndex) => {
-        doc.text(line, RECEIPT_MARGIN_MM, y);
-        if (lineIndex === 0) {
-          doc.text(String(item.quantity || 0), qtyX, y, { align: "right" });
-        }
-        y += 4.6;
-      });
-      y += 1.8;
-    });
-
-    dashedDivider();
-    leftText(`Total Items : ${totalItems}`, 9, "bold", 4.4);
-    leftText(`Total Qty   : ${totalQty}`, 9, "bold", 4.4);
-
-    if (reportOrder.remarks) {
-      dashedDivider();
-      leftText("REMARKS", 8.8, "bold", 4.2);
-      leftText(reportOrder.remarks, 9, "normal", 4.2);
-    }
-
-    dashedDivider();
-    centerText("--- KITCHEN COPY ---", 8.8, "bold", 4.2);
-    centerText("--- THANK YOU ---", 9.6, "bold", 4.4);
-
-    doc.save(`kot-bill-table-${reportOrder.table_number}-order-${reportOrder.id}.pdf`);
-  }
-
-  function downloadPaidOrderBill() {
-    if (typeof window === "undefined" || !selectedPaidOrder) return;
-
-    const items = selectedPaidOrder.order_items || [];
-    const totalAmount = getOrderTotal(selectedPaidOrder);
-    const totalQty = items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
-    const restaurantTitle = (restaurantName || "Restaurant").trim() || "Restaurant";
-
-    let estimatedHeight = 8;
-    estimatedHeight += estimateWrappedReceiptHeight(restaurantTitle, RECEIPT_CONTENT_WIDTH_MM, 13, 5.2);
-    estimatedHeight += 5;
-    estimatedHeight += 7;
-    estimatedHeight += 4;
-    estimatedHeight += 3.5;
-    estimatedHeight += 16;
-    estimatedHeight += 3.5;
-    estimatedHeight += 5.5;
-
-    items.forEach((item) => {
+    for (const item of table.items) {
       estimatedHeight += estimateWrappedReceiptHeight(
         item.item_name,
-        RECEIPT_CONTENT_WIDTH_MM - 25,
+        type === "customer" ? RECEIPT_CONTENT_WIDTH_MM - 25 : RECEIPT_CONTENT_WIDTH_MM - 12,
         10,
         4.6
       );
       estimatedHeight += 1.8;
-    });
+    }
 
     estimatedHeight += 3.5;
-    estimatedHeight += 7;
-    estimatedHeight += 5;
-    estimatedHeight += 4.4;
+    estimatedHeight += type === "customer" ? 10 : 12;
 
-    if (selectedPaidOrder.remarks) {
+    if (table.remarks.length > 0) {
       estimatedHeight += 3.5;
       estimatedHeight += 4.4;
+      for (const remark of table.remarks) {
+        estimatedHeight += estimateWrappedReceiptHeight(remark, RECEIPT_CONTENT_WIDTH_MM, 9, 4.2);
+      }
+      estimatedHeight += 1.2;
+    }
+
+    estimatedHeight += 3.5;
+    estimatedHeight += type === "kot" ? 12 : 11;
+    estimatedHeight += 6;
+
+    return Math.max(Math.ceil(estimatedHeight), 95);
+  }
+
+  function getBillDocumentHtml(
+    table: BillReceiptTable,
+    type: "kot" | "customer",
+    pageHeightMm?: number
+  ) {
+    const restaurantTitle = escapeHtml((restaurantName || "Restaurant").trim() || "Restaurant");
+    const primaryOrderId = table.order_ids[0] || "-";
+    const createdAt = escapeHtml(formatBillDate(getPrimaryOrderTime(table)));
+    const totalQty = table.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+
+    const rows = table.items
+      .map((item) => {
+        const amount = formatReceiptMoney(Number(item.total || 0));
+        const itemName = escapeHtml(item.item_name);
+        const qty = escapeHtml(String(item.quantity || 0));
+
+        if (type === "kot") {
+          return `
+            <div class="grid item-row kot-row">
+              <div class="item-name">${itemName}</div>
+              <div class="qty">${qty}</div>
+            </div>
+          `;
+        }
+
+        return `
+          <div class="grid item-row customer-row">
+            <div class="item-name">${itemName}</div>
+            <div class="qty">${qty}</div>
+            <div class="amt">${amount}</div>
+          </div>
+        `;
+      })
+      .join("");
+
+    const remarksHtml =
+      table.remarks.length > 0
+        ? `
+          <div class="divider"></div>
+          <div class="remarks-title">REMARKS</div>
+          ${table.remarks
+            .map((remark) => `<div class="remarks-line">${escapeHtml(remark)}</div>`)
+            .join("")}
+        `
+        : "";
+
+    const totalsHtml =
+      type === "kot"
+        ? `
+          <div class="divider"></div>
+          <div class="summary-line"><span>Total Items</span><span>${escapeHtml(String(table.items.length))}</span></div>
+          <div class="summary-line"><span>Total Qty</span><span>${escapeHtml(String(totalQty))}</span></div>
+        `
+        : `
+          <div class="divider"></div>
+          <div class="summary-line strong"><span>TOTAL QTY</span><span>${escapeHtml(String(totalQty))}</span></div>
+          <div class="summary-line grand"><span>TOTAL</span><span>Rs. ${escapeHtml(formatReceiptMoney(table.total))}</span></div>
+        `;
+
+    const metaHtml =
+      type === "kot"
+        ? `
+          <div class="meta-line"><span>Table : ${escapeHtml(table.table_number)}</span></div>
+          <div class="meta-line"><span>Orders: ${escapeHtml(table.order_ids.join(", "))}</span></div>
+          <div class="meta-line"><span>Time  : ${createdAt}</span></div>
+        `
+        : `
+          <div class="meta-line"><span>Table   : ${escapeHtml(table.table_number)}</span></div>
+          <div class="meta-line"><span>Orders  : ${escapeHtml(table.order_ids.join(", "))}</span></div>
+          <div class="meta-line"><span>Time    : ${createdAt}</span></div>
+        `;
+
+    const footerHtml =
+      type === "kot"
+        ? `
+          <div class="divider"></div>
+          <div class="center footer-strong">--- KITCHEN COPY ---</div>
+          <div class="center footer-strong">--- THANK YOU ---</div>
+        `
+        : `
+          <div class="divider"></div>
+          <div class="center footer-strong">--- THANK YOU ---</div>
+          <div class="center footer-sub">Please Visit Again</div>
+        `;
+
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=320, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>${restaurantTitle} - ${type === "kot" ? "KOT BILL" : "CUSTOMER BILL"}</title>
+  <style>
+    @page {
+      size: 80mm ${pageHeightMm || 140}mm;
+      margin: 0;
+    }
+
+    :root {
+      color-scheme: light only;
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+
+    html {
+      margin: 0 !important;
+      padding: 0 !important;
+      width: 80mm !important;
+      min-width: 80mm !important;
+      max-width: 80mm !important;
+      height: ${pageHeightMm || 140}mm !important;
+      overflow: hidden !important;
+      background: #ffffff !important;
+    }
+
+    body * {
+      visibility: hidden;
+    }
+
+    body {
+      margin: 0 !important;
+      padding: 0 !important;
+      width: 80mm !important;
+      min-width: 80mm !important;
+      max-width: 80mm !important;
+      height: ${pageHeightMm || 140}mm !important;
+      min-height: ${pageHeightMm || 140}mm !important;
+      overflow: hidden !important;
+      background: #ffffff !important;
+      color: #000000 !important;
+      font-family: Arial, Helvetica, sans-serif !important;
+      display: block !important;
+    }
+
+    .receipt-shell, .receipt-shell * {
+      visibility: visible;
+    }
+
+    .receipt-shell {
+      width: 80mm !important;
+      min-width: 80mm !important;
+      max-width: 80mm !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      background: #ffffff !important;
+      display: block !important;
+      overflow: visible !important;
+      position: absolute !important;
+      top: 0 !important;
+      left: 0 !important;
+      page-break-after: avoid;
+      break-after: avoid-page;
+      break-inside: avoid;
+    }
+
+    .receipt {
+      width: 71mm !important;
+      margin: 0 auto !important;
+      padding: 5mm 2.5mm 5mm !important;
+      background: #ffffff !important;
+      display: block !important;
+      overflow: hidden !important;
+    }
+
+    .center {
+      text-align: center;
+    }
+
+    .title {
+      font-size: 15px;
+      font-weight: 800;
+      text-transform: uppercase;
+      line-height: 1.25;
+      word-break: break-word;
+      margin: 0;
+    }
+
+    .bill-title {
+      margin-top: 2mm;
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .bill-id {
+      margin-top: 1.2mm;
+      font-size: 9px;
+    }
+
+    .divider {
+      border-top: 1px dashed #666;
+      margin: 3.4mm 0;
+      width: 100%;
+      height: 0;
+    }
+
+    .meta-line {
+      font-size: 9px;
+      line-height: 1.45;
+      font-weight: 600;
+      margin: 0;
+      word-break: break-word;
+    }
+
+    .grid {
+      display: grid;
+      align-items: start;
+      column-gap: 2mm;
+    }
+
+    .header-row {
+      font-size: 9px;
+      font-weight: 800;
+      line-height: 1.3;
+      text-transform: uppercase;
+    }
+
+    .header-row .qty,
+    .header-row .amt,
+    .item-row .qty,
+    .item-row .amt,
+    .summary-line span:last-child {
+      text-align: right;
+    }
+
+    .header-row .qty,
+    .item-row .qty {
+      padding-right: 1mm;
+    }
+
+    .customer-row,
+    .customer-grid {
+      grid-template-columns: minmax(0, 1fr) 10mm 15mm;
+    }
+
+    .kot-row,
+    .kot-grid {
+      grid-template-columns: minmax(0, 1fr) 12mm;
+    }
+
+    .item-row {
+      font-size: 10px;
+      line-height: 1.45;
+      margin-top: 2.2mm;
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+
+    .item-name {
+      min-width: 0;
+      word-break: break-word;
+    }
+
+    .summary-line {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      font-size: 10px;
+      font-weight: 800;
+      line-height: 1.35;
+      margin: 0;
+    }
+
+    .summary-line + .summary-line {
+      margin-top: 1.2mm;
+    }
+
+    .summary-line.grand {
+      font-size: 10.8px;
+    }
+
+    .remarks-title {
+      font-size: 8.8px;
+      font-weight: 800;
+      margin: 0 0 1.4mm;
+    }
+
+    .remarks-line {
+      font-size: 9px;
+      line-height: 1.4;
+      margin: 0;
+      word-break: break-word;
+    }
+
+    .remarks-line + .remarks-line {
+      margin-top: 1mm;
+    }
+
+    .footer-strong {
+      font-size: 10px;
+      font-weight: 800;
+      line-height: 1.3;
+    }
+
+    .footer-sub {
+      margin-top: 1mm;
+      font-size: 8.8px;
+      line-height: 1.3;
+    }
+
+    @media screen {
+      html, body {
+        width: 80mm !important;
+      }
+    }
+
+    @media print {
+      html, body, .receipt-shell {
+        width: 80mm !important;
+        min-width: 80mm !important;
+        max-width: 80mm !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        height: ${pageHeightMm || 140}mm !important;
+        overflow: hidden !important;
+        background: #ffffff !important;
+      }
+
+      .receipt {
+        width: 71mm !important;
+        margin: 0 auto !important;
+        padding: 5mm 2.5mm 5mm !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="receipt-shell" id="print-root">
+    <div class="receipt">
+      <div class="center">
+        <div class="title">${restaurantTitle}</div>
+        <div class="bill-title">${type === "kot" ? "KOT BILL" : "CUSTOMER BILL"}</div>
+        <div class="bill-id">Order #${escapeHtml(String(primaryOrderId))}</div>
+      </div>
+
+      <div class="divider"></div>
+
+      ${metaHtml}
+
+      <div class="divider"></div>
+
+      <div class="grid ${type === "kot" ? "kot-grid" : "customer-grid"} header-row">
+        <span>ITEM</span>
+        <span class="qty">QTY</span>
+        ${type === "customer" ? '<span class="amt">AMT</span>' : ""}
+      </div>
+
+      <div class="divider"></div>
+
+      ${rows}
+
+      ${totalsHtml}
+
+      ${remarksHtml}
+
+      ${footerHtml}
+    </div>
+  </div>
+</body>
+</html>`;
+  }
+
+  function openPrintWindow(table: BillReceiptTable, type: "kot" | "customer", autoPrint = false) {
+    const pageHeightMm = estimatePrintReceiptHeight(table, type);
+    const html = getBillDocumentHtml(table, type, pageHeightMm);
+
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("aria-hidden", "true");
+    iframe.style.position = "fixed";
+    iframe.style.right = "0";
+    iframe.style.bottom = "0";
+    iframe.style.width = "1px";
+    iframe.style.height = "1px";
+    iframe.style.opacity = "0";
+    iframe.style.pointerEvents = "none";
+    iframe.style.border = "0";
+    document.body.appendChild(iframe);
+
+    const frameWindow = iframe.contentWindow;
+    const frameDocument = iframe.contentDocument || frameWindow?.document || null;
+
+    if (!frameWindow || !frameDocument) {
+      document.body.removeChild(iframe);
+      return null;
+    }
+
+    const finalHtml = html.replace(
+      "</body>",
+      autoPrint
+        ? `<script>
+            window.addEventListener("load", function () {
+              var doPrint = function () {
+                try {
+                  document.documentElement.scrollTop = 0;
+                  document.body.scrollTop = 0;
+                  window.focus();
+                  window.print();
+                } catch (error) {
+                  console.error(error);
+                }
+              };
+
+              setTimeout(doPrint, 180);
+
+              window.addEventListener("afterprint", function () {
+                setTimeout(function () {
+                  try {
+                    parent.postMessage({ type: "mini-bill-print-done" }, "*");
+                  } catch (error) {
+                    console.error(error);
+                  }
+                }, 80);
+              });
+            });
+          </script></body>`
+        : "</body>"
+    );
+
+    frameDocument.open();
+    frameDocument.write(finalHtml);
+    frameDocument.close();
+
+    const cleanup = () => {
+      if (iframe.parentNode) {
+        iframe.parentNode.removeChild(iframe);
+      }
+      window.removeEventListener("message", handleMessage);
+    };
+
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === "mini-bill-print-done") {
+        cleanup();
+      }
+    };
+
+    window.addEventListener("message", handleMessage);
+
+    setTimeout(() => {
+      cleanup();
+    }, autoPrint ? 120000 : 30000);
+
+    return frameWindow;
+  }
+
+  function printBill(table: BillReceiptTable, type: "kot" | "customer") {
+    const printTarget = openPrintWindow(table, type, true);
+    if (!printTarget) {
+      showToast("Bill print garna milena", "error");
+    }
+  }
+
+  function downloadBill(table: BillReceiptTable, type: "kot" | "customer") {
+    const restaurantTitle = (restaurantName || "Restaurant").trim() || "Restaurant";
+    const createdAt = getPrimaryOrderTime(table) || new Date().toISOString();
+    const totalQty = table.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+    const totalAmount = Number(table.total || 0);
+
+    let estimatedHeight = 8;
+    estimatedHeight += estimateWrappedReceiptHeight(restaurantTitle, RECEIPT_CONTENT_WIDTH_MM, 13, 5.2);
+    estimatedHeight += 5;
+    estimatedHeight += 7;
+    estimatedHeight += 4;
+    estimatedHeight += 3.5;
+    estimatedHeight += type === "customer" ? 16 : 12;
+    estimatedHeight += 3.5;
+    estimatedHeight += 5.5;
+
+    for (const item of table.items) {
       estimatedHeight += estimateWrappedReceiptHeight(
-        selectedPaidOrder.remarks,
-        RECEIPT_CONTENT_WIDTH_MM,
-        9,
-        4.2
+        item.item_name,
+        type === "customer" ? RECEIPT_CONTENT_WIDTH_MM - 25 : RECEIPT_CONTENT_WIDTH_MM - 12,
+        10,
+        4.6
       );
+      estimatedHeight += 1.8;
+    }
+
+    estimatedHeight += 3.5;
+    estimatedHeight += type === "customer" ? 7 : 10;
+
+    if (table.remarks.length > 0) {
+      estimatedHeight += 3.5;
+      estimatedHeight += 4.4;
+      for (const remark of table.remarks) {
+        estimatedHeight += estimateWrappedReceiptHeight(remark, RECEIPT_CONTENT_WIDTH_MM, 9, 4.2);
+      }
       estimatedHeight += 1.2;
     }
 
@@ -1615,7 +2024,7 @@ function printReceipt() {
 
     const doc = createReceiptDoc(estimatedHeight);
     const pageWidth = doc.internal.pageSize.getWidth();
-    const qtyX = pageWidth - RECEIPT_MARGIN_MM - 16;
+    const qtyX = type === "customer" ? pageWidth - RECEIPT_MARGIN_MM - 15 : pageWidth - RECEIPT_MARGIN_MM;
     const amtX = pageWidth - RECEIPT_MARGIN_MM;
     let y = 8;
 
@@ -1660,69 +2069,95 @@ function printReceipt() {
 
     centerText(restaurantTitle.toUpperCase(), 13, "bold", 5.2);
     y += 0.8;
-    centerText("CUSTOMER BILL", 11.5, "bold", 4.8);
-    centerText(`Order #${selectedPaidOrder.id}`, 9, "normal", 4.1);
+    centerText(type === "kot" ? "KOT BILL" : "CUSTOMER BILL", 11.5, "bold", 4.8);
+    centerText(`Order #${table.order_ids[0] || "-"}`, 9, "normal", 4.1);
     dashedDivider();
 
-    leftText(`Table   : ${selectedPaidOrder.table_number}`, 9.3, "bold", 4.4);
-    leftText(`Payment : ${formatPaymentMethod(selectedPaidOrder.payment_method)}`, 9.1, "bold", 4.3);
-    leftText(
-      `Paid At : ${selectedPaidOrder.paid_at ? new Date(selectedPaidOrder.paid_at).toLocaleString() : "-"}`,
-      8.3,
-      "normal",
-      4.1
-    );
+    if (type === "customer") {
+      leftText(`Table   : ${table.table_number}`, 9.3, "bold", 4.4);
+      leftText(`Orders  : ${table.order_ids.join(", ")}`, 9.1, "bold", 4.3);
+      leftText(`Time    : ${new Date(createdAt).toLocaleString()}`, 8.3, "normal", 4.1);
+    } else {
+      leftText(`Table : ${table.table_number}`, 9.3, "bold", 4.4);
+      leftText(`Orders: ${table.order_ids.join(", ")}`, 9.0, "normal", 4.1);
+      leftText(`Time  : ${new Date(createdAt).toLocaleString()}`, 8.4, "normal", 4.1);
+    }
     dashedDivider();
 
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(8.8);
+    doc.setFontSize(type === "customer" ? 8.8 : 9.2);
     doc.text("ITEM", RECEIPT_MARGIN_MM, y);
     doc.text("QTY", qtyX, y, { align: "right" });
-    doc.text("AMT", amtX, y, { align: "right" });
+    if (type === "customer") {
+      doc.text("AMT", amtX, y, { align: "right" });
+    }
     y += 2;
     dashedDivider();
 
-    items.forEach((item) => {
-      const amount = Number(item.quantity || 0) * Number(item.unit_price || 0);
-      const itemLines = doc.splitTextToSize(item.item_name, RECEIPT_CONTENT_WIDTH_MM - 25) as string[];
+    for (const item of table.items) {
+      const itemLines = doc.splitTextToSize(
+        item.item_name,
+        type === "customer" ? RECEIPT_CONTENT_WIDTH_MM - 25 : RECEIPT_CONTENT_WIDTH_MM - 12
+      ) as string[];
+      const amount = Number(item.total || 0);
 
       doc.setFont("helvetica", "normal");
       doc.setFontSize(10);
-      itemLines.forEach((line, lineIndex) => {
+      itemLines.forEach((line, index) => {
         doc.text(line, RECEIPT_MARGIN_MM, y);
-        if (lineIndex === 0) {
+        if (index === 0) {
           doc.text(String(item.quantity || 0), qtyX, y, { align: "right" });
-          doc.text(formatReceiptMoney(amount), amtX, y, { align: "right" });
+          if (type === "customer") {
+            doc.text(formatReceiptMoney(amount), amtX, y, { align: "right" });
+          }
         }
         y += 4.6;
       });
       y += 1.8;
-    });
-
-    dashedDivider();
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(10.5);
-    doc.text("TOTAL QTY", RECEIPT_MARGIN_MM, y);
-    doc.text(String(totalQty), amtX, y, { align: "right" });
-    y += 5;
-
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(11.5);
-    doc.text("TOTAL", RECEIPT_MARGIN_MM, y);
-    doc.text(`Rs. ${formatReceiptMoney(totalAmount)}`, amtX, y, { align: "right" });
-    y += 4.4;
-
-    if (selectedPaidOrder.remarks) {
-      dashedDivider();
-      leftText("REMARKS", 8.8, "bold", 4.2);
-      leftText(selectedPaidOrder.remarks, 9, "normal", 4.2);
     }
 
     dashedDivider();
-    centerText("--- THANK YOU ---", 9.8, "bold", 4.4);
-    centerText("Please Visit Again", 8.8, "normal", 4.1);
 
-    doc.save(`customer-bill-table-${selectedPaidOrder.table_number}-order-${selectedPaidOrder.id}.pdf`);
+    if (type === "customer") {
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10.5);
+      doc.text("TOTAL QTY", RECEIPT_MARGIN_MM, y);
+      doc.text(String(totalQty), amtX, y, { align: "right" });
+      y += 5;
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(11.5);
+      doc.text("TOTAL", RECEIPT_MARGIN_MM, y);
+      doc.text(`Rs. ${formatReceiptMoney(totalAmount)}`, amtX, y, { align: "right" });
+      y += 4.4;
+    } else {
+      leftText(`Total Items : ${table.items.length}`, 9, "bold", 4.4);
+      leftText(`Total Qty   : ${totalQty}`, 9, "bold", 4.4);
+    }
+
+    if (table.remarks.length > 0) {
+      dashedDivider();
+      leftText("REMARKS", 8.8, "bold", 4.2);
+      for (const remark of table.remarks) {
+        leftText(remark, 9, "normal", 4.2);
+      }
+    }
+
+    dashedDivider();
+    if (type === "kot") {
+      centerText("--- KITCHEN COPY ---", 8.8, "bold", 4.2);
+      centerText("--- THANK YOU ---", 9.6, "bold", 4.4);
+    } else {
+      centerText("--- THANK YOU ---", 9.8, "bold", 4.4);
+      centerText("Please Visit Again", 8.8, "normal", 4.1);
+    }
+
+    const safeRestaurantName = restaurantTitle
+      .replace(/[^\w\s-]/g, "")
+      .trim()
+      .replace(/\s+/g, "-");
+
+    doc.save(`${safeRestaurantName || "restaurant"}-${type}-table-${table.table_number}.pdf`);
   }
 
 async function markOrderAsPaidFromReport() {
@@ -6647,14 +7082,14 @@ if (!ownerUnlocked) {
                   <div className="grid grid-cols-2 gap-3">
                     <button
                       type="button"
-                      onClick={downloadReceipt}
+                      onClick={() => reportOrderBillTable && downloadBill(reportOrderBillTable, "kot")}
                       className="rounded-[20px] bg-slate-200 py-3 text-sm font-bold text-slate-700"
                     >
                       Download
                     </button>
                     <button
                       type="button"
-                      onClick={printReceipt}
+                      onClick={() => reportOrderBillTable && printBill(reportOrderBillTable, "kot")}
                       className="rounded-[20px] bg-slate-900 py-3 text-sm font-bold text-white"
                     >
                       Print
@@ -6801,14 +7236,14 @@ if (!ownerUnlocked) {
                   <div className="grid grid-cols-2 gap-3">
                     <button
                       type="button"
-                      onClick={downloadPaidOrderBill}
+                      onClick={() => selectedPaidOrderBillTable && downloadBill(selectedPaidOrderBillTable, "customer")}
                       className="rounded-[20px] bg-slate-200 py-3 text-sm font-bold text-slate-700"
                     >
                       Download
                     </button>
                     <button
                       type="button"
-                      onClick={printReceipt}
+                      onClick={() => selectedPaidOrderBillTable && printBill(selectedPaidOrderBillTable, "customer")}
                       className="rounded-[20px] bg-slate-900 py-3 text-sm font-bold text-white"
                     >
                       Print

@@ -1,3 +1,4 @@
+
 "use client";
 
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
@@ -22,29 +23,68 @@ type Order = {
   order_items?: OrderItem[];
 };
 
+function urlBase64ToUint8Array(base64String: string) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+
+  return outputArray;
+}
+
 function KitchenPageContent() {
   const searchParams = useSearchParams();
   const restaurantId = Number(searchParams.get("id"));
+  const tableFromUrl = searchParams.get("table");
 
   const [orders, setOrders] = useState<Order[]>([]);
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [restaurantName, setRestaurantName] = useState("");
+  const [showSplash, setShowSplash] = useState(true);
+  const [password, setPassword] = useState("");
+  const [unlocked, setUnlocked] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [highlightedTable, setHighlightedTable] = useState("");
+  const [toast, setToast] = useState<string | null>(null);
+
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const previousPendingCountRef = useRef(0);
+  const hasFetchedOnceRef = useRef(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const hasAutoHandledTableRef = useRef(false);
+  const tableRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function showToast(message: string) {
+    setToast(message);
+
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current);
+    }
+
+    toastTimeoutRef.current = setTimeout(() => {
+      setToast(null);
+    }, 2200);
+  }
+
+  useEffect(() => {
+    return () => {
+      if (toastTimeoutRef.current) {
+        clearTimeout(toastTimeoutRef.current);
+      }
+    };
+  }, []);
+
   useEffect(() => {
     if (!restaurantId) return;
 
     localStorage.setItem("lastRestaurantId", String(restaurantId));
     localStorage.setItem("lastPanel", "kitchen");
   }, [restaurantId]);
-  const [showSplash, setShowSplash] = useState(true);
-
-  const [password, setPassword] = useState("");
-  const [unlocked, setUnlocked] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const previousPendingCountRef = useRef(0);
-  const hasFetchedOnceRef = useRef(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -63,9 +103,7 @@ function KitchenPageContent() {
       setUnlocked(true);
     }
 
-    const savedSound = localStorage.getItem(
-      `kitchen_sound_enabled_${restaurantId}`
-    );
+    const savedSound = localStorage.getItem(`kitchen_sound_enabled_${restaurantId}`);
     if (savedSound === "true") {
       setSoundEnabled(true);
     }
@@ -116,7 +154,7 @@ function KitchenPageContent() {
 
   async function handleUnlock() {
     if (!restaurantId) {
-      alert("Invalid restaurant link");
+      showToast("Invalid restaurant link");
       return;
     }
 
@@ -127,15 +165,16 @@ function KitchenPageContent() {
       .single();
 
     if (error || !data) {
-      alert("Error fetching password");
+      showToast("Error fetching password");
       return;
     }
 
     if (password === data.kitchen_password) {
       setUnlocked(true);
       localStorage.setItem(`kitchen_logged_in_${restaurantId}`, "true");
+      showToast("Kitchen panel unlocked");
     } else {
-      alert("Wrong password");
+      showToast("Wrong password");
     }
   }
 
@@ -146,6 +185,7 @@ function KitchenPageContent() {
     setUnlocked(false);
     setPassword("");
     setMenuOpen(false);
+    showToast("Logged out");
   }
 
   async function fetchOrders() {
@@ -198,7 +238,7 @@ function KitchenPageContent() {
       .eq("order_id", orderId);
 
     if (itemsError || !items) {
-      alert("Failed to refresh item statuses");
+      showToast("Failed to refresh item statuses");
       return;
     }
 
@@ -209,9 +249,7 @@ function KitchenPageContent() {
     if (statuses.length > 0 && statuses.every((status) => status === "ready")) {
       orderStatus = "ready";
     } else if (
-      statuses.some(
-        (status) => status === "preparing" || status === "ready"
-      )
+      statuses.some((status) => status === "preparing" || status === "ready")
     ) {
       orderStatus = "preparing";
     } else {
@@ -225,7 +263,7 @@ function KitchenPageContent() {
       .eq("restaurant_id", restaurantId);
 
     if (orderError) {
-      alert("Failed to update overall order status");
+      showToast("Failed to update overall order status");
     }
   }
 
@@ -244,7 +282,7 @@ function KitchenPageContent() {
       .eq("order_id", orderId);
 
     if (error) {
-      alert("Failed to update item status");
+      showToast("Failed to update item status");
       return;
     }
 
@@ -267,12 +305,113 @@ function KitchenPageContent() {
       }
     }
 
+    showToast(
+      status === "ready"
+        ? "Item marked ready"
+        : status === "preparing"
+        ? "Item marked preparing"
+        : "Item marked pending"
+    );
+
     fetchOrders();
+  }
+
+  async function subscribeKitchenPush() {
+    try {
+      if (typeof window === "undefined") {
+        return "unsupported" as const;
+      }
+
+      if (!restaurantId) {
+        showToast("Invalid restaurant link");
+        return "failed" as const;
+      }
+
+      if (!("serviceWorker" in navigator)) {
+        showToast("Service worker not supported");
+        return "unsupported" as const;
+      }
+
+      if (!("PushManager" in window)) {
+        showToast("Push notification not supported");
+        return "unsupported" as const;
+      }
+
+      let permission = Notification.permission;
+
+      if (permission === "default") {
+        permission = await Notification.requestPermission();
+      }
+
+      if (permission !== "granted") {
+        return "denied" as const;
+      }
+
+      let registration = await navigator.serviceWorker.getRegistration();
+
+      if (!registration) {
+        registration = await navigator.serviceWorker.register("/sw.js");
+      }
+
+      await navigator.serviceWorker.ready;
+
+      const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+      if (!vapidKey) {
+        showToast("Missing VAPID public key");
+        return "failed" as const;
+      }
+
+      let subscription = await registration.pushManager.getSubscription();
+      const alreadySubscribed = !!subscription;
+
+      if (!subscription) {
+        try {
+          subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(vapidKey),
+          });
+          console.log("Kitchen push subscription created:", subscription);
+        } catch (err) {
+          console.error("Kitchen push subscribe failed:", err);
+          return "failed" as const;
+        }
+      }
+
+      if (!subscription) {
+        return "failed" as const;
+      }
+
+      const res = await fetch("/api/push/subscribe", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+        },
+        cache: "no-store",
+        body: JSON.stringify({
+          restaurant_id: restaurantId,
+          subscription,
+          panel: "kitchen",
+        }),
+      });
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        console.error("Kitchen subscribe API failed:", data);
+        return "failed" as const;
+      }
+
+      return alreadySubscribed ? ("already_subscribed" as const) : ("subscribed" as const);
+    } catch (error) {
+      console.error("Kitchen push subscribe error:", error);
+      return "failed" as const;
+    }
   }
 
   async function enableSound() {
     if (!restaurantId) {
-      alert("Invalid restaurant link");
+      showToast("Invalid restaurant link");
       return;
     }
 
@@ -288,9 +427,32 @@ function KitchenPageContent() {
       setSoundEnabled(true);
       localStorage.setItem(`kitchen_sound_enabled_${restaurantId}`, "true");
       setMenuOpen(false);
-      alert("Kitchen sound enabled");
+
+      const pushResult = await subscribeKitchenPush();
+
+      if (pushResult === "subscribed") {
+        showToast("Kitchen sound + notifications enabled");
+        return;
+      }
+
+      if (pushResult === "already_subscribed") {
+        showToast("Kitchen sound enabled");
+        return;
+      }
+
+      if (pushResult === "denied") {
+        showToast("Kitchen sound enabled. Allow notifications from browser settings.");
+        return;
+      }
+
+      if (pushResult === "unsupported") {
+        showToast("Kitchen sound enabled. Push notification not supported here.");
+        return;
+      }
+
+      showToast("Kitchen sound enabled, but notification setup failed.");
     } catch {
-      alert("Could not enable sound. Please tap again.");
+      showToast("Could not enable sound. Please tap again.");
     }
   }
 
@@ -299,6 +461,7 @@ function KitchenPageContent() {
     setSoundEnabled(false);
     localStorage.setItem(`kitchen_sound_enabled_${restaurantId}`, "false");
     setMenuOpen(false);
+    showToast("Sound disabled");
   }
 
   useEffect(() => {
@@ -329,6 +492,37 @@ function KitchenPageContent() {
     return sorted[0]?.id ?? null;
   }, [orders]);
 
+  useEffect(() => {
+    if (!unlocked) return;
+    if (!tableFromUrl) return;
+    if (hasAutoHandledTableRef.current) return;
+    if (orders.length === 0) return;
+
+    const normalizedTableFromUrl = String(tableFromUrl).trim();
+    const matchedOrder = orders.find(
+      (order) => String(order.table_number || "").trim() === normalizedTableFromUrl
+    );
+
+    if (!matchedOrder) return;
+
+    hasAutoHandledTableRef.current = true;
+    setHighlightedTable(normalizedTableFromUrl);
+
+    const tableElement = tableRefs.current[normalizedTableFromUrl];
+    if (tableElement) {
+      tableElement.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    }
+
+    const clearTimer = window.setTimeout(() => {
+      setHighlightedTable("");
+    }, 5000);
+
+    return () => window.clearTimeout(clearTimer);
+  }, [orders, tableFromUrl, unlocked]);
+
   if (showSplash) {
     return <AppSplash subtitle="Kitchen Loading..." />;
   }
@@ -345,18 +539,28 @@ function KitchenPageContent() {
 
   if (!unlocked) {
     return (
-      <PanelLoginCard
-        restaurantName={restaurantName}
-        panelTitle="Kitchen Panel"
-        panelDescription="Access live kitchen orders and update preparation status."
-        passwordLabel="Kitchen Password"
-        passwordPlaceholder="Enter kitchen password"
-        passwordValue={password}
-        onPasswordChange={setPassword}
-        onSubmit={handleUnlock}
-        buttonText="Enter Kitchen Panel"
-        theme="kitchen"
-      />
+      <>
+        <PanelLoginCard
+          restaurantName={restaurantName}
+          panelTitle="Kitchen Panel"
+          panelDescription="Access live kitchen orders and update preparation status."
+          passwordLabel="Kitchen Password"
+          passwordPlaceholder="Enter kitchen password"
+          passwordValue={password}
+          onPasswordChange={setPassword}
+          onSubmit={handleUnlock}
+          buttonText="Enter Kitchen Panel"
+          theme="kitchen"
+        />
+
+        {toast && (
+          <div className="fixed inset-x-0 bottom-5 z-[100] flex justify-center px-4">
+            <div className="rounded-2xl bg-slate-900 px-4 py-3 text-sm font-medium text-white shadow-[0_12px_30px_rgba(15,23,42,0.28)]">
+              {toast}
+            </div>
+          </div>
+        )}
+      </>
     );
   }
 
@@ -392,15 +596,17 @@ function KitchenPageContent() {
                   onClick={() => setMenuOpen((prev) => !prev)}
                   className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white/15 text-xl font-bold text-white active:scale-[0.97] select-none touch-manipulation"
                   aria-label="Open menu"
+                  type="button"
                 >
                   ⋮
                 </button>
 
                 {menuOpen && (
-                  <div className="absolute right-0 top-12 z-50 w-52 rounded-2xl border border-slate-200 bg-white p-2 shadow-[0_12px_30px_rgba(0,0,0,0.14)]">
+                  <div className="absolute right-0 top-12 z-50 w-56 rounded-2xl border border-slate-200 bg-white p-2 shadow-[0_12px_30px_rgba(0,0,0,0.14)]">
                     <button
                       onClick={soundEnabled ? disableSound : enableSound}
                       className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-medium text-slate-700 active:scale-[0.99] select-none touch-manipulation"
+                      type="button"
                     >
                       <span className="text-base">
                         {soundEnabled ? "🔕" : "🔔"}
@@ -413,6 +619,7 @@ function KitchenPageContent() {
                     <button
                       onClick={handleLogout}
                       className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-medium text-red-600 active:scale-[0.99] select-none touch-manipulation"
+                      type="button"
                     >
                       <span className="text-base">🚪</span>
                       <span>Logout</span>
@@ -437,8 +644,14 @@ function KitchenPageContent() {
                 return (
                   <div
                     key={order.id}
-                    className={`rounded-[24px] border p-3 shadow-sm sm:p-4 md:p-4 lg:p-5 ${
-                      isOldestPending
+                    ref={(el) => {
+                      tableRefs.current[String(order.table_number).trim()] = el;
+                    }}
+                    className={`rounded-[24px] border p-3 shadow-sm sm:p-4 md:p-4 lg:p-5 transition-all duration-300 ${
+                      highlightedTable &&
+                      String(order.table_number).trim() === highlightedTable
+                        ? "border-blue-500 bg-blue-50 ring-4 ring-blue-200"
+                        : isOldestPending
                         ? "border-red-300 bg-red-50"
                         : "border-slate-200 bg-white"
                     }`}
@@ -457,6 +670,15 @@ function KitchenPageContent() {
                           <h2 className="truncate text-xl sm:text-2xl font-bold text-slate-900">
                             Table {order.table_number}
                           </h2>
+
+                          {highlightedTable &&
+                            String(order.table_number).trim() === highlightedTable && (
+                              <div className="mt-2">
+                                <span className="inline-flex items-center rounded-full bg-blue-600 px-2.5 py-1 text-[10px] sm:text-xs font-bold text-white">
+                                  🔔 Opened from notification
+                                </span>
+                              </div>
+                            )}
 
                           <p className="mt-1 text-xs sm:text-sm text-slate-500">
                             Order #{order.id}
@@ -525,6 +747,7 @@ function KitchenPageContent() {
                                     updateItemStatus(order.id, item.id, "pending")
                                   }
                                   className="min-h-[40px] rounded-xl bg-slate-600 px-2 py-2 text-[11px] sm:text-xs md:text-sm font-semibold text-white active:scale-[0.98] select-none touch-manipulation"
+                                  type="button"
                                 >
                                   Pending
                                 </button>
@@ -534,6 +757,7 @@ function KitchenPageContent() {
                                     updateItemStatus(order.id, item.id, "preparing")
                                   }
                                   className="min-h-[40px] rounded-xl bg-yellow-500 px-2 py-2 text-[11px] sm:text-xs md:text-sm font-semibold text-white active:scale-[0.98] select-none touch-manipulation"
+                                  type="button"
                                 >
                                   Preparing
                                 </button>
@@ -543,6 +767,7 @@ function KitchenPageContent() {
                                     updateItemStatus(order.id, item.id, "ready")
                                   }
                                   className="min-h-[40px] rounded-xl bg-green-600 px-2 py-2 text-[11px] sm:text-xs md:text-sm font-semibold text-white active:scale-[0.98] select-none touch-manipulation"
+                                  type="button"
                                 >
                                   Ready
                                 </button>
@@ -561,6 +786,14 @@ function KitchenPageContent() {
           )}
         </div>
       </main>
+
+      {toast && (
+        <div className="fixed inset-x-0 bottom-5 z-[100] flex justify-center px-4">
+          <div className="rounded-2xl bg-slate-900 px-4 py-3 text-sm font-medium text-white shadow-[0_12px_30px_rgba(15,23,42,0.28)]">
+            {toast}
+          </div>
+        </div>
+      )}
     </>
   );
 }

@@ -4,7 +4,6 @@ import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import AppSplash from "@/components/AppSplash";
-import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
 
 type OrderItemInput = {
@@ -74,7 +73,6 @@ type GroupedTableOrder = {
   sourceOrders: OrderRow[];
 };
 
-
 type ConfirmModalState = {
   open: boolean;
   title: string;
@@ -87,7 +85,9 @@ type ConfirmModalState = {
 function WaiterPageContent() {
   const searchParams = useSearchParams();
   const restaurantIdParam = searchParams.get("id");
-const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
+  const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
+  const tableFromUrl = searchParams.get("table");
+  const hasAutoOpenedFromUrlRef = useRef(false);
 
   const [restaurantName, setRestaurantName] = useState("");
   useEffect(() => {
@@ -112,6 +112,7 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
 
   const [tableSearch, setTableSearch] = useState("");
   const [selectedTablePopup, setSelectedTablePopup] = useState<GroupedTableOrder | null>(null);
+  const [selectedPaidOrder, setSelectedPaidOrder] = useState<OrderRow | null>(null);
 
   const [tablePaymentMethods, setTablePaymentMethods] = useState<
     Record<string, "cash" | "qr" | "card">
@@ -156,11 +157,6 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
     onConfirm: null,
   });
 
-
-  const [orderDetailsOpen, setOrderDetailsOpen] = useState(false);
-  const [orderDetailsView, setOrderDetailsView] = useState<"both" | "kot" | "customer">("both");
-  const [orderDetailsTableNumber, setOrderDetailsTableNumber] = useState("");
-
   const [activeTab, setActiveTab] = useState<
     "order" | "paid" | "change" | "menu"
   >("order");
@@ -168,6 +164,9 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
   const [cartSheetOpen, setCartSheetOpen] = useState(false);
   const [cartDragStartY, setCartDragStartY] = useState<number | null>(null);
   const [cartDragOffset, setCartDragOffset] = useState(0);
+
+  const isSubmittingOrderRef = useRef(false);
+  const isMarkingPaidRef = useRef(false);
 
   function showToast(message: string) {
     setToast(message);
@@ -207,7 +206,6 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
     );
   }
 
-
   useEffect(() => {
     const t = setTimeout(() => {
       setStableOrders(orders);
@@ -215,7 +213,6 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
 
     return () => clearTimeout(t);
   }, [orders]);
-
 
   const todayOrders = useMemo(() => {
     return orders.filter((order) => isSameLocalDay(order.created_at));
@@ -402,87 +399,97 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
     );
   }
 
-  async function subscribeWaiterPush(): Promise<
-    "subscribed" | "already_subscribed" | "unsupported" | "denied"
-  > {
-    console.log("STEP 1: function called");
+async function subscribeWaiterPush(): Promise<
+  "subscribed" | "already_subscribed" | "unsupported" | "denied"
+> {
+  console.log("STEP 1: function called");
 
-    if (typeof window === "undefined") {
-      console.log("STEP 1A: window undefined");
-      return "unsupported";
-    }
-
-    if (!canUsePushNotifications()) {
-      console.log("STEP 2: push not supported", {
-        isSecureContext: window.isSecureContext,
-        hasNotification: "Notification" in window,
-        hasServiceWorker: "serviceWorker" in navigator,
-        hasPushManager: "PushManager" in window,
-      });
-      return "unsupported";
-    }
-
-    const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-    console.log("STEP 3: vapid exists?", !!vapidKey);
-
-    if (!vapidKey) {
-      console.error("Missing public VAPID key");
-      return "unsupported";
-    }
-
-    const currentPermission = Notification.permission;
-    console.log("STEP 4: current permission =", currentPermission);
-
-    let permission = currentPermission;
-
-    if (currentPermission === "default") {
-      permission = await Notification.requestPermission();
-      console.log("STEP 5: requested permission =", permission);
-    }
-
-    if (permission !== "granted") {
-      console.log("STEP 6: permission denied or not granted");
-      return "denied";
-    }
-
-    console.log("STEP 7: waiting for service worker ready");
-    const registration = await navigator.serviceWorker.ready;
-
-    let subscription = await registration.pushManager.getSubscription();
-    const wasExisting = !!subscription;
-    console.log("STEP 8: existing subscription?", wasExisting);
-
-    if (!subscription) {
-      console.log("STEP 9: creating new subscription");
-      subscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(vapidKey),
-      });
-    }
-
-    console.log("STEP 10: calling /api/push/subscribe");
-    const response = await fetch("/api/push/subscribe", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        restaurant_id: restaurantId,
-        subscription,
-      }),
-    });
-
-    console.log("STEP 11: response status =", response.status);
-
-    if (!response.ok) {
-      const message = await response
-        .text()
-        .catch(() => "Failed to save notification subscription");
-      throw new Error(message || "Failed to save notification subscription");
-    }
-
-    return wasExisting ? "already_subscribed" : "subscribed";
+  if (typeof window === "undefined") {
+    return "unsupported";
   }
+
+  if (!canUsePushNotifications()) {
+    return "unsupported";
+  }
+
+  if (!restaurantId) {
+    throw new Error("Invalid restaurant link");
+  }
+
+  const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+
+  if (!vapidKey) {
+    console.error("Missing public VAPID key");
+    return "unsupported";
+  }
+
+  let permission = Notification.permission;
+  console.log("STEP 4: current permission =", permission);
+
+  if (permission === "default") {
+    permission = await Notification.requestPermission();
+  }
+
+  if (permission !== "granted") {
+    return "denied";
+  }
+
+  console.log("STEP 7: waiting for service worker ready");
+  let registration = await navigator.serviceWorker.getRegistration();
+
+  if (!registration) {
+    registration = await navigator.serviceWorker.register("/sw.js");
+  }
+
+  await navigator.serviceWorker.ready;
+  console.log("ready");
+
+  let subscription = await registration.pushManager.getSubscription();
+  const wasExisting = !!subscription;
+  console.log("STEP 8: existing subscription?", wasExisting);
+
+  if (!subscription) {
+    subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(vapidKey),
+    });
+  }
+
+  const payload = {
+    restaurant_id: restaurantId,
+    subscription,
+    panel: "waiter" as const,
+  };
+
+  console.log("WAITER FINAL BODY", {
+    restaurant_id: payload.restaurant_id,
+    endpoint: payload.subscription?.endpoint,
+    panel: payload.panel,
+  });
+
+  console.log("STEP 10: calling /api/push/subscribe");
+
+  const response = await fetch("/api/push/subscribe", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+    },
+    cache: "no-store",
+    body: JSON.stringify(payload),
+  });
+
+  console.log("STEP 11: response status =", response.status);
+
+  if (!response.ok) {
+    const message = await response
+      .text()
+      .catch(() => "Failed to save notification subscription");
+    throw new Error(message || "Failed to save notification subscription");
+  }
+
+  return wasExisting ? "already_subscribed" : "subscribed";
+}
 
   async function enableSound() {
     if (!restaurantId) {
@@ -503,7 +510,6 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
       localStorage.setItem(`waiter_sound_enabled_${restaurantId}`, "true");
       setMenuOpen(false);
       console.log("ENABLE SOUND CLICKED");
-
 
       const pushResult = await subscribeWaiterPush();
       console.log("SUBSCRIBE RESULT:", pushResult);
@@ -549,8 +555,9 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
           filter: `restaurant_id=eq.${restaurantId}`,
         },
         () => {
-          fetchOrders();
-          fetchPopularItems();
+          if (!isSubmittingOrderRef.current && !isMarkingPaidRef.current) {
+            fetchOrders();
+          }
         }
       )
       .subscribe();
@@ -561,8 +568,10 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
         "postgres_changes",
         { event: "*", schema: "public", table: "order_items" },
         () => {
-          fetchOrders();
-          fetchPopularItems();
+          if (!isSubmittingOrderRef.current && !isMarkingPaidRef.current) {
+            fetchOrders();
+            fetchPopularItems();
+          }
         }
       )
       .subscribe();
@@ -583,18 +592,10 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
       )
       .subscribe();
 
-    const interval = setInterval(() => {
-      fetchRestaurant();
-      fetchOrders();
-      fetchMenu();
-      fetchPopularItems();
-    }, 2000);
-
     return () => {
       supabase.removeChannel(ordersChannel);
       supabase.removeChannel(orderItemsChannel);
       supabase.removeChannel(menuItemsChannel);
-      clearInterval(interval);
     };
   }, [restaurantId]);
 
@@ -641,33 +642,7 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
     if (readyNotifications.length === 0) return;
 
     playNotificationBeep();
-
-    const current = readyNotifications[0];
-
-    if (
-      typeof window !== "undefined" &&
-      canUsePushNotifications() &&
-      Notification.permission === "granted"
-    ) {
-      navigator.serviceWorker.ready
-        .then((registration) => {
-        return registration.showNotification("🍽️ Order Ready", {
-  body: `Table ${current.tableNumber} is ready`,
-  icon: "/icon-192.png",
-  badge: "/icon-192.png",
-  vibrate: [200, 100, 200],
-  tag: `ready-table-${current.tableNumber}`,
-  renotify: true,
-  data: {
-    url: `/waiter?id=${restaurantId}`,
-  },
-} as any);
-        })
-        .catch((error) => {
-          console.error("Local notification error:", error);
-        });
-    }
-  }, [readyNotifications, restaurantId, soundEnabled]);
+  }, [readyNotifications, soundEnabled]);
 
   function closeCurrentReadyNotification() {
     setReadyNotifications((prev) => prev.slice(1));
@@ -1157,12 +1132,14 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
       return;
     }
 
-    if (!tableNumber.trim()) {
+    const trimmedTableNumber = tableNumber.trim();
+
+    if (!trimmedTableNumber) {
       alert("Please enter table number");
       return;
     }
 
-    if (!/^\d+$/.test(tableNumber.trim())) {
+    if (!/^\d+$/.test(trimmedTableNumber)) {
       alert("Please enter valid table number");
       return;
     }
@@ -1173,31 +1150,36 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
     }
 
     setLoading(true);
+    isSubmittingOrderRef.current = true;
+
+    const currentItems = [...items];
+    const currentRemarks = remarks.trim() || null;
 
     const { data: orderData, error: orderError } = await supabase
       .from("orders")
       .insert([
         {
           restaurant_id: restaurantId,
-          table_number: tableNumber.trim(),
+          table_number: trimmedTableNumber,
           status: "pending",
           waiter_cleared: false,
           is_paid: false,
           payment_method: null,
           paid_at: null,
-          remarks: remarks.trim() || null,
+          remarks: currentRemarks,
         },
       ])
       .select()
       .single();
 
     if (orderError || !orderData) {
+      isSubmittingOrderRef.current = false;
       setLoading(false);
       alert("Failed to create order");
       return;
     }
 
-    const orderItemsPayload = items.map((item) => ({
+    const orderItemsPayload = currentItems.map((item) => ({
       order_id: orderData.id,
       item_name: item.item_name,
       quantity: item.quantity,
@@ -1209,22 +1191,64 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
       .from("order_items")
       .insert(orderItemsPayload);
 
-    setLoading(false);
-
     if (itemsError) {
+      isSubmittingOrderRef.current = false;
+      setLoading(false);
       alert("Order created, but items failed");
       return;
     }
 
+    const optimisticOrder: OrderRow = {
+      id: orderData.id,
+      table_number: trimmedTableNumber,
+      status: "pending",
+      created_at: orderData.created_at,
+      waiter_cleared: false,
+      is_paid: false,
+      payment_method: null,
+      paid_at: null,
+      remarks: currentRemarks,
+      order_items: currentItems.map((item, index) => ({
+        id: -(orderData.id * 1000 + index + 1),
+        item_name: item.item_name,
+        quantity: item.quantity,
+        unit_price: item.price,
+        status: "pending",
+      })),
+    };
+
+    setOrders((prev) => [optimisticOrder, ...prev.filter((order) => order.id !== optimisticOrder.id)]);
+    setStableOrders((prev) => [optimisticOrder, ...prev.filter((order) => order.id !== optimisticOrder.id)]);
+
+    try {
+      await fetch("/api/push/new-order", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          restaurant_id: restaurantId,
+          table: trimmedTableNumber,
+        }),
+      });
+    } catch (pushError) {
+      console.error("Failed to send new order push:", pushError);
+    }
+
+    setLoading(false);
     setTableNumber("");
     setItems([]);
     setSearchTerm("");
     setRemarks("");
     setOrderModalOpen(false);
     setCartSheetOpen(false);
-    fetchOrders();
-    fetchPopularItems();
+    void fetchPopularItems();
     showToast("Order sent to kitchen");
+
+    window.setTimeout(() => {
+      isSubmittingOrderRef.current = false;
+      void fetchOrders();
+    }, 350);
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -1336,30 +1360,73 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
     );
   }, [groupedTableOrders, tableSearch]);
 
+  function buildGroupedTableOrderFromOrders(sourceOrders: OrderRow[]): GroupedTableOrder | null {
+    if (sourceOrders.length === 0) return null;
+
+    const firstOrder = sourceOrders[0];
+    const grouped: GroupedTableOrder = {
+      table_number: String(firstOrder.table_number || ""),
+      order_ids: sourceOrders.map((order) => order.id),
+      remarks: sourceOrders
+        .map((order) => (order.remarks || "").trim())
+        .filter((remark) => !!remark),
+      items: [],
+      total: 0,
+      unpaid_orders_count: sourceOrders.filter((order) => order.is_paid !== true).length,
+      sourceOrders,
+    };
+
+    sourceOrders.forEach((order) => {
+      (order.order_items || []).forEach((item) => {
+        const quantity = Number(item.quantity || 0);
+        const unitPrice = Number(item.unit_price || 0);
+        const lineTotal = quantity * unitPrice;
+        const status = (item.status || order.status || "pending") as "pending" | "preparing" | "ready";
+
+        const existingItem = grouped.items.find((entry) => entry.item_name === item.item_name);
+
+        if (existingItem) {
+          existingItem.quantity += quantity;
+          existingItem.total += lineTotal;
+          existingItem.statuses.push(status);
+        } else {
+          grouped.items.push({
+            item_name: item.item_name,
+            quantity,
+            total: lineTotal,
+            statuses: [status],
+          });
+        }
+
+        grouped.total += lineTotal;
+      });
+    });
+
+    return grouped;
+  }
+
+  const selectedPaidBill = useMemo(() => {
+    if (!selectedPaidOrder) return null;
+    return buildGroupedTableOrderFromOrders([selectedPaidOrder]);
+  }, [selectedPaidOrder]);
+
   useEffect(() => {
-    if (!orderDetailsOpen) return;
+    if (!tableFromUrl) return;
+    if (hasAutoOpenedFromUrlRef.current) return;
+    if (groupedTableOrders.length === 0) return;
 
-    if (groupedTableOrders.length === 0) {
-      setOrderDetailsTableNumber("");
-      return;
-    }
-
-    if (
-      !orderDetailsTableNumber ||
-      !groupedTableOrders.some((table) => table.table_number === orderDetailsTableNumber)
-    ) {
-      setOrderDetailsTableNumber(groupedTableOrders[0].table_number);
-    }
-  }, [groupedTableOrders, orderDetailsOpen, orderDetailsTableNumber]);
-
-  const selectedOrderDetailsTable = useMemo(() => {
-    if (!orderDetailsTableNumber) return groupedTableOrders[0] || null;
-    return (
-      groupedTableOrders.find((table) => table.table_number === orderDetailsTableNumber) ||
-      groupedTableOrders[0] ||
-      null
+    const matchedTable = groupedTableOrders.find(
+      (table) => String(table.table_number).trim() === String(tableFromUrl).trim()
     );
-  }, [groupedTableOrders, orderDetailsTableNumber]);
+
+    if (!matchedTable) return;
+
+    hasAutoOpenedFromUrlRef.current = true;
+    setActiveTab("order");
+    cancelEditOrder();
+    setSelectedTablePopup(matchedTable);
+  }, [groupedTableOrders, tableFromUrl]);
+
 
   const recentPaidOrders = useMemo(() => {
     return todayStableOrders
@@ -1410,33 +1477,65 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
       onConfirm: async () => {
         closeConfirmModal();
         setMarkingPaidTable(normalizedTableNo);
+        isMarkingPaidRef.current = true;
 
         const orderIds = unpaidOrdersForTable.map((order) => order.id);
+        const paidAt = new Date().toISOString();
 
         const { error } = await supabase
           .from("orders")
           .update({
             is_paid: true,
             payment_method: paymentMethod,
-            paid_at: new Date().toISOString(),
+            paid_at: paidAt,
           })
           .in("id", orderIds)
           .eq("restaurant_id", restaurantId);
 
-        setMarkingPaidTable(null);
-
         if (error) {
+          isMarkingPaidRef.current = false;
+          setMarkingPaidTable(null);
           alert("Failed to mark orders as paid");
           return;
         }
 
-        await fetchOrders();
+        setOrders((prev) =>
+          prev.map((order) =>
+            orderIds.includes(order.id)
+              ? {
+                  ...order,
+                  is_paid: true,
+                  payment_method: paymentMethod,
+                  paid_at: paidAt,
+                }
+              : order
+          )
+        );
+        setStableOrders((prev) =>
+          prev.map((order) =>
+            orderIds.includes(order.id)
+              ? {
+                  ...order,
+                  is_paid: true,
+                  payment_method: paymentMethod,
+                  paid_at: paidAt,
+                }
+              : order
+          )
+        );
+
+        setMarkingPaidTable(null);
         showToast(`Table ${normalizedTableNo} paid successfully`);
 
         setReadyNotifications((prev) =>
           prev.filter((notification) => notification.tableNumber.trim() !== normalizedTableNo)
         );
         setSelectedTablePopup(null);
+
+        window.setTimeout(() => {
+          isMarkingPaidRef.current = false;
+          void fetchOrders();
+        }, 350);
       },
     });
   }
@@ -1505,6 +1604,79 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
 
   const currentReadyNotification = readyNotifications[0] || null;
 
+  function getGroupedItemStatusCounts(item: GroupedTableItem) {
+    const total = item.statuses.length;
+    const ready = item.statuses.filter((status) => status === "ready").length;
+    const preparing = item.statuses.filter((status) => status === "preparing").length;
+    const pending = Math.max(total - ready - preparing, 0);
+
+    return {
+      total,
+      ready,
+      preparing,
+      pending,
+    };
+  }
+
+  function getGroupedItemDisplayStatus(item: GroupedTableItem) {
+    const counts = getGroupedItemStatusCounts(item);
+
+    if (counts.total > 0 && counts.ready === counts.total) {
+      return "ready";
+    }
+
+    if (counts.ready > 0) {
+      return "partial";
+    }
+
+    if (counts.preparing > 0) {
+      return "preparing";
+    }
+
+    return "pending";
+  }
+
+  function getTableProgress(table: GroupedTableOrder) {
+    const total = table.items.reduce(
+      (sum, item) => sum + getGroupedItemStatusCounts(item).total,
+      0
+    );
+    const ready = table.items.reduce(
+      (sum, item) => sum + getGroupedItemStatusCounts(item).ready,
+      0
+    );
+    const preparing = table.items.reduce(
+      (sum, item) => sum + getGroupedItemStatusCounts(item).preparing,
+      0
+    );
+
+    let label = "Pending";
+    let badgeClass = "bg-yellow-100 text-yellow-800";
+
+    if (total > 0 && ready === total) {
+      label = "Ready";
+      badgeClass = "bg-green-100 text-green-700";
+    } else if (ready > 0) {
+      label = "Partial Ready";
+      badgeClass = "bg-green-100 text-green-700";
+    } else if (preparing > 0) {
+      label = "Preparing";
+      badgeClass = "bg-orange-100 text-orange-700";
+    }
+
+    return {
+      total,
+      ready,
+      preparing,
+      pending: Math.max(total - ready - preparing, 0),
+      label,
+      badgeClass,
+      progressText: total > 0 ? `${ready}/${total} Ready` : "0/0 Ready",
+      allReady: total > 0 && ready === total,
+      partiallyReady: ready > 0 && ready < total,
+    };
+  }
+
   function getGroupedPaymentButtonClass(
     tableNo: string,
     method: "cash" | "qr" | "card"
@@ -1519,7 +1691,7 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
   }
 
   function getItemStatusClass(status?: string) {
-    if (status === "ready") {
+    if (status === "ready" || status === "partial") {
       return "bg-green-100 text-green-700";
     }
     if (status === "preparing") {
@@ -1611,288 +1783,703 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
       .sort()[0] || null;
   }
 
+  const RECEIPT_WIDTH_MM = 80;
+  const RECEIPT_MARGIN_MM = 4.5;
+  const RECEIPT_CONTENT_WIDTH_MM = RECEIPT_WIDTH_MM - RECEIPT_MARGIN_MM * 2;
+
+  function formatReceiptMoney(value: number) {
+    const normalized = Number(value || 0);
+    return Number.isInteger(normalized) ? String(normalized) : normalized.toFixed(2);
+  }
+
+  function createReceiptTempDoc() {
+    return new jsPDF({
+      orientation: "portrait",
+      unit: "mm",
+      format: [RECEIPT_WIDTH_MM, 260],
+    });
+  }
+
+  function createReceiptDoc(height: number) {
+    return new jsPDF({
+      orientation: "portrait",
+      unit: "mm",
+      format: [RECEIPT_WIDTH_MM, Math.max(height, 95)],
+      compress: true,
+    });
+  }
+
+  function estimateWrappedReceiptHeight(
+    value: string,
+    maxWidth: number,
+    fontSize: number,
+    lineHeight: number
+  ) {
+    const tempDoc = createReceiptTempDoc();
+    tempDoc.setFont("helvetica", "normal");
+    tempDoc.setFontSize(fontSize);
+    const lines = tempDoc.splitTextToSize(value || "", maxWidth) as string[];
+    return Math.max(lines.length, 1) * lineHeight;
+  }
+
   function getBillDocumentHtml(table: GroupedTableOrder, type: "kot" | "customer") {
-    const billTitle = type === "kot" ? "Kitchen Order Ticket (KOT)" : "Customer Bill";
-    const createdAt = formatBillDate(getPrimaryOrderTime(table));
-    const remarksHtml =
-      table.remarks.length > 0
-        ? `<div class="section"><div class="section-title">Remarks</div>${table.remarks
-            .map((remark) => `<div class="remark">• ${escapeHtml(remark)}</div>`)
-            .join("")}</div>`
-        : "";
+    const restaurantTitle = escapeHtml((restaurantName || "Restaurant").trim() || "Restaurant");
+    const primaryOrderId = table.order_ids[0] || "-";
+    const createdAt = escapeHtml(formatBillDate(getPrimaryOrderTime(table)));
+    const totalQty = table.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+
+    const headerRow =
+      type === "kot"
+        ? '<div class="grid header-row"><span>ITEM</span><span class="qty">QTY</span></div>'
+        : '<div class="grid header-row"><span>ITEM</span><span class="qty">QTY</span><span class="amt">AMT</span></div>';
 
     const rows = table.items
-      .map((item, index) => {
+      .map((item) => {
+        const amount = formatReceiptMoney(Number(item.total || 0));
+        const itemName = escapeHtml(item.item_name);
+        const qty = escapeHtml(String(item.quantity || 0));
+
         if (type === "kot") {
-          return `<tr><td>${index + 1}</td><td>${escapeHtml(item.item_name)}</td><td>${item.quantity}</td></tr>`;
+          return `
+            <div class="grid item-row kot-row">
+              <div class="item-name">${itemName}</div>
+              <div class="qty">${qty}</div>
+            </div>
+          `;
         }
 
-        const unitPrice = item.quantity > 0 ? Math.round(item.total / item.quantity) : 0;
-        return `<tr><td>${index + 1}</td><td>${escapeHtml(item.item_name)}</td><td>${item.quantity}</td><td>Rs. ${unitPrice}</td><td>Rs. ${item.total}</td></tr>`;
+        return `
+          <div class="grid item-row customer-row">
+            <div class="item-name">${itemName}</div>
+            <div class="qty">${qty}</div>
+            <div class="amt">${amount}</div>
+          </div>
+        `;
       })
       .join("");
 
-    return `
-<!DOCTYPE html>
+    const remarksHtml =
+      table.remarks.length > 0
+        ? `
+          <div class="divider"></div>
+          <div class="remarks-title">REMARKS</div>
+          ${table.remarks
+            .map((remark) => `<div class="remarks-line">${escapeHtml(remark)}</div>`)
+            .join("")}
+        `
+        : "";
+
+    const totalsHtml =
+      type === "kot"
+        ? `
+          <div class="divider"></div>
+          <div class="summary-line"><span>Total Items</span><span>${escapeHtml(String(table.items.length))}</span></div>
+          <div class="summary-line"><span>Total Qty</span><span>${escapeHtml(String(totalQty))}</span></div>
+        `
+        : `
+          <div class="divider"></div>
+          <div class="summary-line strong"><span>TOTAL QTY</span><span>${escapeHtml(String(totalQty))}</span></div>
+          <div class="summary-line grand"><span>TOTAL</span><span>Rs. ${escapeHtml(formatReceiptMoney(table.total))}</span></div>
+        `;
+
+    const metaHtml =
+      type === "kot"
+        ? `
+          <div class="meta-line"><span>Table : ${escapeHtml(table.table_number)}</span></div>
+          <div class="meta-line"><span>Orders: ${escapeHtml(table.order_ids.join(", "))}</span></div>
+          <div class="meta-line"><span>Time  : ${createdAt}</span></div>
+        `
+        : `
+          <div class="meta-line"><span>Table   : ${escapeHtml(table.table_number)}</span></div>
+          <div class="meta-line"><span>Orders  : ${escapeHtml(table.order_ids.join(", "))}</span></div>
+          <div class="meta-line"><span>Time    : ${createdAt}</span></div>
+        `;
+
+    const footerHtml =
+      type === "kot"
+        ? `
+          <div class="divider"></div>
+          <div class="center footer-strong">--- KITCHEN COPY ---</div>
+          <div class="center footer-strong">--- THANK YOU ---</div>
+        `
+        : `
+          <div class="divider"></div>
+          <div class="center footer-strong">--- THANK YOU ---</div>
+          <div class="center footer-sub">Please Visit Again</div>
+        `;
+
+    return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8" />
-  <title>${escapeHtml(restaurantName || "Restaurant")} - ${billTitle}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${restaurantTitle} - ${type === "kot" ? "KOT BILL" : "CUSTOMER BILL"}</title>
   <style>
-    * { box-sizing: border-box; }
-    body { font-family: Arial, sans-serif; margin: 0; padding: 24px; background: #f8fafc; color: #0f172a; }
-    .page { max-width: 760px; margin: 0 auto; background: #fff; border: 1px solid #e2e8f0; border-radius: 20px; padding: 24px; }
-    .top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
-    .title { font-size: 28px; font-weight: 800; margin: 0; }
-    .sub { color: #475569; margin-top: 6px; }
-    .badge { background: ${type === "kot" ? "#eff6ff" : "#fef2f2"}; color: ${type === "kot" ? "#1d4ed8" : "#dc2626"}; border: 1px solid ${type === "kot" ? "#bfdbfe" : "#fecaca"}; padding: 8px 14px; border-radius: 999px; font-weight: 700; }
-    .meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
-    .meta-box { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 14px; padding: 12px; }
-    .meta-label { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #64748b; margin-bottom: 6px; font-weight: 700; }
-    .meta-value { font-size: 18px; font-weight: 800; }
-    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-    th, td { padding: 12px 10px; border-bottom: 1px solid #e2e8f0; text-align: left; }
-    th { background: #f8fafc; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
-    .section { margin-top: 20px; }
-    .section-title { font-size: 16px; font-weight: 800; margin-bottom: 10px; }
-    .remark { background: #fff7ed; border: 1px solid #fed7aa; padding: 10px 12px; border-radius: 12px; margin-bottom: 8px; }
-    .total { margin-top: 20px; display: flex; justify-content: space-between; align-items: center; padding: 16px 18px; border-radius: 16px; background: #fef2f2; border: 1px solid #fecaca; font-size: 22px; font-weight: 800; color: #b91c1c; }
-    @media print { body { background: #fff; padding: 0; } .page { max-width: 100%; border: 0; border-radius: 0; } }
+    @page {
+      size: 80mm auto;
+      margin: 0;
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 80mm;
+      background: #ffffff;
+      color: #000000;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+
+    body {
+      background: #ffffff;
+    }
+
+    .receipt-shell {
+      width: 80mm;
+      margin: 0;
+      padding: 0;
+      background: #ffffff;
+    }
+
+    .receipt {
+      width: 71mm;
+      margin: 0 auto;
+      padding: 5mm 2.5mm 5mm;
+      background: #ffffff;
+    }
+
+    .center {
+      text-align: center;
+    }
+
+    .title {
+      font-size: 15px;
+      font-weight: 800;
+      text-transform: uppercase;
+      line-height: 1.25;
+      word-break: break-word;
+      margin: 0;
+    }
+
+    .bill-title {
+      margin-top: 2mm;
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .bill-id {
+      margin-top: 1.2mm;
+      font-size: 9px;
+    }
+
+    .divider {
+      border-top: 1px dashed #666;
+      margin: 3.4mm 0;
+      width: 100%;
+      height: 0;
+    }
+
+    .meta-line {
+      font-size: 9px;
+      line-height: 1.45;
+      font-weight: 600;
+      margin: 0;
+    }
+
+    .grid {
+      display: grid;
+      align-items: start;
+      column-gap: 2mm;
+    }
+
+    .header-row {
+      font-size: 9px;
+      font-weight: 800;
+      line-height: 1.3;
+      text-transform: uppercase;
+    }
+
+    .header-row .qty,
+    .header-row .amt,
+    .item-row .qty,
+    .item-row .amt,
+    .summary-line span:last-child {
+      text-align: right;
+    }
+
+    .header-row .qty,
+    .item-row .qty {
+      padding-right: 1mm;
+    }
+
+    .customer-row,
+    .header-row.customer,
+    .customer-grid {
+      grid-template-columns: minmax(0, 1fr) 10mm 15mm;
+    }
+
+    .kot-row,
+    .header-row.kot,
+    .kot-grid {
+      grid-template-columns: minmax(0, 1fr) 12mm;
+    }
+
+    .item-row {
+      font-size: 10px;
+      line-height: 1.45;
+      margin-top: 2.2mm;
+    }
+
+    .item-name {
+      min-width: 0;
+      word-break: break-word;
+    }
+
+    .summary-line {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      font-size: 10px;
+      font-weight: 800;
+      line-height: 1.35;
+      margin: 0;
+    }
+
+    .summary-line + .summary-line {
+      margin-top: 1.2mm;
+    }
+
+    .summary-line.grand {
+      font-size: 10.8px;
+    }
+
+    .remarks-title {
+      font-size: 8.8px;
+      font-weight: 800;
+      margin: 0 0 1.4mm;
+    }
+
+    .remarks-line {
+      font-size: 9px;
+      line-height: 1.4;
+      margin: 0;
+      word-break: break-word;
+    }
+
+    .remarks-line + .remarks-line {
+      margin-top: 1mm;
+    }
+
+    .footer-strong {
+      font-size: 10px;
+      font-weight: 800;
+      line-height: 1.3;
+    }
+
+    .footer-sub {
+      margin-top: 1mm;
+      font-size: 8.8px;
+      line-height: 1.3;
+    }
+
+    @media print {
+      html, body, .receipt-shell {
+        width: 80mm;
+        margin: 0;
+        padding: 0;
+      }
+
+      .receipt {
+        width: 71mm;
+        margin: 0 auto;
+        padding: 5mm 2.5mm 5mm;
+      }
+    }
   </style>
 </head>
 <body>
-  <div class="page">
-    <div class="top" style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 45%, ${type === "kot" ? "#2563eb" : "#dc2626"} 100%); padding:24px; color:#fff; border-radius:20px; margin-bottom:20px;"><div style="display:flex; align-items:center; gap:14px;"><div style="width:68px; height:68px; border-radius:20px; background:rgba(255,255,255,0.12); border:1px solid rgba(255,255,255,0.18); display:flex; align-items:center; justify-content:center; overflow:hidden;"><img src="/logo.png" alt="Restaurant Logo" style="width:100%; height:100%; object-fit:contain; padding:8px;" /></div><div><h1 class="title" style="color:#fff;">${escapeHtml(restaurantName || "Restaurant")}</h1><div class="sub" style="color:rgba(255,255,255,0.82);">${billTitle}</div></div></div><div class="badge" style="background:rgba(255,255,255,0.12); color:#fff; border:1px solid rgba(255,255,255,0.24);">Table ${escapeHtml(table.table_number)}</div></div>
+  <div class="receipt-shell">
+    <div class="receipt">
+      <div class="center">
+        <div class="title">${restaurantTitle}</div>
+        <div class="bill-title">${type === "kot" ? "KOT BILL" : "CUSTOMER BILL"}</div>
+        <div class="bill-id">Order #${escapeHtml(String(primaryOrderId))}</div>
+      </div>
 
-    <div class="meta">
-      <div class="meta-box">
-        <div class="meta-label">Table</div>
-        <div class="meta-value">${escapeHtml(table.table_number)}</div>
+      <div class="divider"></div>
+
+      ${metaHtml}
+
+      <div class="divider"></div>
+
+      <div class="grid ${type === "kot" ? "kot-grid" : "customer-grid"} header-row">
+        <span>ITEM</span>
+        <span class="qty">QTY</span>
+        ${type === "customer" ? '<span class="amt">AMT</span>' : ""}
       </div>
-      <div class="meta-box">
-        <div class="meta-label">Created At</div>
-        <div class="meta-value" style="font-size:16px;">${escapeHtml(createdAt)}</div>
-      </div>
-      <div class="meta-box">
-        <div class="meta-label">Order Count</div>
-        <div class="meta-value">${table.unpaid_orders_count}</div>
-      </div>
-      <div class="meta-box">
-        <div class="meta-label">Order IDs</div>
-        <div class="meta-value" style="font-size:16px;">${escapeHtml(table.order_ids.join(", "))}</div>
-      </div>
+
+      <div class="divider"></div>
+
+      ${rows}
+
+      ${totalsHtml}
+
+      ${remarksHtml}
+
+      ${footerHtml}
     </div>
-
-    <table>
-      <thead>
-        <tr>
-          <th>#</th>
-          <th>Item</th>
-          <th>Qty</th>
-          ${type === "customer" ? "<th>Rate</th><th>Total</th>" : ""}
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
-
-    ${remarksHtml}
-
-    ${type === "customer" ? `<div class="total"><span>Grand Total</span><span>Rs. ${table.total}</span></div>` : `<div class="remark">Kitchen copy only • Price hidden for kitchen team.</div>`}<div class="section" style="margin-top:20px;border-top:1px dashed #cbd5e1;padding-top:14px;display:flex;justify-content:space-between;gap:16px;font-size:12px;color:#64748b;"><div><strong style="color:#0f172a;">${escapeHtml(restaurantName || "Restaurant")}</strong><br/>Thank you for choosing us.</div><div style="text-align:right;">Powered by Restrofy<br/>Generated from Waiter Panel</div></div>
   </div>
 </body>
 </html>`;
   }
 
-  function printBill(table: GroupedTableOrder, type: "kot" | "customer") {
-    const printWindow = window.open("", "_blank", "width=900,height=700");
-    if (!printWindow) return;
+  function openPrintWindow(table: GroupedTableOrder, type: "kot" | "customer") {
+    const html = getBillDocumentHtml(table, type);
+    const billWindow = window.open("", "_blank", "width=420,height=900");
 
-    printWindow.document.open();
-    printWindow.document.write(getBillDocumentHtml(table, type));
-    printWindow.document.close();
-    printWindow.focus();
-    setTimeout(() => {
-      printWindow.print();
-    }, 300);
+    if (!billWindow) return null;
+
+    billWindow.document.open();
+    billWindow.document.write(html);
+    billWindow.document.close();
+
+    return billWindow;
   }
 
-  async function downloadBill(table: GroupedTableOrder, type: "kot" | "customer") {
-    const iframe = document.createElement("iframe");
-    iframe.style.position = "fixed";
-    iframe.style.left = "-99999px";
-    iframe.style.top = "0";
-    iframe.style.width = "900px";
-    iframe.style.height = "1400px";
-    iframe.style.opacity = "0";
-    document.body.appendChild(iframe);
+  function printBill(table: GroupedTableOrder, type: "kot" | "customer") {
+    const billWindow = openPrintWindow(table, type);
+    if (!billWindow) return;
 
-    iframe.srcdoc = getBillDocumentHtml(table, type);
+    const tryPrint = () => {
+      try {
+        const bodyReady =
+          !!billWindow.document?.body &&
+          billWindow.document.body.innerHTML.trim().length > 0;
 
-    await new Promise<void>((resolve) => {
-      iframe.onload = () => resolve();
-      setTimeout(() => resolve(), 600);
-    });
+        if (!bodyReady) {
+          window.setTimeout(tryPrint, 250);
+          return;
+        }
 
-    const targetDoc = iframe.contentDocument;
-    if (!targetDoc?.body) {
-      document.body.removeChild(iframe);
-      alert("Failed to generate PDF");
-      return;
+        window.setTimeout(() => {
+          try {
+            billWindow.focus();
+            billWindow.print();
+          } catch (error) {
+            console.error("Print failed:", error);
+          }
+        }, 700);
+      } catch (error) {
+        console.error("Print preparation failed:", error);
+      }
+    };
+
+    if (billWindow.document.readyState === "complete") {
+      tryPrint();
+    } else {
+      billWindow.onload = () => {
+        tryPrint();
+      };
+    }
+  }
+
+  function downloadBill(table: GroupedTableOrder, type: "kot" | "customer") {
+    const restaurantTitle = (restaurantName || "Restaurant").trim() || "Restaurant";
+    const createdAt = getPrimaryOrderTime(table) || new Date().toISOString();
+    const totalQty = table.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+    const totalAmount = Number(table.total || 0);
+
+    let estimatedHeight = 8;
+    estimatedHeight += estimateWrappedReceiptHeight(restaurantTitle, RECEIPT_CONTENT_WIDTH_MM, 13, 5.2);
+    estimatedHeight += 5;
+    estimatedHeight += 7;
+    estimatedHeight += 4;
+    estimatedHeight += 3.5;
+    estimatedHeight += type === "customer" ? 16 : 12;
+    estimatedHeight += 3.5;
+    estimatedHeight += 5.5;
+
+    for (const item of table.items) {
+      estimatedHeight += estimateWrappedReceiptHeight(
+        item.item_name,
+        type === "customer" ? RECEIPT_CONTENT_WIDTH_MM - 25 : RECEIPT_CONTENT_WIDTH_MM - 12,
+        10,
+        4.6
+      );
+      estimatedHeight += 1.8;
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    estimatedHeight += 3.5;
+    estimatedHeight += type === "customer" ? 7 : 10;
 
-    const canvas = await html2canvas(targetDoc.body, {
-      scale: 2,
-      useCORS: true,
-      backgroundColor: "#ffffff",
-      width: targetDoc.body.scrollWidth,
-      height: targetDoc.body.scrollHeight,
-      windowWidth: targetDoc.body.scrollWidth,
-      windowHeight: targetDoc.body.scrollHeight,
-    });
-
-    const imgData = canvas.toDataURL("image/png");
-    const pdf = new jsPDF("p", "mm", "a4");
-    const pageWidth = pdf.internal.pageSize.getWidth();
-    const pageHeight = pdf.internal.pageSize.getHeight();
-    const margin = 8;
-    const usableWidth = pageWidth - margin * 2;
-    const usableHeight = pageHeight - margin * 2;
-    const imgHeight = (canvas.height * usableWidth) / canvas.width;
-
-    let heightLeft = imgHeight;
-    let position = margin;
-
-    pdf.addImage(imgData, "PNG", margin, position, usableWidth, imgHeight, undefined, "FAST");
-    heightLeft -= usableHeight;
-
-    while (heightLeft > 0) {
-      position = heightLeft - imgHeight + margin;
-      pdf.addPage();
-      pdf.addImage(imgData, "PNG", margin, position, usableWidth, imgHeight, undefined, "FAST");
-      heightLeft -= usableHeight;
+    if (table.remarks.length > 0) {
+      estimatedHeight += 3.5;
+      estimatedHeight += 4.4;
+      for (const remark of table.remarks) {
+        estimatedHeight += estimateWrappedReceiptHeight(remark, RECEIPT_CONTENT_WIDTH_MM, 9, 4.2);
+      }
+      estimatedHeight += 1.2;
     }
 
-    pdf.save(`${(restaurantName || "restaurant").replace(/\s+/g, "-").toLowerCase()}-table-${table.table_number}-${type}-bill.pdf`);
-    document.body.removeChild(iframe);
+    estimatedHeight += 3.5;
+    estimatedHeight += 10;
+
+    const doc = createReceiptDoc(estimatedHeight);
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const qtyX = type === "customer" ? pageWidth - RECEIPT_MARGIN_MM - 15 : pageWidth - RECEIPT_MARGIN_MM;
+    const amtX = pageWidth - RECEIPT_MARGIN_MM;
+    let y = 8;
+
+    const centerText = (
+      value: string,
+      fontSize = 10,
+      style: "normal" | "bold" = "normal",
+      gap = 4.2
+    ) => {
+      doc.setFont("helvetica", style);
+      doc.setFontSize(fontSize);
+      const lines = doc.splitTextToSize(value, RECEIPT_CONTENT_WIDTH_MM) as string[];
+      lines.forEach((line) => {
+        doc.text(line, pageWidth / 2, y, { align: "center" });
+        y += gap;
+      });
+    };
+
+    const leftText = (
+      value: string,
+      fontSize = 9,
+      style: "normal" | "bold" = "normal",
+      gap = 4.1
+    ) => {
+      doc.setFont("helvetica", style);
+      doc.setFontSize(fontSize);
+      const lines = doc.splitTextToSize(value, RECEIPT_CONTENT_WIDTH_MM) as string[];
+      lines.forEach((line) => {
+        doc.text(line, RECEIPT_MARGIN_MM, y);
+        y += gap;
+      });
+    };
+
+    const dashedDivider = (spaceAfter = 3.5) => {
+      doc.setDrawColor(80, 80, 80);
+      doc.setLineWidth(0.2);
+      doc.setLineDashPattern([1.2, 1.2], 0);
+      doc.line(RECEIPT_MARGIN_MM, y, pageWidth - RECEIPT_MARGIN_MM, y);
+      doc.setLineDashPattern([], 0);
+      y += spaceAfter;
+    };
+
+    centerText(restaurantTitle.toUpperCase(), 13, "bold", 5.2);
+    y += 0.8;
+    centerText(type === "kot" ? "KOT BILL" : "CUSTOMER BILL", 11.5, "bold", 4.8);
+    centerText(`Order #${table.order_ids[0] || "-"}`, 9, "normal", 4.1);
+    dashedDivider();
+
+    if (type === "customer") {
+      leftText(`Table   : ${table.table_number}`, 9.3, "bold", 4.4);
+      leftText(`Orders  : ${table.order_ids.join(", ")}`, 9.1, "bold", 4.3);
+      leftText(`Time    : ${new Date(createdAt).toLocaleString()}`, 8.3, "normal", 4.1);
+    } else {
+      leftText(`Table : ${table.table_number}`, 9.3, "bold", 4.4);
+      leftText(`Orders: ${table.order_ids.join(", ")}`, 9.0, "normal", 4.1);
+      leftText(`Time  : ${new Date(createdAt).toLocaleString()}`, 8.4, "normal", 4.1);
+    }
+    dashedDivider();
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(type === "customer" ? 8.8 : 9.2);
+    doc.text("ITEM", RECEIPT_MARGIN_MM, y);
+    doc.text("QTY", qtyX, y, { align: "right" });
+    if (type === "customer") {
+      doc.text("AMT", amtX, y, { align: "right" });
+    }
+    y += 2;
+    dashedDivider();
+
+    for (const item of table.items) {
+      const itemLines = doc.splitTextToSize(
+        item.item_name,
+        type === "customer" ? RECEIPT_CONTENT_WIDTH_MM - 25 : RECEIPT_CONTENT_WIDTH_MM - 12
+      ) as string[];
+      const amount = Number(item.total || 0);
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      itemLines.forEach((line, index) => {
+        doc.text(line, RECEIPT_MARGIN_MM, y);
+        if (index === 0) {
+          doc.text(String(item.quantity || 0), qtyX, y, { align: "right" });
+          if (type === "customer") {
+            doc.text(formatReceiptMoney(amount), amtX, y, { align: "right" });
+          }
+        }
+        y += 4.6;
+      });
+      y += 1.8;
+    }
+
+    dashedDivider();
+
+    if (type === "customer") {
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10.5);
+      doc.text("TOTAL QTY", RECEIPT_MARGIN_MM, y);
+      doc.text(String(totalQty), amtX, y, { align: "right" });
+      y += 5;
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(11.5);
+      doc.text("TOTAL", RECEIPT_MARGIN_MM, y);
+      doc.text(`Rs. ${formatReceiptMoney(totalAmount)}`, amtX, y, { align: "right" });
+      y += 4.4;
+    } else {
+      leftText(`Total Items : ${table.items.length}`, 9, "bold", 4.4);
+      leftText(`Total Qty   : ${totalQty}`, 9, "bold", 4.4);
+    }
+
+    if (table.remarks.length > 0) {
+      dashedDivider();
+      leftText("REMARKS", 8.8, "bold", 4.2);
+      for (const remark of table.remarks) {
+        leftText(remark, 9, "normal", 4.2);
+      }
+    }
+
+    dashedDivider();
+    if (type === "kot") {
+      centerText("--- KITCHEN COPY ---", 8.8, "bold", 4.2);
+      centerText("--- THANK YOU ---", 9.6, "bold", 4.4);
+    } else {
+      centerText("--- THANK YOU ---", 9.8, "bold", 4.4);
+      centerText("Please Visit Again", 8.8, "normal", 4.1);
+    }
+
+    const safeRestaurantName = restaurantTitle
+      .replace(/[^\w\s-]/g, "")
+      .trim()
+      .replace(/\s+/g, "-");
+
+    doc.save(`${safeRestaurantName || "restaurant"}-${type}-table-${table.table_number}.pdf`);
   }
 
   function renderBillCard(table: GroupedTableOrder, type: "kot" | "customer", expanded = false) {
-    const label = type === "kot" ? "KOT Bill" : "Customer Bill";
-    const accent = type === "kot"
-      ? "border-blue-200 bg-blue-50 text-blue-700"
-      : "border-red-200 bg-red-50 text-red-700";
+    const totalQty = table.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
 
     return (
-      <div className={`rounded-[28px] border bg-white shadow-sm ${expanded ? "p-5" : "p-4"}`}>
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <div className={`inline-flex rounded-full border px-3 py-1 text-xs font-extrabold ${accent}`}>
-              {label}
+      <div className="mx-auto w-[330px] border border-slate-300 bg-white px-4 py-5 text-black shadow-sm">
+        <div className="text-center">
+          <p className="text-[18px] font-extrabold uppercase tracking-wide leading-6">
+            {restaurantName || "Restaurant"}
+          </p>
+          <p className="mt-1 text-[15px] font-extrabold">
+            {type === "kot" ? "KOT BILL" : "CUSTOMER BILL"}
+          </p>
+          <p className="mt-1 text-[13px]">Order #{table.order_ids[0] || "-"}</p>
+        </div>
+
+        <div className="my-3 border-t border-dashed border-slate-500" />
+
+        <div className="space-y-1 text-[14px] leading-5">
+          <p className="font-bold">{type === "customer" ? "Table   " : "Table "} : {table.table_number}</p>
+          <p className={type === "customer" ? "font-bold" : ""}>
+            {type === "customer" ? "Orders  " : "Orders"} : {table.order_ids.join(", ")}
+          </p>
+          <p>Time {type === "customer" ? "   " : " "} : {formatBillDate(getPrimaryOrderTime(table))}</p>
+        </div>
+
+        <div className="my-3 border-t border-dashed border-slate-500" />
+
+        <div
+          className={`grid items-center gap-2 text-[14px] font-extrabold ${
+            type === "customer"
+              ? "grid-cols-[1fr_50px_70px]"
+              : "grid-cols-[1fr_50px]"
+          }`}
+        >
+          <span>ITEM</span>
+          <span className="text-right">QTY</span>
+          {type === "customer" ? <span className="text-right">AMT</span> : null}
+        </div>
+
+        <div className="my-3 border-t border-dashed border-slate-500" />
+
+        <div className="space-y-3">
+          {table.items.map((item) => (
+            <div
+              key={`${type}-${table.table_number}-${item.item_name}`}
+              className={`grid items-start gap-2 text-[15px] ${
+                type === "customer"
+                  ? "grid-cols-[1fr_50px_70px]"
+                  : "grid-cols-[1fr_50px]"
+              }`}
+            >
+              <div className="min-w-0">
+                <p className="break-words">{item.item_name}</p>
+              </div>
+              <span className="text-right">{item.quantity}</span>
+              {type === "customer" ? (
+                <span className="text-right">{formatReceiptMoney(item.total)}</span>
+              ) : null}
             </div>
-            <h3 className="mt-3 text-2xl font-extrabold text-slate-900">
-              {restaurantName || "Restaurant"}
-            </h3>
-            <p className="mt-1 text-sm text-slate-500">
-              Table {table.table_number} • {formatBillDate(getPrimaryOrderTime(table))}
-            </p>
-          </div>
-
-          <div className="rounded-2xl bg-slate-100 px-4 py-3 text-right">
-            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Orders</p>
-            <p className="text-lg font-extrabold text-slate-900">{table.unpaid_orders_count}</p>
-          </div>
+          ))}
         </div>
 
-        <div className="mt-4 rounded-[22px] border border-dashed border-slate-200 bg-slate-50 px-4 py-4 text-xs text-slate-500">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="font-bold uppercase tracking-wide text-slate-700">Footer</p>
-              <p className="mt-1">Thank you for choosing {restaurantName || "Restaurant"}.</p>
-              <p>Please keep this bill for your record.</p>
+        <div className="my-3 border-t border-dashed border-slate-500" />
+
+        {type === "customer" ? (
+          <div className="space-y-1.5">
+            <div className="grid grid-cols-[1fr_auto] items-center gap-2 text-[15px] font-extrabold">
+              <span>TOTAL QTY</span>
+              <span>{totalQty}</span>
             </div>
-            <div className="text-right">
-              <p className="font-bold uppercase tracking-wide text-slate-700">Powered by</p>
-              <p className="mt-1">Restrofy Waiter Panel</p>
+            <div className="grid grid-cols-[1fr_auto] items-center gap-2 text-[17px] font-extrabold">
+              <span>TOTAL</span>
+              <span>Rs. {formatReceiptMoney(table.total)}</span>
             </div>
           </div>
-        </div>
-
-        <div className="mt-4 grid grid-cols-2 gap-3">
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Order IDs</p>
-            <p className="mt-1 text-sm font-bold text-slate-900 break-words">
-              {table.order_ids.join(", ")}
-            </p>
+        ) : (
+          <div className="space-y-1.5 text-[14px] font-extrabold">
+            <p>Total Items : {table.items.length}</p>
+            <p>Total Qty   : {totalQty}</p>
           </div>
+        )}
 
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Table</p>
-            <p className="mt-1 text-sm font-bold text-slate-900">{table.table_number}</p>
-          </div>
-        </div>
-
-        <div className="mt-4 overflow-hidden rounded-[22px] border border-slate-200">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50">
-              <tr>
-                <th className="px-3 py-3 text-left font-extrabold text-slate-500">Item</th>
-                <th className="px-3 py-3 text-center font-extrabold text-slate-500">Qty</th>
-                {type === "customer" && (
-                  <>
-                    <th className="px-3 py-3 text-right font-extrabold text-slate-500">Rate</th>
-                    <th className="px-3 py-3 text-right font-extrabold text-slate-500">Total</th>
-                  </>
-                )}
-              </tr>
-            </thead>
-            <tbody>
-              {table.items.map((item) => {
-                const unitPrice = item.quantity > 0 ? Math.round(item.total / item.quantity) : 0;
-
-                return (
-                  <tr key={`${type}-${table.table_number}-${item.item_name}`} className="border-t border-slate-200">
-                    <td className="px-3 py-3 font-semibold text-slate-900">{item.item_name}</td>
-                    <td className="px-3 py-3 text-center font-bold text-slate-900">{item.quantity}</td>
-                    {type === "customer" && (
-                      <>
-                        <td className="px-3 py-3 text-right font-semibold text-slate-700">Rs. {unitPrice}</td>
-                        <td className="px-3 py-3 text-right font-bold text-slate-900">Rs. {item.total}</td>
-                      </>
-                    )}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-
-        {table.remarks.length > 0 && (
-          <div className="mt-4 rounded-[22px] border border-amber-200 bg-amber-50 p-4">
-            <p className="text-sm font-extrabold text-slate-900">Remarks</p>
-            <div className="mt-2 space-y-1">
+        {table.remarks.length > 0 ? (
+          <>
+            <div className="my-3 border-t border-dashed border-slate-500" />
+            <div className="space-y-1 text-[13px] leading-5">
+              <p className="font-extrabold">REMARKS</p>
               {table.remarks.map((remark, index) => (
-                <p key={`${type}-remark-${index}`} className="text-sm text-slate-800">
-                  • {remark}
+                <p key={`${type}-remark-${index}`} className="break-words">
+                  {remark}
                 </p>
               ))}
             </div>
-          </div>
-        )}
+          </>
+        ) : null}
 
-        {type === "customer" && (
-          <div className="mt-4 rounded-[22px] border border-red-200 bg-red-50 px-4 py-4 flex items-center justify-between">
-            <span className="text-base font-bold text-red-600">Grand Total</span>
-            <span className="text-2xl font-extrabold text-red-700">Rs. {table.total}</span>
-          </div>
-        )}
+        <div className="my-3 border-t border-dashed border-slate-500" />
 
-        <div className="mt-4 grid grid-cols-2 gap-3">
+        <div className="text-center">
+          {type === "kot" ? (
+            <p className="text-[14px] font-extrabold">--- KITCHEN COPY ---</p>
+          ) : null}
+          <p className="text-[15px] font-extrabold">--- THANK YOU ---</p>
+          {type === "customer" ? (
+            <p className="mt-1 text-[13px]">Please Visit Again</p>
+          ) : null}
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 gap-2">
           <button
             type="button"
             onClick={() => printBill(table, type)}
-            className="rounded-2xl bg-slate-900 px-4 py-3 text-sm font-extrabold text-white active:scale-[0.98] active:opacity-90"
+            className="border border-slate-900 bg-slate-900 px-3 py-2 text-[12px] font-bold text-white active:scale-[0.98]"
           >
             Print
           </button>
@@ -1900,9 +2487,9 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
           <button
             type="button"
             onClick={() => downloadBill(table, type)}
-            className="rounded-2xl bg-blue-600 px-4 py-3 text-sm font-extrabold text-white active:scale-[0.98] active:opacity-90"
+            className="border border-slate-900 bg-white px-3 py-2 text-[12px] font-bold text-slate-900 active:scale-[0.98]"
           >
-            Download PDF
+            PDF
           </button>
         </div>
       </div>
@@ -2077,25 +2664,6 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
 
                     <button
                       type="button"
-                      onClick={() => {
-                        setOrderDetailsOpen(true);
-                        setOrderDetailsView("both");
-                        if (groupedTableOrders.length > 0) {
-                          setOrderDetailsTableNumber(groupedTableOrders[0].table_number);
-                        }
-                        setMenuOpen(false);
-                      }}
-                      className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-left active:scale-[0.98] active:bg-slate-100"
-                    >
-                      <span className="text-lg">🧾</span>
-                      <div>
-                        <p className="text-sm font-semibold text-slate-900">Order Details</p>
-                        <p className="text-xs text-slate-500">View KOT and customer bills</p>
-                      </div>
-                    </button>
-
-                    <button
-                      type="button"
                       onClick={handleLogout}
                       className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-left active:scale-[0.98] active:bg-red-100"
                     >
@@ -2116,9 +2684,9 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
               <div className="bg-green-50 border-2 border-green-300 rounded-2xl p-3 shadow-sm">
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex-1">
-                    <p className="text-xs font-semibold text-green-700">📢 Table Ready</p>
+                    <p className="text-xs font-semibold text-green-700">📢 Item Ready</p>
                     <h2 className="text-lg font-bold text-green-900 mt-1">
-                      Table {currentReadyNotification.tableNumber} is ready
+                      Table {currentReadyNotification.tableNumber} item ready
                     </h2>
                     <p className="text-xs text-green-800 mt-1">
                       Order #{currentReadyNotification.orderId}
@@ -2172,9 +2740,7 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
 
                 <div className="grid grid-cols-2 gap-3">
                   {filteredGroupedTableOrders.map((table) => {
-                    const readyItems = table.items.filter((item) =>
-                      item.statuses.includes("ready")
-                    );
+                    const tableProgress = getTableProgress(table);
                     const shortItems = table.items.slice(0, 1);
                     const singleEditableOrder =
                       table.sourceOrders.length === 1 &&
@@ -2182,16 +2748,6 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
                       table.sourceOrders[0].is_paid !== true
                         ? table.sourceOrders[0]
                         : null;
-
-                    let badgeText = "Pending";
-                    let badgeClass = "bg-yellow-100 text-yellow-800";
-                    if (readyItems.length > 0) {
-                      badgeText = "Ready";
-                      badgeClass = "bg-green-100 text-green-700";
-                    } else if (table.items.some((item) => item.statuses.includes("preparing"))) {
-                      badgeText = "Preparing";
-                      badgeClass = "bg-orange-100 text-orange-700";
-                    }
 
                     return (
                       <div
@@ -2202,6 +2758,7 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
                           type="button"
                           onClick={() => {
                             cancelEditOrder();
+                            setSelectedPaidOrder(null);
                             setSelectedTablePopup(table);
                           }}
                           className="w-full text-left space-y-2 active:scale-[0.98] active:opacity-85"
@@ -2217,10 +2774,21 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
                             </div>
 
                             <span
-                              className={`px-2.5 py-1 rounded-full text-[11px] font-semibold ${badgeClass}`}
+                              className={`px-2.5 py-1 rounded-full text-[11px] font-semibold ${tableProgress.badgeClass}`}
                             >
-                              {badgeText}
+                              {tableProgress.label}
                             </span>
+                          </div>
+
+                          <div className="rounded-2xl border border-black/5 bg-slate-50 px-3 py-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[12px] font-semibold text-slate-600">
+                                Item Progress
+                              </span>
+                              <span className="text-[12px] font-extrabold text-slate-900">
+                                {tableProgress.progressText}
+                              </span>
+                            </div>
                           </div>
 
                           <div className="space-y-2">
@@ -2314,9 +2882,15 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
                         : `${itemLines.slice(0, 2).join(", ")} +${itemLines.length - 2} more`;
 
                     return (
-                      <div
+                      <button
+                        type="button"
                         key={order.id}
-                        className="bg-white rounded-[24px] shadow-sm border border-black/10 p-3 space-y-3 min-h-[160px] active:scale-[0.98] active:opacity-90"
+                        onClick={() => {
+                          setSelectedPaidOrder(order);
+                          cancelEditOrder();
+                          setSelectedTablePopup(null);
+                        }}
+                        className="w-full text-left bg-white rounded-[24px] shadow-sm border border-black/10 p-3 space-y-3 min-h-[160px] active:scale-[0.98] active:opacity-90"
                       >
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
@@ -2346,7 +2920,7 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
                             </p>
                           </div>
                         </div>
-                      </div>
+                      </button>
                     );
                   })}
                 </div>
@@ -2565,6 +3139,7 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
                   onClick={() => {
                     cancelEditOrder();
                     setSelectedTablePopup(null);
+                    setSelectedPaidOrder(null);
                     setCartSheetOpen(false);
                     setOrderModalOpen(true);
                   }}
@@ -2584,6 +3159,7 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
                 onClick={() => {
                   cancelEditOrder();
                   setSelectedTablePopup(null);
+                  setSelectedPaidOrder(null);
                   closeOrderModal();
                   setActiveTab("order");
                 }}
@@ -2598,6 +3174,7 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
                 onClick={() => {
                   cancelEditOrder();
                   setSelectedTablePopup(null);
+                  setSelectedPaidOrder(null);
                   closeOrderModal();
                   setActiveTab("paid");
                 }}
@@ -2612,6 +3189,7 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
                 onClick={() => {
                   cancelEditOrder();
                   setSelectedTablePopup(null);
+                  setSelectedPaidOrder(null);
                   closeOrderModal();
                   setActiveTab("change");
                 }}
@@ -2626,6 +3204,7 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
                 onClick={() => {
                   cancelEditOrder();
                   setSelectedTablePopup(null);
+                  setSelectedPaidOrder(null);
                   closeOrderModal();
                   setActiveTab("menu");
                 }}
@@ -2638,118 +3217,53 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
           </div>
         </div>
 
-        {orderDetailsOpen && (
-          <div className="fixed inset-0 z-[80] bg-black/50">
-            <div className="max-w-md mx-auto h-full bg-gray-100 flex flex-col">
-              <div className="sticky top-0 z-10 border-b bg-white px-4 py-4">
+        
+        {selectedPaidOrder && selectedPaidBill && (
+          <div className="fixed inset-0 z-50 bg-black/40">
+            <div className="max-w-md mx-auto h-full bg-white flex flex-col">
+              <div className="sticky top-0 bg-white border-b px-4 py-4 z-10">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="text-xs font-extrabold uppercase tracking-[0.18em] text-slate-500">Order Details</p>
-                    <h2 className="mt-1 text-2xl font-extrabold text-slate-900">Bills</h2>
-                    <p className="mt-1 text-sm text-slate-500">KOT bill ra customer bill dubai herna milne</p>
+                    <h2 className="text-xl font-extrabold text-slate-900">
+                      Table {selectedPaidOrder.table_number}
+                    </h2>
+                    <p className="text-sm text-slate-500">
+                      Paid order #{selectedPaidOrder.id}
+                    </p>
                   </div>
 
                   <button
                     type="button"
-                    onClick={() => setOrderDetailsOpen(false)}
-                    className="rounded-2xl bg-slate-200 px-3 py-2 text-sm font-semibold active:scale-[0.98] active:opacity-85"
+                    onClick={() => setSelectedPaidOrder(null)}
+                    className="bg-gray-200 px-3 py-2 rounded-xl text-sm font-semibold active:scale-[0.98] active:opacity-85"
                   >
                     Close
                   </button>
                 </div>
               </div>
 
-              <div className="flex-1 overflow-y-auto px-4 pb-6 pt-4 space-y-4">
-                {groupedTableOrders.length === 0 ? (
-                  <div className="rounded-[28px] border border-slate-200 bg-white p-6 text-center shadow-sm">
-                    <p className="text-lg font-extrabold text-slate-900">No active table found</p>
-                    <p className="mt-2 text-sm text-slate-500">Order garyo pachi bill yahi dekhine cha.</p>
+              <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-100">
+                <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="mb-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                      Customer Bill
+                    </p>
+                    <h3 className="mt-1 text-[20px] font-extrabold text-slate-900">
+                      Paid Receipt
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {formatPaymentMethod(selectedPaidOrder.payment_method)} • {formatShortPaidTime(selectedPaidOrder.paid_at)}
+                    </p>
                   </div>
-                ) : (
-                  <>
-                    <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm">
-                      <p className="text-sm font-extrabold text-slate-900">Select Table</p>
-                      <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
-                        {groupedTableOrders.map((table) => {
-                          const active = selectedOrderDetailsTable?.table_number === table.table_number;
-                          return (
-                            <button
-                              key={`bill-table-${table.table_number}`}
-                              type="button"
-                              onClick={() => setOrderDetailsTableNumber(table.table_number)}
-                              className={`shrink-0 rounded-full border px-4 py-2.5 text-sm font-extrabold active:scale-[0.98] active:opacity-90 ${
-                                active
-                                  ? "border-red-600 bg-red-600 text-white"
-                                  : "border-slate-300 bg-slate-50 text-slate-800"
-                              }`}
-                            >
-                              Table {table.table_number}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
 
-                    <div className="rounded-[28px] border border-slate-200 bg-white p-3 shadow-sm">
-                      <div className="grid grid-cols-3 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setOrderDetailsView("both")}
-                          className={`rounded-2xl px-3 py-3 text-sm font-extrabold active:scale-[0.98] active:opacity-90 ${
-                            orderDetailsView === "both"
-                              ? "bg-slate-900 text-white"
-                              : "bg-slate-100 text-slate-700"
-                          }`}
-                        >
-                          Both
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => setOrderDetailsView("kot")}
-                          className={`rounded-2xl px-3 py-3 text-sm font-extrabold active:scale-[0.98] active:opacity-90 ${
-                            orderDetailsView === "kot"
-                              ? "bg-blue-600 text-white"
-                              : "bg-blue-50 text-blue-700"
-                          }`}
-                        >
-                          KOT Bill
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => setOrderDetailsView("customer")}
-                          className={`rounded-2xl px-3 py-3 text-sm font-extrabold active:scale-[0.98] active:opacity-90 ${
-                            orderDetailsView === "customer"
-                              ? "bg-red-600 text-white"
-                              : "bg-red-50 text-red-700"
-                          }`}
-                        >
-                          Customer Bill
-                        </button>
-                      </div>
-                    </div>
-
-                    {selectedOrderDetailsTable && orderDetailsView === "both" && (
-                      <div className="space-y-4">
-                        {renderBillCard(selectedOrderDetailsTable, "kot")}
-                        {renderBillCard(selectedOrderDetailsTable, "customer")}
-                      </div>
-                    )}
-
-                    {selectedOrderDetailsTable && orderDetailsView === "kot" &&
-                      renderBillCard(selectedOrderDetailsTable, "kot", true)}
-
-                    {selectedOrderDetailsTable && orderDetailsView === "customer" &&
-                      renderBillCard(selectedOrderDetailsTable, "customer", true)}
-                  </>
-                )}
+                  {renderBillCard(selectedPaidBill, "customer", true)}
+                </div>
               </div>
             </div>
           </div>
         )}
 
-        {orderModalOpen && (
+{orderModalOpen && (
           <div className="fixed inset-0 z-50 bg-black/50">
             <div className="max-w-md mx-auto h-full bg-gray-100 flex flex-col">
               <div
@@ -3100,6 +3614,11 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
                     <p className="text-sm text-slate-500">
                       {selectedTablePopup.unpaid_orders_count} unpaid order(s)
                     </p>
+                    <div className="mt-2 inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+                      <span>{getTableProgress(selectedTablePopup).label}</span>
+                      <span>•</span>
+                      <span>{getTableProgress(selectedTablePopup).progressText}</span>
+                    </div>
                   </div>
 
                   <button
@@ -3122,11 +3641,8 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
                       <p className="text-sm font-extrabold text-slate-900">Items</p>
 
                       {selectedTablePopup.items.map((item) => {
-                        const currentStatus = item.statuses.includes("ready")
-                          ? "ready"
-                          : item.statuses.includes("preparing")
-                          ? "preparing"
-                          : "pending";
+                        const currentStatus = getGroupedItemDisplayStatus(item);
+                        const statusCounts = getGroupedItemStatusCounts(item);
 
                         return (
                           <div
@@ -3142,16 +3658,26 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
 
                               <div className="flex items-center gap-2">
                                 <span
-                                  className={`px-2 py-1 rounded-full text-xs font-semibold capitalize ${getItemStatusClass(
+                                  className={`px-2 py-1 rounded-full text-xs font-semibold ${getItemStatusClass(
                                     currentStatus
                                   )}`}
                                 >
-                                  {currentStatus}
+                                  {currentStatus === "partial" ? "Partial Ready" : currentStatus}
                                 </span>
                                 <p className="text-sm font-bold text-slate-900">
                                   Rs. {item.total}
                                 </p>
                               </div>
+                            </div>
+
+                            <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
+                              <span>
+                                Ready {statusCounts.ready}/{statusCounts.total}
+                              </span>
+                              <span>
+                                Pending {statusCounts.pending}
+                                {statusCounts.preparing > 0 ? ` • Preparing ${statusCounts.preparing}` : ""}
+                              </span>
                             </div>
                           </div>
                         );
@@ -3252,6 +3778,19 @@ const restaurantId = restaurantIdParam ? Number(restaurantIdParam) : null;
                         ? "Marking..."
                         : "Mark as Paid"}
                     </button>
+
+                    <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="mb-3">
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                          KOT Bill
+                        </p>
+                        <h3 className="mt-1 text-[20px] font-extrabold text-slate-900">
+                          Kitchen Copy
+                        </h3>
+                      </div>
+
+                      {renderBillCard(selectedTablePopup, "kot", true)}
+                    </div>
 
                     {selectedTablePopup.sourceOrders.length === 1 &&
                       selectedTablePopup.sourceOrders[0].status === "pending" &&

@@ -10,7 +10,8 @@ export async function POST(req: Request) {
     const { data, error } = await supabase
       .from("push_subscriptions")
       .select("*")
-      .eq("restaurant_id", restaurant_id);
+      .eq("restaurant_id", restaurant_id)
+.eq("panel", "waiter");
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });

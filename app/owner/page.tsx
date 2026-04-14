@@ -6,6 +6,7 @@ import { supabase } from "@/lib/supabase";
 import AppSplash from "@/components/AppSplash";
 import PanelLoginCard from "@/components/PanelLoginCard";
 import { QRCodeCanvas } from "qrcode.react";
+import jsPDF from "jspdf";
 
 type MenuItem = {
   id: number;
@@ -96,6 +97,21 @@ type GroupedTableOrder = {
   table_status: KitchenStatusKey;
 };
 
+type PaidBillTableOrder = {
+  table_number: string;
+  order_ids: number[];
+  remarks: string[];
+  items: {
+    item_name: string;
+    quantity: number;
+    total: number;
+  }[];
+  total: number;
+  paid_at?: string | null;
+  payment_method?: string | null;
+  sourceOrders: OrderRow[];
+};
+
 function OwnerPageContent() {
   const searchParams = useSearchParams();
   const restaurantIdParam = searchParams.get("id");
@@ -165,7 +181,19 @@ useEffect(() => {
     total: number;
   } | null>(null);
 
-  const [successToast, setSuccessToast] = useState<string | null>(null);
+  const [appToast, setAppToast] = useState<{
+    title: string;
+    message: string;
+    tone: "success" | "error" | "info";
+  } | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string;
+    message: string;
+    confirmText?: string;
+    tone?: "danger" | "default";
+    onConfirm: null | (() => void | Promise<void>);
+  } | null>(null);
+  const [selectedPaidOrder, setSelectedPaidOrder] = useState<OrderRow | null>(null);
 
   const [dashboardMobileTab, setDashboardMobileTab] = useState<"unpaid" | "activity">(
     "unpaid"
@@ -224,6 +252,34 @@ useEffect(() => {
       document.removeEventListener("mousedown", handleClickOutside);
     };
   }, [showHeaderMenu]);
+
+  function showToast(message: string, tone: "success" | "error" | "info" = "success", title?: string) {
+    setAppToast({
+      title:
+        title ||
+        (tone === "error" ? "Something went wrong" : tone === "info" ? "Notice" : "Done"),
+      message,
+      tone,
+    });
+
+    window.setTimeout(() => {
+      setAppToast((current) => (current?.message === message ? null : current));
+    }, 2200);
+  }
+
+  function openConfirmDialog(options: {
+    title: string;
+    message: string;
+    confirmText?: string;
+    tone?: "danger" | "default";
+    onConfirm: null | (() => void | Promise<void>);
+  }) {
+    setConfirmDialog(options);
+  }
+
+  function closeConfirmDialog() {
+    setConfirmDialog(null);
+  }
 
   function scrollMainContentToTop() {
     if (contentScrollRef.current) {
@@ -433,27 +489,27 @@ useEffect(() => {
     e.preventDefault();
 
     if (!restaurantId) {
-      alert("Invalid restaurant link");
+      showToast("Invalid restaurant link", "error", "Invalid Link");
       return;
     }
 
     if (!setupRestaurantName.trim()) {
-      alert("Please enter restaurant name");
+      showToast("Please enter restaurant name", "error", "Missing Field");
       return;
     }
 
     if (!setupOwnerPassword.trim()) {
-      alert("Please enter owner password");
+      showToast("Please enter owner password", "error", "Missing Field");
       return;
     }
 
     if (!setupWaiterPassword.trim()) {
-      alert("Please enter waiter password");
+      showToast("Please enter waiter password", "error", "Missing Field");
       return;
     }
 
     if (!setupKitchenPassword.trim()) {
-      alert("Please enter kitchen password");
+      showToast("Please enter kitchen password", "error", "Missing Field");
       return;
     }
 
@@ -473,7 +529,7 @@ useEffect(() => {
     setSettingUpRestaurant(false);
 
     if (error) {
-      alert("Failed to complete restaurant setup");
+      showToast("Failed to complete restaurant setup", "error", "Setup Failed");
       return;
     }
 
@@ -483,13 +539,13 @@ useEffect(() => {
     setNewWaiterPassword(setupWaiterPassword.trim());
     setNewKitchenPassword(setupKitchenPassword.trim());
     setIsSetupDone(true);
-    alert("Restaurant setup completed");
+    showToast("Restaurant setup completed", "success", "Setup Complete");
     fetchRestaurant();
   }
 
   function unlockOwner() {
     if (!ownerPasswordFromDB || ownerPasswordFromDB === "setup_pending") {
-      alert("Owner password not found. Please complete setup first.");
+      showToast("Owner password not found. Please complete setup first.", "error", "Setup Required");
       return;
     }
 
@@ -502,9 +558,9 @@ useEffect(() => {
         localStorage.setItem(`owner_logged_in_${restaurantId}`, "true");
       }
 
-      alert("Owner access granted");
+      showToast("Owner panel unlocked", "success", "Login Successful");
     } else {
-      alert("Wrong password");
+      showToast("Wrong password", "error", "Login Failed");
     }
   }
 
@@ -531,17 +587,17 @@ useEffect(() => {
     e.preventDefault();
 
     if (!restaurantId) {
-      alert("Invalid restaurant link");
+      showToast("Invalid restaurant link", "error", "Invalid Link");
       return;
     }
 
     if (!newItemName.trim()) {
-      alert("Please enter item name");
+      showToast("Please enter item name", "error", "Missing Field");
       return;
     }
 
     if (!newItemPrice.trim() || Number(newItemPrice) <= 0) {
-      alert("Please enter valid price");
+      showToast("Please enter valid price", "error", "Invalid Price");
       return;
     }
 
@@ -554,14 +610,14 @@ useEffect(() => {
     ]);
 
     if (error) {
-      alert("Failed to add menu item");
+      showToast("Failed to add menu item", "error", "Menu Error");
       return;
     }
 
     setNewItemName("");
     setNewItemPrice("");
     fetchMenu();
-    alert("Menu item added");
+    showToast("Menu item added", "success", "Menu Updated");
   }
 
   function startEditMenuItem(menu: MenuItem) {
@@ -578,17 +634,17 @@ useEffect(() => {
 
   async function saveEditMenuItem(id: number) {
     if (!restaurantId) {
-      alert("Invalid restaurant link");
+      showToast("Invalid restaurant link", "error", "Invalid Link");
       return;
     }
 
     if (!editingItemName.trim()) {
-      alert("Please enter item name");
+      showToast("Please enter item name", "error", "Missing Field");
       return;
     }
 
     if (!editingItemPrice.trim() || Number(editingItemPrice) <= 0) {
-      alert("Please enter valid price");
+      showToast("Please enter valid price", "error", "Invalid Price");
       return;
     }
 
@@ -602,37 +658,44 @@ useEffect(() => {
       .eq("restaurant_id", restaurantId);
 
     if (error) {
-      alert("Failed to update menu item");
+      showToast("Failed to update menu item", "error", "Menu Error");
       return;
     }
 
     cancelEditMenuItem();
     fetchMenu();
-    alert("Menu item updated");
+    showToast("Menu item updated", "success", "Menu Updated");
   }
 
   async function deleteMenuItem(id: number) {
     if (!restaurantId) {
-      alert("Invalid restaurant link");
+      showToast("Invalid restaurant link", "error", "Invalid Link");
       return;
     }
 
-    const confirmDelete = confirm("Delete this menu item?");
-    if (!confirmDelete) return;
+    openConfirmDialog({
+      title: "Delete Menu Item",
+      message: "Delete this menu item?",
+      confirmText: "Delete",
+      tone: "danger",
+      onConfirm: async () => {
+        closeConfirmDialog();
 
-    const { error } = await supabase
-      .from("menu_items")
-      .delete()
-      .eq("id", id)
-      .eq("restaurant_id", restaurantId);
+        const { error } = await supabase
+          .from("menu_items")
+          .delete()
+          .eq("id", id)
+          .eq("restaurant_id", restaurantId);
 
-    if (error) {
-      alert("Failed to delete menu item");
-      return;
-    }
+        if (error) {
+          showToast("Failed to delete menu item", "error", "Menu Error");
+          return;
+        }
 
-    fetchMenu();
-    alert("Menu item deleted");
+        fetchMenu();
+        showToast("Menu item deleted", "success", "Menu Updated");
+      },
+    });
   }
 
   function getLocalDateString(dateValue: string) {
@@ -1156,14 +1219,14 @@ const todayPaymentBreakdown = useMemo(() => {
     paymentMethod: "cash" | "qr" | "card"
   ) {
     if (!restaurantId) {
-      alert("Invalid restaurant link");
+      showToast("Invalid restaurant link", "error", "Invalid Link");
       return;
     }
 
     const normalizedTableNo = tableNo.trim();
 
     if (!normalizedTableNo) {
-      alert("Invalid table number");
+      showToast("Invalid table number", "error", "Invalid Table");
       return;
     }
 
@@ -1174,7 +1237,7 @@ const todayPaymentBreakdown = useMemo(() => {
     );
 
     if (unpaidOrdersForTable.length === 0) {
-      alert("No unpaid orders found for this table");
+      showToast("No unpaid orders found for this table", "error", "No Orders Found");
       return;
     }
 
@@ -1195,25 +1258,24 @@ const todayPaymentBreakdown = useMemo(() => {
     setMarkingPaidTable(null);
 
     if (error) {
-      alert("Failed to mark orders as paid");
+      showToast("Failed to mark orders as paid", "error", "Payment Failed");
       return;
     }
 
     await fetchOrders();
-    setSuccessToast(`Table ${normalizedTableNo} marked as paid`);
-    setTimeout(() => setSuccessToast(null), 2200);
+    showToast(`Table ${normalizedTableNo} marked as paid`, "success", "Payment Updated");
   }
 
   async function saveProfitPercent() {
     if (!restaurantId) {
-      alert("Invalid restaurant link");
+      showToast("Invalid restaurant link", "error", "Invalid Link");
       return;
     }
 
     const numericValue = Number(profitPercentInput);
 
     if (!profitPercentInput.trim() || Number.isNaN(numericValue) || numericValue < 0) {
-      alert("Please enter valid profit %");
+      showToast("Please enter valid profit %", "error", "Invalid Value");
       return;
     }
 
@@ -1227,24 +1289,24 @@ const todayPaymentBreakdown = useMemo(() => {
     setSavingProfitPercent(false);
 
     if (error) {
-      alert("Failed to update profit %");
+      showToast("Failed to update profit %", "error", "Update Failed");
       return;
     }
 
     const normalizedValue = String(numericValue);
     setProfitPercent(normalizedValue);
     setProfitPercentInput(normalizedValue);
-    alert("Profit % updated successfully");
+    showToast("Profit % updated successfully", "success", "Update Complete");
   }
 
   async function savePasswords() {
     if (!restaurantId) {
-      alert("Invalid restaurant link");
+      showToast("Invalid restaurant link", "error", "Invalid Link");
       return;
     }
 
     if (!newOwnerPassword.trim() || !newWaiterPassword.trim() || !newKitchenPassword.trim()) {
-      alert("Please fill all passwords");
+      showToast("Please fill all passwords", "error", "Missing Field");
       return;
     }
 
@@ -1262,12 +1324,12 @@ const todayPaymentBreakdown = useMemo(() => {
     setSavingPasswords(false);
 
     if (error) {
-      alert("Failed to update passwords");
+      showToast("Failed to update passwords", "error", "Update Failed");
       return;
     }
 
     setOwnerPasswordFromDB(newOwnerPassword.trim());
-    alert("Passwords updated successfully");
+    showToast("Passwords updated successfully", "success", "Update Complete");
   }
 
   function formatPaymentMethod(method?: string | null) {
@@ -1275,6 +1337,630 @@ const todayPaymentBreakdown = useMemo(() => {
     if (method === "qr") return "QR";
     if (method === "card") return "Card";
     return "Cash";
+  }
+
+
+  function formatBillDate(dateStr?: string | null) {
+    if (!dateStr) return "-";
+    return new Date(dateStr).toLocaleString([], {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
+
+  function formatShortPaidTime(dateStr?: string | null) {
+    if (!dateStr) return "-";
+    const date = new Date(dateStr);
+    const today = new Date();
+    const sameDay =
+      date.getFullYear() === today.getFullYear() &&
+      date.getMonth() === today.getMonth() &&
+      date.getDate() === today.getDate();
+
+    if (sameDay) {
+      return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    }
+
+    return date.toLocaleString([], {
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
+
+  function escapeHtml(value: string) {
+    return value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  function buildPaidBillTable(order: OrderRow): PaidBillTableOrder {
+    const items =
+      (order.order_items || []).map((item) => ({
+        item_name: item.item_name,
+        quantity: Number(item.quantity || 0),
+        total: Number(item.quantity || 0) * Number(item.unit_price || 0),
+      })) || [];
+
+    const total = items.reduce((sum, item) => sum + Number(item.total || 0), 0);
+
+    return {
+      table_number: String(order.table_number || ""),
+      order_ids: [order.id],
+      remarks: order.remarks && order.remarks.trim() ? [order.remarks.trim()] : [],
+      items,
+      total,
+      paid_at: order.paid_at || null,
+      payment_method: order.payment_method || null,
+      sourceOrders: [order],
+    };
+  }
+
+  const selectedPaidBill = useMemo(() => {
+    if (!selectedPaidOrder) return null;
+    return buildPaidBillTable(selectedPaidOrder);
+  }, [selectedPaidOrder]);
+
+  const RECEIPT_WIDTH_MM = 80;
+  const RECEIPT_MARGIN_MM = 4.5;
+  const RECEIPT_CONTENT_WIDTH_MM = RECEIPT_WIDTH_MM - RECEIPT_MARGIN_MM * 2;
+
+  function formatReceiptMoney(value: number) {
+    const normalized = Number(value || 0);
+    return Number.isInteger(normalized) ? String(normalized) : normalized.toFixed(2);
+  }
+
+  function createReceiptTempDoc() {
+    return new jsPDF({
+      orientation: "portrait",
+      unit: "mm",
+      format: [RECEIPT_WIDTH_MM, 260],
+    });
+  }
+
+  function createReceiptDoc(height: number) {
+    return new jsPDF({
+      orientation: "portrait",
+      unit: "mm",
+      format: [RECEIPT_WIDTH_MM, Math.max(height, 95)],
+      compress: true,
+    });
+  }
+
+  function estimateWrappedReceiptHeight(
+    value: string,
+    maxWidth: number,
+    fontSize: number,
+    lineHeight: number
+  ) {
+    const tempDoc = createReceiptTempDoc();
+    tempDoc.setFont("helvetica", "normal");
+    tempDoc.setFontSize(fontSize);
+    const lines = tempDoc.splitTextToSize(value || "", maxWidth) as string[];
+    return Math.max(lines.length, 1) * lineHeight;
+  }
+
+  function getBillDocumentHtml(table: PaidBillTableOrder) {
+    const restaurantTitle = escapeHtml((restaurantName || "Restaurant").trim() || "Restaurant");
+    const primaryOrderId = table.order_ids[0] || "-";
+    const createdAt = escapeHtml(formatBillDate(table.paid_at || table.sourceOrders[0]?.created_at || null));
+    const totalQty = table.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+
+    const rows = table.items
+      .map((item) => {
+        const amount = formatReceiptMoney(Number(item.total || 0));
+        const itemName = escapeHtml(item.item_name);
+        const qty = escapeHtml(String(item.quantity || 0));
+
+        return `
+          <div class="grid item-row customer-row">
+            <div class="item-name">${itemName}</div>
+            <div class="qty">${qty}</div>
+            <div class="amt">${amount}</div>
+          </div>
+        `;
+      })
+      .join("");
+
+    const remarksHtml =
+      table.remarks.length > 0
+        ? `
+          <div class="divider"></div>
+          <div class="remarks-title">REMARKS</div>
+          ${table.remarks
+            .map((remark) => `<div class="remarks-line">${escapeHtml(remark)}</div>`)
+            .join("")}
+        `
+        : "";
+
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${restaurantTitle} - CUSTOMER BILL</title>
+  <style>
+    @page {
+      size: 80mm auto;
+      margin: 0;
+    }
+    * {
+      box-sizing: border-box;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 80mm;
+      background: #ffffff;
+      color: #000000;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+    .receipt-shell {
+      width: 80mm;
+      margin: 0;
+      padding: 0;
+      background: #ffffff;
+    }
+    .receipt {
+      width: 71mm;
+      margin: 0 auto;
+      padding: 5mm 2.5mm 5mm;
+      background: #ffffff;
+    }
+    .center { text-align: center; }
+    .title {
+      font-size: 15px;
+      font-weight: 800;
+      text-transform: uppercase;
+      line-height: 1.25;
+      word-break: break-word;
+      margin: 0;
+    }
+    .bill-title {
+      margin-top: 2mm;
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    .bill-id {
+      margin-top: 1.2mm;
+      font-size: 9px;
+    }
+    .divider {
+      border-top: 1px dashed #666;
+      margin: 3.4mm 0;
+      width: 100%;
+      height: 0;
+    }
+    .meta-line {
+      font-size: 9px;
+      line-height: 1.45;
+      font-weight: 600;
+      margin: 0;
+    }
+    .grid {
+      display: grid;
+      align-items: start;
+      column-gap: 2mm;
+    }
+    .header-row {
+      grid-template-columns: minmax(0, 1fr) 10mm 15mm;
+      font-size: 9px;
+      font-weight: 800;
+      line-height: 1.3;
+      text-transform: uppercase;
+    }
+    .header-row .qty,
+    .header-row .amt,
+    .item-row .qty,
+    .item-row .amt,
+    .summary-line span:last-child {
+      text-align: right;
+    }
+    .item-row {
+      grid-template-columns: minmax(0, 1fr) 10mm 15mm;
+      font-size: 10px;
+      line-height: 1.45;
+      margin-top: 2.2mm;
+    }
+    .item-name {
+      min-width: 0;
+      word-break: break-word;
+    }
+    .summary-line {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      font-size: 10px;
+      font-weight: 800;
+      line-height: 1.35;
+      margin: 0;
+    }
+    .summary-line + .summary-line {
+      margin-top: 1.2mm;
+    }
+    .summary-line.grand {
+      font-size: 10.8px;
+    }
+    .remarks-title {
+      font-size: 8.8px;
+      font-weight: 800;
+      margin: 0 0 1.4mm;
+    }
+    .remarks-line {
+      font-size: 9px;
+      line-height: 1.4;
+      margin: 0;
+      word-break: break-word;
+    }
+    .remarks-line + .remarks-line {
+      margin-top: 1mm;
+    }
+    .footer-strong {
+      font-size: 10px;
+      font-weight: 800;
+      line-height: 1.3;
+    }
+    .footer-sub {
+      margin-top: 1mm;
+      font-size: 8.8px;
+      line-height: 1.3;
+    }
+    @media print {
+      html, body, .receipt-shell {
+        width: 80mm;
+        margin: 0;
+        padding: 0;
+      }
+      .receipt {
+        width: 71mm;
+        margin: 0 auto;
+        padding: 5mm 2.5mm 5mm;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="receipt-shell">
+    <div class="receipt">
+      <div class="center">
+        <div class="title">${restaurantTitle}</div>
+        <div class="bill-title">CUSTOMER BILL</div>
+        <div class="bill-id">Order #${escapeHtml(String(primaryOrderId))}</div>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="meta-line"><span>Table   : ${escapeHtml(table.table_number)}</span></div>
+      <div class="meta-line"><span>Orders  : ${escapeHtml(table.order_ids.join(", "))}</span></div>
+      <div class="meta-line"><span>Time    : ${createdAt}</span></div>
+
+      <div class="divider"></div>
+
+      <div class="grid header-row">
+        <span>ITEM</span>
+        <span class="qty">QTY</span>
+        <span class="amt">AMT</span>
+      </div>
+
+      <div class="divider"></div>
+
+      ${rows}
+
+      <div class="divider"></div>
+      <div class="summary-line"><span>TOTAL QTY</span><span>${escapeHtml(String(totalQty))}</span></div>
+      <div class="summary-line grand"><span>TOTAL</span><span>Rs. ${escapeHtml(formatReceiptMoney(table.total))}</span></div>
+
+      ${remarksHtml}
+
+      <div class="divider"></div>
+      <div class="center footer-strong">--- THANK YOU ---</div>
+      <div class="center footer-sub">Please Visit Again</div>
+    </div>
+  </div>
+</body>
+</html>`;
+  }
+
+  function openPrintWindow(table: PaidBillTableOrder) {
+    const html = getBillDocumentHtml(table);
+    const billWindow = window.open("", "_blank", "width=420,height=900");
+
+    if (!billWindow) return null;
+
+    billWindow.document.open();
+    billWindow.document.write(html);
+    billWindow.document.close();
+
+    return billWindow;
+  }
+
+  function printBill(table: PaidBillTableOrder) {
+    const billWindow = openPrintWindow(table);
+    if (!billWindow) return;
+
+    const tryPrint = () => {
+      try {
+        const bodyReady =
+          !!billWindow.document?.body &&
+          billWindow.document.body.innerHTML.trim().length > 0;
+
+        if (!bodyReady) {
+          window.setTimeout(tryPrint, 250);
+          return;
+        }
+
+        window.setTimeout(() => {
+          try {
+            billWindow.focus();
+            billWindow.print();
+          } catch (error) {
+            console.error("Print failed:", error);
+          }
+        }, 700);
+      } catch (error) {
+        console.error("Print preparation failed:", error);
+      }
+    };
+
+    if (billWindow.document.readyState === "complete") {
+      tryPrint();
+    } else {
+      billWindow.onload = () => {
+        tryPrint();
+      };
+    }
+  }
+
+  function downloadBill(table: PaidBillTableOrder) {
+    const restaurantTitle = (restaurantName || "Restaurant").trim() || "Restaurant";
+    const createdAt = table.paid_at || table.sourceOrders[0]?.created_at || new Date().toISOString();
+    const totalQty = table.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+    const totalAmount = Number(table.total || 0);
+
+    let estimatedHeight = 8;
+    estimatedHeight += estimateWrappedReceiptHeight(restaurantTitle, RECEIPT_CONTENT_WIDTH_MM, 13, 5.2);
+    estimatedHeight += 5;
+    estimatedHeight += 7;
+    estimatedHeight += 4;
+    estimatedHeight += 3.5;
+    estimatedHeight += 16;
+    estimatedHeight += 3.5;
+    estimatedHeight += 5.5;
+
+    for (const item of table.items) {
+      estimatedHeight += estimateWrappedReceiptHeight(
+        item.item_name,
+        RECEIPT_CONTENT_WIDTH_MM - 25,
+        10,
+        4.6
+      );
+      estimatedHeight += 1.8;
+    }
+
+    estimatedHeight += 3.5;
+    estimatedHeight += 7;
+
+    if (table.remarks.length > 0) {
+      estimatedHeight += 3.5;
+      estimatedHeight += 4.4;
+      for (const remark of table.remarks) {
+        estimatedHeight += estimateWrappedReceiptHeight(remark, RECEIPT_CONTENT_WIDTH_MM, 9, 4.2);
+      }
+      estimatedHeight += 1.2;
+    }
+
+    estimatedHeight += 3.5;
+    estimatedHeight += 10;
+
+    const doc = createReceiptDoc(estimatedHeight);
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const qtyX = pageWidth - RECEIPT_MARGIN_MM - 15;
+    const amtX = pageWidth - RECEIPT_MARGIN_MM;
+    let y = 8;
+
+    const centerText = (
+      value: string,
+      fontSize = 10,
+      style: "normal" | "bold" = "normal",
+      gap = 4.2
+    ) => {
+      doc.setFont("helvetica", style);
+      doc.setFontSize(fontSize);
+      const lines = doc.splitTextToSize(value, RECEIPT_CONTENT_WIDTH_MM) as string[];
+      lines.forEach((line) => {
+        doc.text(line, pageWidth / 2, y, { align: "center" });
+        y += gap;
+      });
+    };
+
+    const leftText = (
+      value: string,
+      fontSize = 9,
+      style: "normal" | "bold" = "normal",
+      gap = 4.1
+    ) => {
+      doc.setFont("helvetica", style);
+      doc.setFontSize(fontSize);
+      const lines = doc.splitTextToSize(value, RECEIPT_CONTENT_WIDTH_MM) as string[];
+      lines.forEach((line) => {
+        doc.text(line, RECEIPT_MARGIN_MM, y);
+        y += gap;
+      });
+    };
+
+    const dashedDivider = (spaceAfter = 3.5) => {
+      doc.setDrawColor(80, 80, 80);
+      doc.setLineWidth(0.2);
+      doc.setLineDashPattern([1.2, 1.2], 0);
+      doc.line(RECEIPT_MARGIN_MM, y, pageWidth - RECEIPT_MARGIN_MM, y);
+      doc.setLineDashPattern([], 0);
+      y += spaceAfter;
+    };
+
+    centerText(restaurantTitle.toUpperCase(), 13, "bold", 5.2);
+    y += 0.8;
+    centerText("CUSTOMER BILL", 11.5, "bold", 4.8);
+    centerText(`Order #${table.order_ids[0] || "-"}`, 9, "normal", 4.1);
+    dashedDivider();
+
+    leftText(`Table   : ${table.table_number}`, 9.3, "bold", 4.4);
+    leftText(`Orders  : ${table.order_ids.join(", ")}`, 9.1, "bold", 4.3);
+    leftText(`Time    : ${new Date(createdAt).toLocaleString()}`, 8.3, "normal", 4.1);
+    dashedDivider();
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8.8);
+    doc.text("ITEM", RECEIPT_MARGIN_MM, y);
+    doc.text("QTY", qtyX, y, { align: "right" });
+    doc.text("AMT", amtX, y, { align: "right" });
+    y += 2;
+    dashedDivider();
+
+    for (const item of table.items) {
+      const itemLines = doc.splitTextToSize(item.item_name, RECEIPT_CONTENT_WIDTH_MM - 25) as string[];
+      const amount = Number(item.total || 0);
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      itemLines.forEach((line, index) => {
+        doc.text(line, RECEIPT_MARGIN_MM, y);
+        if (index === 0) {
+          doc.text(String(item.quantity || 0), qtyX, y, { align: "right" });
+          doc.text(formatReceiptMoney(amount), amtX, y, { align: "right" });
+        }
+        y += 4.6;
+      });
+      y += 1.8;
+    }
+
+    dashedDivider();
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10.5);
+    doc.text("TOTAL QTY", RECEIPT_MARGIN_MM, y);
+    doc.text(String(totalQty), amtX, y, { align: "right" });
+    y += 5;
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(11.5);
+    doc.text("TOTAL", RECEIPT_MARGIN_MM, y);
+    doc.text(`Rs. ${formatReceiptMoney(totalAmount)}`, amtX, y, { align: "right" });
+    y += 4.4;
+
+    if (table.remarks.length > 0) {
+      dashedDivider();
+      leftText("REMARKS", 8.8, "bold", 4.2);
+      for (const remark of table.remarks) {
+        leftText(remark, 9, "normal", 4.2);
+      }
+    }
+
+    dashedDivider();
+    centerText("--- THANK YOU ---", 9.8, "bold", 4.4);
+    centerText("Please Visit Again", 8.8, "normal", 4.1);
+
+    const safeRestaurantName = restaurantTitle
+      .replace(/[^\w\s-]/g, "")
+      .trim()
+      .replace(/\s+/g, "-");
+
+    doc.save(`${safeRestaurantName || "restaurant"}-customer-table-${table.table_number}.pdf`);
+  }
+
+  function renderBillCard(table: PaidBillTableOrder) {
+    return (
+      <div className="mx-auto w-[330px] border border-slate-300 bg-white px-4 py-5 text-black shadow-sm">
+        <div className="text-center">
+          <p className="text-[18px] font-extrabold uppercase tracking-wide leading-6">
+            {restaurantName || "Restaurant"}
+          </p>
+          <p className="mt-1 text-[15px] font-extrabold">CUSTOMER BILL</p>
+          <p className="mt-1 text-[13px]">Order #{table.order_ids[0] || "-"}</p>
+        </div>
+
+        <div className="my-3 border-t border-dashed border-slate-500" />
+
+        <div className="space-y-1 text-[14px] leading-5">
+          <p className="font-bold">Table   : {table.table_number}</p>
+          <p className="font-bold">Orders  : {table.order_ids.join(", ")}</p>
+          <p>Time    : {formatBillDate(table.paid_at || table.sourceOrders[0]?.created_at || null)}</p>
+        </div>
+
+        <div className="my-3 border-t border-dashed border-slate-500" />
+
+        <div className="grid grid-cols-[1fr_50px_70px] items-center gap-2 text-[14px] font-extrabold">
+          <span>ITEM</span>
+          <span className="text-right">QTY</span>
+          <span className="text-right">AMT</span>
+        </div>
+
+        <div className="my-3 border-t border-dashed border-slate-500" />
+
+        <div className="space-y-3">
+          {table.items.map((item) => (
+            <div
+              key={`${table.table_number}-${item.item_name}-${item.quantity}`}
+              className="grid grid-cols-[1fr_50px_70px] items-start gap-2 text-[15px]"
+            >
+              <div className="min-w-0">
+                <p className="break-words">{item.item_name}</p>
+              </div>
+              <span className="text-right">{item.quantity}</span>
+              <span className="text-right">{formatReceiptMoney(item.total)}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="my-3 border-t border-dashed border-slate-500" />
+
+        <div className="space-y-2 text-[15px] font-bold">
+          <div className="flex items-center justify-between gap-3">
+            <span>TOTAL QTY</span>
+            <span>
+              {table.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-3 text-[16px]">
+            <span>TOTAL</span>
+            <span>Rs. {formatReceiptMoney(table.total)}</span>
+          </div>
+        </div>
+
+        {table.remarks.length > 0 && (
+          <>
+            <div className="my-3 border-t border-dashed border-slate-500" />
+            <div>
+              <p className="text-[12px] font-bold uppercase tracking-wide text-slate-600">
+                Remarks
+              </p>
+              <div className="mt-2 space-y-1.5">
+                {table.remarks.map((remark, index) => (
+                  <p key={`${remark}-${index}`} className="text-[13px] leading-5 text-slate-700 break-words">
+                    {remark}
+                  </p>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+
+        <div className="my-3 border-t border-dashed border-slate-500" />
+
+        <div className="text-center">
+          <p className="text-[14px] font-extrabold">--- THANK YOU ---</p>
+          <p className="mt-1 text-[12px] text-slate-600">Please Visit Again</p>
+        </div>
+      </div>
+    );
   }
 
   function formatReportDateLabel(dateValue: string) {
@@ -3103,94 +3789,100 @@ function bottomNavButtonClass(view: OwnerView) {
       <div className="space-y-4 pb-4">
         {sectionTitle(
           "Payment History",
-          "Paid orders list with total, method, paid time, remarks",
+          "Tap any paid order to open the 80mm customer bill popup",
           "🧾"
         )}
 
-     <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm">
-  {paidOrders.length === 0 && (
-    <p className="text-sm text-slate-500">No paid orders yet.</p>
-  )}
-
-  <div className="grid grid-cols-2 gap-3">
-    {paidOrders.map((order) => {
-      const orderTotal =
-        order.order_items?.reduce(
-          (sum, item) =>
-            sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
-          0
-        ) || 0;
-
-      return (
-        <div
-          key={order.id}
-          className="rounded-[18px] border border-slate-200 bg-slate-50 p-3 space-y-2"
-        >
-          <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0">
-              <p className="truncate text-sm font-bold text-slate-900">
-                Table {order.table_number}
-              </p>
-              <p className="text-[11px] text-slate-500">#{order.id}</p>
-            </div>
-
-            <span className="shrink-0 rounded-full bg-green-100 px-2 py-1 text-[10px] font-semibold text-green-700">
-              Paid
-            </span>
-          </div>
-
-          <div className="space-y-1 text-xs text-slate-700">
-            {order.order_items?.length ? (
-              order.order_items.slice(0, 3).map((item) => (
-                <p key={item.id} className="truncate">
-                  {item.item_name} x {item.quantity}
-                </p>
-              ))
-            ) : (
-              <p>No items</p>
-            )}
-
-            {order.order_items && order.order_items.length > 3 && (
-              <p className="text-[11px] text-slate-500">
-                +{order.order_items.length - 3} more
-              </p>
-            )}
-          </div>
-
-          {order.remarks && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 p-2">
-              <p className="mb-1 text-[10px] font-semibold text-slate-600">Remarks</p>
-              <p className="line-clamp-2 text-[11px] text-slate-800">
-                {order.remarks}
-              </p>
-            </div>
+        <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm">
+          {paidOrders.length === 0 && (
+            <p className="text-sm text-slate-500">No paid orders yet.</p>
           )}
 
-          <div className="grid grid-cols-2 gap-2 border-t border-slate-200 pt-2">
-            <div className="rounded-xl bg-white p-2">
-              <p className="text-[10px] text-slate-500">Total</p>
-              <p className="text-xs font-bold text-slate-900">Rs. {orderTotal}</p>
-            </div>
+          <div className="grid grid-cols-2 gap-3">
+            {paidOrders.map((order) => {
+              const orderTotal =
+                order.order_items?.reduce(
+                  (sum, item) =>
+                    sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
+                  0
+                ) || 0;
 
-            <div className="rounded-xl bg-white p-2">
-              <p className="text-[10px] text-slate-500">Method</p>
-              <p className="text-xs font-bold text-slate-900">
-                {formatPaymentMethod(order.payment_method)}
-              </p>
-            </div>
+              return (
+                <button
+                  key={order.id}
+                  type="button"
+                  onClick={() => setSelectedPaidOrder(order)}
+                  className="rounded-[18px] border border-slate-200 bg-slate-50 p-3 space-y-2 text-left transition active:scale-[0.99] active:opacity-90"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-bold text-slate-900">
+                        Table {order.table_number}
+                      </p>
+                      <p className="text-[11px] text-slate-500">#{order.id}</p>
+                    </div>
 
-            <div className="col-span-2 rounded-xl bg-white p-2">
-              <p className="text-[10px] text-slate-500">Paid Time</p>
-              <p className="text-[11px] font-semibold text-slate-900">
-                {order.paid_at ? new Date(order.paid_at).toLocaleString() : "-"}
-              </p>
-            </div>
+                    <span className="shrink-0 rounded-full bg-green-100 px-2 py-1 text-[10px] font-semibold text-green-700">
+                      Paid
+                    </span>
+                  </div>
+
+                  <div className="space-y-1 text-xs text-slate-700">
+                    {order.order_items?.length ? (
+                      order.order_items.slice(0, 3).map((item) => (
+                        <p key={item.id} className="truncate">
+                          {item.item_name} x {item.quantity}
+                        </p>
+                      ))
+                    ) : (
+                      <p>No items</p>
+                    )}
+
+                    {order.order_items && order.order_items.length > 3 && (
+                      <p className="text-[11px] text-slate-500">
+                        +{order.order_items.length - 3} more
+                      </p>
+                    )}
+                  </div>
+
+                  {order.remarks && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-2">
+                      <p className="mb-1 text-[10px] font-semibold text-slate-600">Remarks</p>
+                      <p className="line-clamp-2 text-[11px] text-slate-800">{order.remarks}</p>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-2 border-t border-slate-200 pt-2">
+                    <div className="rounded-xl bg-white p-2">
+                      <p className="text-[10px] text-slate-500">Total</p>
+                      <p className="text-xs font-bold text-slate-900">Rs. {orderTotal}</p>
+                    </div>
+
+                    <div className="rounded-xl bg-white p-2">
+                      <p className="text-[10px] text-slate-500">Method</p>
+                      <p className="text-xs font-bold text-slate-900">
+                        {formatPaymentMethod(order.payment_method)}
+                      </p>
+                    </div>
+
+                    <div className="col-span-2 rounded-xl bg-white p-2">
+                      <p className="text-[10px] text-slate-500">Paid Time</p>
+                      <p className="text-[11px] font-semibold text-slate-900">
+                        {order.paid_at ? new Date(order.paid_at).toLocaleString() : "-"}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2">
+                    <p className="text-[11px] font-semibold text-blue-700">
+                      Open customer bill
+                    </p>
+                  </div>
+                </button>
+              );
+            })}
           </div>
         </div>
-      );
-    })}
-  </div>
-</div>
       </div>
     );
   }
@@ -3315,7 +4007,7 @@ function bottomNavButtonClass(view: OwnerView) {
 
   async function copyQrLink(link: string, label: string) {
     if (!link) {
-      alert("Link not available");
+      showToast("Link not available", "error", "QR Access");
       return;
     }
 
@@ -3336,22 +4028,22 @@ function bottomNavButtonClass(view: OwnerView) {
         throw new Error("Clipboard unavailable");
       }
 
-      alert(`${label} link copied`);
+      showToast(`${label} link copied`, "success", "Link Copied");
     } catch (error) {
-      alert("Failed to copy link");
+      showToast("Failed to copy link", "error", "Copy Failed");
     }
   }
 
   function downloadQrCode(canvasId: string, fileName: string) {
     if (typeof document === "undefined") {
-      alert("QR download is not available right now");
+      showToast("QR download is not available right now", "error", "QR Download");
       return;
     }
 
     const canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
 
     if (!canvas) {
-      alert("QR is not ready yet");
+      showToast("QR is not ready yet", "error", "QR Download");
       return;
     }
 
@@ -3746,16 +4438,52 @@ if (!ownerUnlocked) {
   return (
     <main className="min-h-screen bg-slate-200 flex justify-center px-3">
       <div className={`${shellClass} h-screen overflow-hidden relative`}>
-        {successToast && (
+        {appToast && (
           <div className="pointer-events-none absolute left-1/2 top-4 z-[80] w-[calc(100%-24px)] max-w-[360px] -translate-x-1/2">
-            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 shadow-[0_14px_35px_rgba(16,185,129,0.18)]">
+            <div
+              className={`rounded-2xl px-4 py-3 shadow-[0_14px_35px_rgba(15,23,42,0.14)] ${
+                appToast.tone === "error"
+                  ? "border border-rose-200 bg-rose-50"
+                  : appToast.tone === "info"
+                  ? "border border-blue-200 bg-blue-50"
+                  : "border border-emerald-200 bg-emerald-50"
+              }`}
+            >
               <div className="flex items-center gap-3">
-                <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-100 text-base text-emerald-700">
-                  ✅
+                <span
+                  className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-base ${
+                    appToast.tone === "error"
+                      ? "bg-rose-100 text-rose-700"
+                      : appToast.tone === "info"
+                      ? "bg-blue-100 text-blue-700"
+                      : "bg-emerald-100 text-emerald-700"
+                  }`}
+                >
+                  {appToast.tone === "error" ? "⚠️" : appToast.tone === "info" ? "ℹ️" : "✅"}
                 </span>
                 <div className="min-w-0">
-                  <p className="text-sm font-bold text-emerald-700">Payment Updated</p>
-                  <p className="text-xs text-emerald-700/90">{successToast}</p>
+                  <p
+                    className={`text-sm font-bold ${
+                      appToast.tone === "error"
+                        ? "text-rose-700"
+                        : appToast.tone === "info"
+                        ? "text-blue-700"
+                        : "text-emerald-700"
+                    }`}
+                  >
+                    {appToast.title}
+                  </p>
+                  <p
+                    className={`text-xs ${
+                      appToast.tone === "error"
+                        ? "text-rose-700/90"
+                        : appToast.tone === "info"
+                        ? "text-blue-700/90"
+                        : "text-emerald-700/90"
+                    }`}
+                  >
+                    {appToast.message}
+                  </p>
                 </div>
               </div>
             </div>
@@ -3891,6 +4619,52 @@ if (!ownerUnlocked) {
           </div>
         </div>
 
+        {confirmDialog && (
+          <div className="absolute inset-0 z-[95] flex items-center justify-center bg-slate-900/45 px-4">
+            <div className="w-full max-w-sm rounded-[28px] bg-white p-5 shadow-[0_24px_80px_rgba(15,23,42,0.28)]">
+              <div className="flex items-start gap-3">
+                <div
+                  className={`inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-xl ${
+                    confirmDialog.tone === "danger" ? "bg-rose-100 text-rose-700" : "bg-amber-100 text-amber-700"
+                  }`}
+                >
+                  {confirmDialog.tone === "danger" ? "🗑️" : "⚠️"}
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-lg font-bold text-slate-900">{confirmDialog.title}</h3>
+                  <p className="mt-1 text-sm leading-6 text-slate-600">{confirmDialog.message}</p>
+                </div>
+              </div>
+
+              <div className="mt-5 grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={closeConfirmDialog}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const action = confirmDialog.onConfirm;
+                    if (!action) {
+                      closeConfirmDialog();
+                      return;
+                    }
+                    await action();
+                  }}
+                  className={`rounded-2xl px-4 py-3 text-sm font-semibold text-white ${
+                    confirmDialog.tone === "danger" ? "bg-rose-600" : "bg-slate-900"
+                  }`}
+                >
+                  {confirmDialog.confirmText || "Confirm"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {paymentConfirmModal && (
           <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/45 px-4">
             <div className="w-full max-w-[360px] rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_24px_60px_rgba(15,23,42,0.24)]">
@@ -3952,6 +4726,61 @@ if (!ownerUnlocked) {
                 >
                   Confirm
                 </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {selectedPaidOrder && selectedPaidBill && (
+          <div className="fixed inset-0 z-[90] bg-black/55">
+            <div className="mx-auto flex h-full max-w-[430px] flex-col bg-gray-100">
+              <div
+                className="sticky top-0 z-10 border-b border-slate-200 bg-white px-4 pb-4"
+                style={{ paddingTop: "max(env(safe-area-inset-top), 18px)" }}
+              >
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPaidOrder(null)}
+                    className="shrink-0 rounded-2xl bg-gray-200 px-3 py-3 text-sm font-semibold active:opacity-85"
+                  >
+                    Close
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => printBill(selectedPaidBill)}
+                    className="flex-1 rounded-2xl bg-slate-900 px-3 py-3 text-sm font-bold text-white active:scale-[0.98]"
+                  >
+                    Print
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => downloadBill(selectedPaidBill)}
+                    className="flex-1 rounded-2xl border border-slate-900 bg-white px-3 py-3 text-sm font-bold text-slate-900 active:scale-[0.98]"
+                  >
+                    PDF
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto bg-gray-100 p-4">
+                <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="mb-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                      Customer Bill
+                    </p>
+                    <h3 className="mt-1 text-[20px] font-extrabold text-slate-900">
+                      Paid Receipt
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {formatPaymentMethod(selectedPaidOrder.payment_method)} • {formatShortPaidTime(selectedPaidOrder.paid_at)}
+                    </p>
+                  </div>
+
+                  {renderBillCard(selectedPaidBill)}
+                </div>
               </div>
             </div>
           </div>
