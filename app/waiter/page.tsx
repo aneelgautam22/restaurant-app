@@ -167,10 +167,28 @@ function WaiterPageContent() {
 
   const isSubmittingOrderRef = useRef(false);
   const isMarkingPaidRef = useRef(false);
+  const fetchOrdersDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
 
   function showToast(message: string) {
     setToast(message);
     setTimeout(() => setToast(""), 2000);
+  }
+
+  function syncOrdersState(nextOrders: OrderRow[]) {
+    setOrders(nextOrders);
+    setStableOrders(nextOrders);
+  }
+
+  function scheduleFetchOrders(delay = 160) {
+    if (fetchOrdersDebounceRef.current) {
+      clearTimeout(fetchOrdersDebounceRef.current);
+    }
+
+    fetchOrdersDebounceRef.current = setTimeout(() => {
+      void fetchOrders();
+    }, delay);
   }
 
   function closeConfirmModal() {
@@ -207,11 +225,7 @@ function WaiterPageContent() {
   }
 
   useEffect(() => {
-    const t = setTimeout(() => {
-      setStableOrders(orders);
-    }, 80);
-
-    return () => clearTimeout(t);
+    setStableOrders(orders);
   }, [orders]);
 
   const todayOrders = useMemo(() => {
@@ -221,6 +235,22 @@ function WaiterPageContent() {
   const todayStableOrders = useMemo(() => {
     return stableOrders.filter((order) => isSameLocalDay(order.created_at));
   }, [stableOrders]);
+
+  useEffect(() => {
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current);
+    }
+
+    searchDebounceRef.current = setTimeout(() => {
+      setDebouncedSearchTerm(searchTerm);
+    }, 120);
+
+    return () => {
+      if (searchDebounceRef.current) {
+        clearTimeout(searchDebounceRef.current);
+      }
+    };
+  }, [searchTerm]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -325,7 +355,7 @@ function WaiterPageContent() {
       .order("created_at", { ascending: false });
 
     if (!error && data) {
-      setOrders(data as OrderRow[]);
+      syncOrdersState(data as OrderRow[]);
     }
   }
 
@@ -556,7 +586,7 @@ async function subscribeWaiterPush(): Promise<
         },
         () => {
           if (!isSubmittingOrderRef.current && !isMarkingPaidRef.current) {
-            fetchOrders();
+            scheduleFetchOrders();
           }
         }
       )
@@ -569,8 +599,7 @@ async function subscribeWaiterPush(): Promise<
         { event: "*", schema: "public", table: "order_items" },
         () => {
           if (!isSubmittingOrderRef.current && !isMarkingPaidRef.current) {
-            fetchOrders();
-            fetchPopularItems();
+            scheduleFetchOrders();
           }
         }
       )
@@ -596,6 +625,10 @@ async function subscribeWaiterPush(): Promise<
       supabase.removeChannel(ordersChannel);
       supabase.removeChannel(orderItemsChannel);
       supabase.removeChannel(menuItemsChannel);
+
+      if (fetchOrdersDebounceRef.current) {
+        clearTimeout(fetchOrdersDebounceRef.current);
+      }
     };
   }, [restaurantId]);
 
@@ -1091,14 +1124,16 @@ async function subscribeWaiterPush(): Promise<
   }, [popularItems, menuItems]);
 
   const filteredMenuItems = useMemo(() => {
-    if (!searchTerm.trim()) {
+    const normalizedSearch = debouncedSearchTerm.trim().toLowerCase();
+
+    if (!normalizedSearch) {
       return popularMenuItems;
     }
 
     return menuItems.filter((menu) =>
-      menu.item_name.toLowerCase().includes(searchTerm.toLowerCase())
+      menu.item_name.toLowerCase().includes(normalizedSearch)
     );
-  }, [menuItems, searchTerm, popularMenuItems]);
+  }, [menuItems, debouncedSearchTerm, popularMenuItems]);
 
   const filteredManageMenuItems = useMemo(() => {
     const source = [...menuItems];
@@ -1116,11 +1151,13 @@ async function subscribeWaiterPush(): Promise<
   }, [popularMenuItems]);
 
   const searchResultMenuItems = useMemo(() => {
-    if (!searchTerm.trim()) return [];
+    const normalizedSearch = debouncedSearchTerm.trim().toLowerCase();
+
+    if (!normalizedSearch) return [];
     return menuItems.filter((menu) =>
-      menu.item_name.toLowerCase().includes(searchTerm.toLowerCase())
+      menu.item_name.toLowerCase().includes(normalizedSearch)
     );
-  }, [menuItems, searchTerm]);
+  }, [menuItems, debouncedSearchTerm]);
 
   const selectedPreviewItems = useMemo(() => {
     return items.slice(0, 4);
@@ -1217,8 +1254,10 @@ async function subscribeWaiterPush(): Promise<
       })),
     };
 
-    setOrders((prev) => [optimisticOrder, ...prev.filter((order) => order.id !== optimisticOrder.id)]);
-    setStableOrders((prev) => [optimisticOrder, ...prev.filter((order) => order.id !== optimisticOrder.id)]);
+    syncOrdersState([
+      optimisticOrder,
+      ...orders.filter((order) => order.id !== optimisticOrder.id),
+    ]);
 
     try {
       await fetch("/api/push/new-order", {
@@ -1247,8 +1286,8 @@ async function subscribeWaiterPush(): Promise<
 
     window.setTimeout(() => {
       isSubmittingOrderRef.current = false;
-      void fetchOrders();
-    }, 350);
+      scheduleFetchOrders(80);
+    }, 150);
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -1458,14 +1497,7 @@ async function subscribeWaiterPush(): Promise<
       return;
     }
 
-    const unpaidOrdersForTable = todayOrders.filter(
-      (order) =>
-        String(order.table_number).trim() === normalizedTableNo &&
-        order.is_paid !== true
-    );
-
-    if (unpaidOrdersForTable.length === 0) {
-      alert("No unpaid orders found for this table");
+    if (isMarkingPaidRef.current || markingPaidTable === normalizedTableNo) {
       return;
     }
 
@@ -1479,63 +1511,117 @@ async function subscribeWaiterPush(): Promise<
         setMarkingPaidTable(normalizedTableNo);
         isMarkingPaidRef.current = true;
 
-        const orderIds = unpaidOrdersForTable.map((order) => order.id);
-        const paidAt = new Date().toISOString();
+        try {
+          const { data: freshOrders, error: freshOrdersError } = await supabase
+            .from("orders")
+            .select("id, table_number, created_at, is_paid")
+            .eq("restaurant_id", restaurantId)
+            .eq("table_number", normalizedTableNo)
+            .neq("is_paid", true)
+            .order("created_at", { ascending: false });
 
-        const { error } = await supabase
-          .from("orders")
-          .update({
-            is_paid: true,
-            payment_method: paymentMethod,
-            paid_at: paidAt,
-          })
-          .in("id", orderIds)
-          .eq("restaurant_id", restaurantId);
+          if (freshOrdersError) {
+            console.error("FETCH UNPAID ORDERS ERROR:", {
+              freshOrdersError,
+              restaurantId,
+              tableNo: normalizedTableNo,
+            });
+            throw new Error(freshOrdersError.message || "Failed to load unpaid orders");
+          }
 
-        if (error) {
+          const latestUnpaidOrders = (freshOrders || []).filter((order) =>
+            isSameLocalDay(order.created_at)
+          );
+
+          const orderIds = Array.from(
+            new Set(latestUnpaidOrders.map((order) => Number(order.id)).filter(Boolean))
+          );
+
+          if (orderIds.length === 0) {
+            throw new Error("No unpaid orders found for this table");
+          }
+
+          const paidAt = new Date().toISOString();
+
+          const { data: updatedRows, error } = await supabase
+            .from("orders")
+            .update({
+              is_paid: true,
+              payment_method: paymentMethod,
+              paid_at: paidAt,
+            })
+            .in("id", orderIds)
+            .eq("restaurant_id", restaurantId)
+            .select("id");
+
+          if (error) {
+            console.error("MARK PAID ERROR:", {
+              error,
+              restaurantId,
+              tableNo: normalizedTableNo,
+              orderIds,
+              paymentMethod,
+            });
+
+            const detailedMessage = [error.message, error.details, error.hint]
+              .filter(Boolean)
+              .join(" | ");
+
+            throw new Error(detailedMessage || "Failed to mark orders as paid");
+          }
+
+          const updatedIds = new Set(
+            (updatedRows || []).map((row) => Number(row.id)).filter(Boolean)
+          );
+
+          if (updatedIds.size === 0) {
+            throw new Error("Payment update did not affect any order");
+          }
+
+          const applyPaidState = (prev: OrderRow[]) =>
+            prev.map((order) =>
+              updatedIds.has(order.id)
+                ? {
+                    ...order,
+                    is_paid: true,
+                    payment_method: paymentMethod,
+                    paid_at: paidAt,
+                  }
+                : order
+            );
+
+          setOrders(applyPaidState);
+          setStableOrders(applyPaidState);
+
+          setReadyNotifications((prev) =>
+            prev.filter(
+              (notification) => notification.tableNumber.trim() !== normalizedTableNo
+            )
+          );
+
+          setSelectedTablePopup((current) => {
+            if (!current) return null;
+            if (current.table_number.trim() !== normalizedTableNo) return current;
+            return null;
+          });
+
+          showToast(`Table ${normalizedTableNo} paid successfully`);
+
+          window.setTimeout(() => {
+            isMarkingPaidRef.current = false;
+            scheduleFetchOrders(80);
+          }, 150);
+        } catch (error) {
+          console.error(error);
           isMarkingPaidRef.current = false;
+          const message =
+            error instanceof Error && error.message
+              ? error.message
+              : "Failed to mark orders as paid";
+          alert(message);
+        } finally {
           setMarkingPaidTable(null);
-          alert("Failed to mark orders as paid");
-          return;
         }
-
-        setOrders((prev) =>
-          prev.map((order) =>
-            orderIds.includes(order.id)
-              ? {
-                  ...order,
-                  is_paid: true,
-                  payment_method: paymentMethod,
-                  paid_at: paidAt,
-                }
-              : order
-          )
-        );
-        setStableOrders((prev) =>
-          prev.map((order) =>
-            orderIds.includes(order.id)
-              ? {
-                  ...order,
-                  is_paid: true,
-                  payment_method: paymentMethod,
-                  paid_at: paidAt,
-                }
-              : order
-          )
-        );
-
-        setMarkingPaidTable(null);
-        showToast(`Table ${normalizedTableNo} paid successfully`);
-
-        setReadyNotifications((prev) =>
-          prev.filter((notification) => notification.tableNumber.trim() !== normalizedTableNo)
-        );
-        setSelectedTablePopup(null);
-
-        window.setTimeout(() => {
-          isMarkingPaidRef.current = false;
-          void fetchOrders();
-        }, 350);
       },
     });
   }

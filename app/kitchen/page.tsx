@@ -1,7 +1,6 @@
-
 "use client";
 
-import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import AppSplash from "@/components/AppSplash";
@@ -17,11 +16,20 @@ type OrderItem = {
 type Order = {
   id: number;
   table_number: string;
-  status: string;
+  status: "pending" | "preparing" | "ready" | string;
   created_at: string;
   remarks?: string | null;
   order_items?: OrderItem[];
 };
+
+type ItemStatus = "pending" | "preparing" | "ready";
+
+type PushSubscribeResult =
+  | "subscribed"
+  | "already_subscribed"
+  | "denied"
+  | "unsupported"
+  | "failed";
 
 function urlBase64ToUint8Array(base64String: string) {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
@@ -50,6 +58,7 @@ function KitchenPageContent() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [highlightedTable, setHighlightedTable] = useState("");
   const [toast, setToast] = useState<string | null>(null);
+  const [updatingItems, setUpdatingItems] = useState<Record<number, ItemStatus | null>>({});
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const previousPendingCountRef = useRef(0);
@@ -58,8 +67,12 @@ function KitchenPageContent() {
   const hasAutoHandledTableRef = useRef(false);
   const tableRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fetchingOrdersRef = useRef(false);
+  const pendingOrdersRefreshRef = useRef(false);
+  const refreshOrdersTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
 
-  function showToast(message: string) {
+  const showToast = useCallback((message: string) => {
     setToast(message);
 
     if (toastTimeoutRef.current) {
@@ -69,12 +82,17 @@ function KitchenPageContent() {
     toastTimeoutRef.current = setTimeout(() => {
       setToast(null);
     }, 2200);
-  }
+  }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
       if (toastTimeoutRef.current) {
         clearTimeout(toastTimeoutRef.current);
+      }
+      if (refreshOrdersTimerRef.current) {
+        clearTimeout(refreshOrdersTimerRef.current);
       }
     };
   }, []);
@@ -109,10 +127,31 @@ function KitchenPageContent() {
     }
   }, [restaurantId]);
 
+  const fetchRestaurant = useCallback(async () => {
+    if (!restaurantId) return;
+
+    const { data, error } = await supabase
+      .from("restaurants")
+      .select("*")
+      .eq("id", restaurantId)
+      .single();
+
+    if (!error && data && mountedRef.current) {
+      const restaurantData = data as Record<string, any>;
+      setRestaurantName(
+        restaurantData.name ||
+          restaurantData.restaurant_name ||
+          restaurantData.restaurant ||
+          restaurantData.title ||
+          "Restaurant"
+      );
+    }
+  }, [restaurantId]);
+
   useEffect(() => {
     if (!restaurantId) return;
     fetchRestaurant();
-  }, [restaurantId]);
+  }, [restaurantId, fetchRestaurant]);
 
   useEffect(() => {
     function handleOutsideClick(e: MouseEvent) {
@@ -130,27 +169,6 @@ function KitchenPageContent() {
       document.removeEventListener("mousedown", handleOutsideClick);
     };
   }, [menuOpen]);
-
-  async function fetchRestaurant() {
-    if (!restaurantId) return;
-
-    const { data, error } = await supabase
-      .from("restaurants")
-      .select("*")
-      .eq("id", restaurantId)
-      .single();
-
-    if (!error && data) {
-      const restaurantData = data as Record<string, any>;
-      setRestaurantName(
-        restaurantData.name ||
-          restaurantData.restaurant_name ||
-          restaurantData.restaurant ||
-          restaurantData.title ||
-          "Restaurant"
-      );
-    }
-  }
 
   async function handleUnlock() {
     if (!restaurantId) {
@@ -185,32 +203,18 @@ function KitchenPageContent() {
     setUnlocked(false);
     setPassword("");
     setMenuOpen(false);
+    setUpdatingItems({});
     showToast("Logged out");
   }
 
-  async function fetchOrders() {
-    if (!restaurantId) return;
-
-    const { data, error } = await supabase
-      .from("orders")
-      .select("*, order_items(*)")
-      .eq("restaurant_id", restaurantId)
-      .in("status", ["pending", "preparing"])
-      .order("created_at", { ascending: true })
-      .order("id", { ascending: true });
-
-    if (!error && data) {
-      const normalized = (data as Order[]).map((order) => ({
+  const applyVisibleOrders = useCallback(
+    (incomingOrders: Order[]) => {
+      const normalized = incomingOrders.map((order) => ({
         ...order,
-        order_items: (order.order_items || []).filter(
-          (item) => item.status !== "ready"
-        ),
+        order_items: (order.order_items || []).filter((item) => item.status !== "ready"),
       }));
 
-      const visibleOrders = normalized.filter(
-        (order) => (order.order_items || []).length > 0
-      );
-
+      const visibleOrders = normalized.filter((order) => (order.order_items || []).length > 0);
       const pendingOrders = visibleOrders.filter((order) =>
         (order.order_items || []).some((item) => item.status === "pending")
       );
@@ -226,71 +230,182 @@ function KitchenPageContent() {
       previousPendingCountRef.current = pendingOrders.length;
       hasFetchedOnceRef.current = true;
       setOrders(visibleOrders);
-    }
-  }
+    },
+    [soundEnabled]
+  );
 
-  async function updateOrderStatusFromItems(orderId: number) {
+  const fetchOrders = useCallback(async () => {
     if (!restaurantId) return;
 
-    const { data: items, error: itemsError } = await supabase
-      .from("order_items")
-      .select("status")
-      .eq("order_id", orderId);
-
-    if (itemsError || !items) {
-      showToast("Failed to refresh item statuses");
+    if (fetchingOrdersRef.current) {
+      pendingOrdersRefreshRef.current = true;
       return;
     }
 
-    const statuses = items.map((item) => item.status);
+    fetchingOrdersRef.current = true;
 
-    let orderStatus: "pending" | "preparing" | "ready" = "pending";
+    try {
+      const { data, error } = await supabase
+        .from("orders")
+        .select("*, order_items(*)")
+        .eq("restaurant_id", restaurantId)
+        .in("status", ["pending", "preparing"])
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true });
 
-    if (statuses.length > 0 && statuses.every((status) => status === "ready")) {
-      orderStatus = "ready";
-    } else if (
-      statuses.some((status) => status === "preparing" || status === "ready")
-    ) {
-      orderStatus = "preparing";
-    } else {
-      orderStatus = "pending";
+      if (!error && data && mountedRef.current) {
+        applyVisibleOrders(data as Order[]);
+      }
+    } finally {
+      fetchingOrdersRef.current = false;
+
+      if (pendingOrdersRefreshRef.current) {
+        pendingOrdersRefreshRef.current = false;
+        window.setTimeout(() => {
+          if (mountedRef.current) {
+            fetchOrders();
+          }
+        }, 50);
+      }
+    }
+  }, [applyVisibleOrders, restaurantId]);
+
+  const scheduleOrdersRefresh = useCallback(
+    (delay = 120) => {
+      if (refreshOrdersTimerRef.current) {
+        clearTimeout(refreshOrdersTimerRef.current);
+      }
+
+      refreshOrdersTimerRef.current = setTimeout(() => {
+        fetchOrders();
+      }, delay);
+    },
+    [fetchOrders]
+  );
+
+  useEffect(() => {
+    if (!unlocked || !restaurantId) return;
+
+    fetchOrders();
+
+    const ordersChannel = supabase
+      .channel(`kitchen-orders-${restaurantId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "orders",
+          filter: `restaurant_id=eq.${restaurantId}`,
+        },
+        () => {
+          scheduleOrdersRefresh(80);
+        }
+      )
+      .subscribe();
+
+    const orderItemsChannel = supabase
+      .channel(`kitchen-order-items-${restaurantId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "order_items",
+        },
+        () => {
+          scheduleOrdersRefresh(100);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      if (refreshOrdersTimerRef.current) {
+        clearTimeout(refreshOrdersTimerRef.current);
+      }
+      supabase.removeChannel(ordersChannel);
+      supabase.removeChannel(orderItemsChannel);
+    };
+  }, [unlocked, restaurantId, fetchOrders, scheduleOrdersRefresh]);
+
+  function getNextOrderStatus(order: Order | undefined, itemId: number, nextStatus: ItemStatus): ItemStatus {
+    const currentItems = order?.order_items || [];
+    const nextStatuses = currentItems.map((item) => (item.id === itemId ? nextStatus : item.status));
+
+    if (nextStatuses.length > 0 && nextStatuses.every((status) => status === "ready")) {
+      return "ready";
     }
 
-    const { error: orderError } = await supabase
-      .from("orders")
-      .update({ status: orderStatus })
-      .eq("id", orderId)
-      .eq("restaurant_id", restaurantId);
-
-    if (orderError) {
-      showToast("Failed to update overall order status");
+    if (nextStatuses.some((status) => status === "preparing" || status === "ready")) {
+      return "preparing";
     }
+
+    return "pending";
   }
 
-  async function updateItemStatus(
-    orderId: number,
-    itemId: number,
-    status: "pending" | "preparing" | "ready"
-  ) {
+  async function updateItemStatus(orderId: number, itemId: number, status: ItemStatus) {
+    const currentLock = updatingItems[itemId];
+    if (currentLock) return;
+
     const targetOrder = orders.find((order) => order.id === orderId);
-    const tableNo = String(targetOrder?.table_number || "").trim();
+    const targetItem = targetOrder?.order_items?.find((item) => item.id === itemId);
 
-    const { error } = await supabase
-      .from("order_items")
-      .update({ status })
-      .eq("id", itemId)
-      .eq("order_id", orderId);
-
-    if (error) {
-      showToast("Failed to update item status");
+    if (!targetOrder || !targetItem) {
+      showToast("Order item not found");
+      scheduleOrdersRefresh(0);
       return;
     }
 
-    await updateOrderStatusFromItems(orderId);
+    if (targetItem.status === status) {
+      return;
+    }
 
-    if (status === "ready" && restaurantId && tableNo) {
-      try {
-        await fetch("/api/push/order-ready", {
+    const tableNo = String(targetOrder.table_number || "").trim();
+    const nextOrderStatus = getNextOrderStatus(targetOrder, itemId, status);
+
+    setUpdatingItems((prev) => ({ ...prev, [itemId]: status }));
+
+    setOrders((prev) =>
+      prev
+        .map((order) => {
+          if (order.id !== orderId) return order;
+
+          const updatedItems = (order.order_items || [])
+            .map((item) => (item.id === itemId ? { ...item, status } : item))
+            .filter((item) => item.status !== "ready");
+
+          return {
+            ...order,
+            status: nextOrderStatus,
+            order_items: updatedItems,
+          };
+        })
+        .filter((order) => (order.order_items || []).length > 0)
+    );
+
+    try {
+      const { error: itemError } = await supabase
+        .from("order_items")
+        .update({ status })
+        .eq("id", itemId)
+        .eq("order_id", orderId);
+
+      if (itemError) {
+        throw itemError;
+      }
+
+      const { error: orderError } = await supabase
+        .from("orders")
+        .update({ status: nextOrderStatus })
+        .eq("id", orderId)
+        .eq("restaurant_id", restaurantId);
+
+      if (orderError) {
+        throw orderError;
+      }
+
+      if (status === "ready" && restaurantId && tableNo) {
+        fetch("/api/push/order-ready", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -299,42 +414,52 @@ function KitchenPageContent() {
             restaurant_id: restaurantId,
             table: tableNo,
           }),
+        }).catch((pushError) => {
+          console.error("Failed to send order ready push:", pushError);
         });
-      } catch (pushError) {
-        console.error("Failed to send order ready push:", pushError);
       }
+
+      showToast(
+        status === "ready"
+          ? "Item marked ready"
+          : status === "preparing"
+          ? "Item marked preparing"
+          : "Item marked pending"
+      );
+
+      scheduleOrdersRefresh(60);
+    } catch (error) {
+      console.error("Failed to update item status:", error);
+      showToast("Failed to update item status");
+      scheduleOrdersRefresh(0);
+    } finally {
+      setUpdatingItems((prev) => {
+        const next = { ...prev };
+        delete next[itemId];
+        return next;
+      });
     }
-
-    showToast(
-      status === "ready"
-        ? "Item marked ready"
-        : status === "preparing"
-        ? "Item marked preparing"
-        : "Item marked pending"
-    );
-
-    fetchOrders();
   }
 
-  async function subscribeKitchenPush() {
+  async function subscribeKitchenPush(): Promise<PushSubscribeResult> {
     try {
       if (typeof window === "undefined") {
-        return "unsupported" as const;
+        return "unsupported";
       }
 
       if (!restaurantId) {
         showToast("Invalid restaurant link");
-        return "failed" as const;
+        return "failed";
       }
 
       if (!("serviceWorker" in navigator)) {
         showToast("Service worker not supported");
-        return "unsupported" as const;
+        return "unsupported";
       }
 
       if (!("PushManager" in window)) {
         showToast("Push notification not supported");
-        return "unsupported" as const;
+        return "unsupported";
       }
 
       let permission = Notification.permission;
@@ -344,7 +469,7 @@ function KitchenPageContent() {
       }
 
       if (permission !== "granted") {
-        return "denied" as const;
+        return "denied";
       }
 
       let registration = await navigator.serviceWorker.getRegistration();
@@ -358,7 +483,7 @@ function KitchenPageContent() {
       const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
       if (!vapidKey) {
         showToast("Missing VAPID public key");
-        return "failed" as const;
+        return "failed";
       }
 
       let subscription = await registration.pushManager.getSubscription();
@@ -373,12 +498,12 @@ function KitchenPageContent() {
           console.log("Kitchen push subscription created:", subscription);
         } catch (err) {
           console.error("Kitchen push subscribe failed:", err);
-          return "failed" as const;
+          return "failed";
         }
       }
 
       if (!subscription) {
-        return "failed" as const;
+        return "failed";
       }
 
       const res = await fetch("/api/push/subscribe", {
@@ -399,13 +524,13 @@ function KitchenPageContent() {
 
       if (!res.ok) {
         console.error("Kitchen subscribe API failed:", data);
-        return "failed" as const;
+        return "failed";
       }
 
-      return alreadySubscribed ? ("already_subscribed" as const) : ("subscribed" as const);
+      return alreadySubscribed ? "already_subscribed" : "subscribed";
     } catch (error) {
       console.error("Kitchen push subscribe error:", error);
-      return "failed" as const;
+      return "failed";
     }
   }
 
@@ -463,18 +588,6 @@ function KitchenPageContent() {
     setMenuOpen(false);
     showToast("Sound disabled");
   }
-
-  useEffect(() => {
-    if (!unlocked || !restaurantId) return;
-
-    fetchOrders();
-
-    const interval = setInterval(() => {
-      fetchOrders();
-    }, 2000);
-
-    return () => clearInterval(interval);
-  }, [unlocked, soundEnabled, restaurantId]);
 
   const oldestPendingOrderId = useMemo(() => {
     const pendingOnly = orders.filter((order) =>
@@ -585,9 +698,7 @@ function KitchenPageContent() {
                   <h1 className="truncate text-base sm:text-lg md:text-xl font-bold">
                     {restaurantName || "Restaurant"}
                   </h1>
-                  <p className="text-xs sm:text-sm text-white/80">
-                    Kitchen Panel
-                  </p>
+                  <p className="text-xs sm:text-sm text-white/80">Kitchen Panel</p>
                 </div>
               </div>
 
@@ -608,12 +719,8 @@ function KitchenPageContent() {
                       className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-medium text-slate-700 active:scale-[0.99] select-none touch-manipulation"
                       type="button"
                     >
-                      <span className="text-base">
-                        {soundEnabled ? "🔕" : "🔔"}
-                      </span>
-                      <span>
-                        {soundEnabled ? "Disable Sound" : "Enable Sound"}
-                      </span>
+                      <span className="text-base">{soundEnabled ? "🔕" : "🔔"}</span>
+                      <span>{soundEnabled ? "Disable Sound" : "Enable Sound"}</span>
                     </button>
 
                     <button
@@ -632,9 +739,7 @@ function KitchenPageContent() {
 
           {orders.length === 0 ? (
             <div className="rounded-[24px] border border-slate-200 bg-white p-5 sm:p-6 shadow-sm">
-              <p className="text-sm sm:text-base md:text-lg text-slate-500">
-                No active kitchen items.
-              </p>
+              <p className="text-sm sm:text-base md:text-lg text-slate-500">No active kitchen items.</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 gap-3 sm:gap-4 md:grid-cols-2 2xl:grid-cols-3">
@@ -648,8 +753,7 @@ function KitchenPageContent() {
                       tableRefs.current[String(order.table_number).trim()] = el;
                     }}
                     className={`rounded-[24px] border p-3 shadow-sm sm:p-4 md:p-4 lg:p-5 transition-all duration-300 ${
-                      highlightedTable &&
-                      String(order.table_number).trim() === highlightedTable
+                      highlightedTable && String(order.table_number).trim() === highlightedTable
                         ? "border-blue-500 bg-blue-50 ring-4 ring-blue-200"
                         : isOldestPending
                         ? "border-red-300 bg-red-50"
@@ -680,9 +784,7 @@ function KitchenPageContent() {
                               </div>
                             )}
 
-                          <p className="mt-1 text-xs sm:text-sm text-slate-500">
-                            Order #{order.id}
-                          </p>
+                          <p className="mt-1 text-xs sm:text-sm text-slate-500">Order #{order.id}</p>
 
                           <p className="mt-1 text-[11px] sm:text-xs text-slate-500 break-words">
                             {new Date(order.created_at).toLocaleString()}
@@ -713,67 +815,68 @@ function KitchenPageContent() {
 
                       <div className="space-y-2.5 sm:space-y-3">
                         {order.order_items?.length ? (
-                          order.order_items.map((item) => (
-                            <div
-                              key={item.id}
-                              className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-3"
-                            >
-                              <div className="flex items-start justify-between gap-2">
-                                <div className="min-w-0">
-                                  <p className="truncate text-sm sm:text-base font-semibold text-slate-900">
-                                    {item.item_name}
-                                  </p>
-                                  <p className="mt-1 text-xs sm:text-sm text-slate-500">
-                                    Qty: {item.quantity}
-                                  </p>
+                          order.order_items.map((item) => {
+                            const isUpdating = !!updatingItems[item.id];
+
+                            return (
+                              <div
+                                key={item.id}
+                                className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-3"
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <p className="truncate text-sm sm:text-base font-semibold text-slate-900">
+                                      {item.item_name}
+                                    </p>
+                                    <p className="mt-1 text-xs sm:text-sm text-slate-500">
+                                      Qty: {item.quantity}
+                                    </p>
+                                  </div>
+
+                                  <span
+                                    className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] sm:text-xs font-semibold capitalize ${
+                                      item.status === "ready"
+                                        ? "bg-green-100 text-green-700"
+                                        : item.status === "preparing"
+                                        ? "bg-yellow-100 text-yellow-700"
+                                        : "bg-slate-200 text-slate-700"
+                                    }`}
+                                  >
+                                    {item.status}
+                                  </span>
                                 </div>
 
-                                <span
-                                  className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] sm:text-xs font-semibold capitalize ${
-                                    item.status === "ready"
-                                      ? "bg-green-100 text-green-700"
-                                      : item.status === "preparing"
-                                      ? "bg-yellow-100 text-yellow-700"
-                                      : "bg-slate-200 text-slate-700"
-                                  }`}
-                                >
-                                  {item.status}
-                                </span>
+                                <div className="grid grid-cols-3 gap-2">
+                                  <button
+                                    onClick={() => updateItemStatus(order.id, item.id, "pending")}
+                                    disabled={isUpdating}
+                                    className="min-h-[40px] rounded-xl bg-slate-600 px-2 py-2 text-[11px] sm:text-xs md:text-sm font-semibold text-white active:scale-[0.98] select-none touch-manipulation disabled:cursor-not-allowed disabled:opacity-50"
+                                    type="button"
+                                  >
+                                    {isUpdating && updatingItems[item.id] === "pending" ? "Saving..." : "Pending"}
+                                  </button>
+
+                                  <button
+                                    onClick={() => updateItemStatus(order.id, item.id, "preparing")}
+                                    disabled={isUpdating}
+                                    className="min-h-[40px] rounded-xl bg-yellow-500 px-2 py-2 text-[11px] sm:text-xs md:text-sm font-semibold text-white active:scale-[0.98] select-none touch-manipulation disabled:cursor-not-allowed disabled:opacity-50"
+                                    type="button"
+                                  >
+                                    {isUpdating && updatingItems[item.id] === "preparing" ? "Saving..." : "Preparing"}
+                                  </button>
+
+                                  <button
+                                    onClick={() => updateItemStatus(order.id, item.id, "ready")}
+                                    disabled={isUpdating}
+                                    className="min-h-[40px] rounded-xl bg-green-600 px-2 py-2 text-[11px] sm:text-xs md:text-sm font-semibold text-white active:scale-[0.98] select-none touch-manipulation disabled:cursor-not-allowed disabled:opacity-50"
+                                    type="button"
+                                  >
+                                    {isUpdating && updatingItems[item.id] === "ready" ? "Saving..." : "Ready"}
+                                  </button>
+                                </div>
                               </div>
-
-                              <div className="grid grid-cols-3 gap-2">
-                                <button
-                                  onClick={() =>
-                                    updateItemStatus(order.id, item.id, "pending")
-                                  }
-                                  className="min-h-[40px] rounded-xl bg-slate-600 px-2 py-2 text-[11px] sm:text-xs md:text-sm font-semibold text-white active:scale-[0.98] select-none touch-manipulation"
-                                  type="button"
-                                >
-                                  Pending
-                                </button>
-
-                                <button
-                                  onClick={() =>
-                                    updateItemStatus(order.id, item.id, "preparing")
-                                  }
-                                  className="min-h-[40px] rounded-xl bg-yellow-500 px-2 py-2 text-[11px] sm:text-xs md:text-sm font-semibold text-white active:scale-[0.98] select-none touch-manipulation"
-                                  type="button"
-                                >
-                                  Preparing
-                                </button>
-
-                                <button
-                                  onClick={() =>
-                                    updateItemStatus(order.id, item.id, "ready")
-                                  }
-                                  className="min-h-[40px] rounded-xl bg-green-600 px-2 py-2 text-[11px] sm:text-xs md:text-sm font-semibold text-white active:scale-[0.98] select-none touch-manipulation"
-                                  type="button"
-                                >
-                                  Ready
-                                </button>
-                              </div>
-                            </div>
-                          ))
+                            );
+                          })
                         ) : (
                           <p className="text-sm text-slate-500">No items</p>
                         )}

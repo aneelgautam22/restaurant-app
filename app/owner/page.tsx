@@ -7,6 +7,7 @@ import AppSplash from "@/components/AppSplash";
 import PanelLoginCard from "@/components/PanelLoginCard";
 import { QRCodeCanvas } from "qrcode.react";
 import jsPDF from "jspdf";
+import React from "react";
 
 type MenuItem = {
   id: number;
@@ -205,6 +206,12 @@ useEffect(() => {
 
   const menuRef = useRef<HTMLDivElement | null>(null);
   const contentScrollRef = useRef<HTMLDivElement | null>(null);
+  const ordersFetchInFlightRef = useRef(false);
+  const menuFetchInFlightRef = useRef(false);
+  const restaurantFetchInFlightRef = useRef(false);
+const ordersRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+const menuRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+const restaurantRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const getTodayLocalDate = () => {
     const today = new Date();
@@ -314,119 +321,187 @@ useEffect(() => {
       return;
     }
 
+    if (restaurantFetchInFlightRef.current) return;
+    restaurantFetchInFlightRef.current = true;
+
     if (showLoader) {
       setCheckingRestaurant(true);
     }
 
-    const { data, error } = await supabase
-      .from("restaurants")
-      .select("*")
-      .eq("id", restaurantId)
-      .single();
+    try {
+      const { data, error } = await supabase
+        .from("restaurants")
+        .select("*")
+        .eq("id", restaurantId)
+        .single();
 
-    if (error || !data) {
-      setRestaurantExists(false);
-      setCheckingRestaurant(false);
-      return;
-    }
-
-    const restaurantData = data as Record<string, any>;
-
-    setRestaurantExists(true);
-
-    const fetchedRestaurantName =
-      restaurantData.name ||
-      restaurantData.restaurant_name ||
-      restaurantData.restaurant ||
-      restaurantData.title ||
-      "";
-
-    const fetchedOwnerPassword = restaurantData.owner_password || "";
-    const fetchedWaiterPassword = restaurantData.waiter_password || "";
-    const fetchedKitchenPassword = restaurantData.kitchen_password || "";
-    const fetchedProfitPercent =
-      restaurantData.profit_percent !== null && restaurantData.profit_percent !== undefined
-        ? String(restaurantData.profit_percent)
-        : "40";
-
-    const setupComplete =
-      restaurantData.is_setup_done === true ||
-      (!!fetchedRestaurantName &&
-        fetchedOwnerPassword !== "setup_pending" &&
-        fetchedWaiterPassword !== "setup_pending" &&
-        fetchedKitchenPassword !== "setup_pending");
-
-    setIsSetupDone(setupComplete);
-
-    setRestaurantName(fetchedRestaurantName || "Restaurant");
-    setOwnerPasswordFromDB(fetchedOwnerPassword);
-    setProfitPercent(fetchedProfitPercent);
-    setProfitPercentInput(fetchedProfitPercent);
-    if (!passwordsLoaded) {
-  setNewOwnerPassword(fetchedOwnerPassword);
-  setNewWaiterPassword(fetchedWaiterPassword);
-  setNewKitchenPassword(fetchedKitchenPassword);
-  setPasswordsLoaded(true);
-}
-
-    if (!setupComplete) {
-      setSetupRestaurantName(fetchedRestaurantName || "");
-      setSetupOwnerPassword(
-        fetchedOwnerPassword === "setup_pending" ? "" : fetchedOwnerPassword
-      );
-      setSetupWaiterPassword(
-        fetchedWaiterPassword === "setup_pending" ? "" : fetchedWaiterPassword
-      );
-      setSetupKitchenPassword(
-        fetchedKitchenPassword === "setup_pending" ? "" : fetchedKitchenPassword
-      );
-      setOwnerUnlocked(false);
-
-      if (typeof window !== "undefined") {
-        localStorage.removeItem(`owner_logged_in_${restaurantId}`);
+      if (error || !data) {
+        setRestaurantExists(false);
+        setCheckingRestaurant(false);
+        return;
       }
-    }
 
-    setCheckingRestaurant(false);
+      const restaurantData = data as Record<string, any>;
+
+      setRestaurantExists(true);
+
+      const fetchedRestaurantName =
+        restaurantData.name ||
+        restaurantData.restaurant_name ||
+        restaurantData.restaurant ||
+        restaurantData.title ||
+        "";
+
+      const fetchedOwnerPassword = restaurantData.owner_password || "";
+      const fetchedWaiterPassword = restaurantData.waiter_password || "";
+      const fetchedKitchenPassword = restaurantData.kitchen_password || "";
+      const fetchedProfitPercent =
+        restaurantData.profit_percent !== null && restaurantData.profit_percent !== undefined
+          ? String(restaurantData.profit_percent)
+          : "40";
+
+      const setupComplete =
+        restaurantData.is_setup_done === true ||
+        (!!fetchedRestaurantName &&
+          fetchedOwnerPassword !== "setup_pending" &&
+          fetchedWaiterPassword !== "setup_pending" &&
+          fetchedKitchenPassword !== "setup_pending");
+
+      setIsSetupDone(setupComplete);
+      setRestaurantName(fetchedRestaurantName || "Restaurant");
+      setOwnerPasswordFromDB(fetchedOwnerPassword);
+      setProfitPercent(fetchedProfitPercent);
+      setProfitPercentInput(fetchedProfitPercent);
+
+      if (!passwordsLoaded) {
+        setNewOwnerPassword(fetchedOwnerPassword);
+        setNewWaiterPassword(fetchedWaiterPassword);
+        setNewKitchenPassword(fetchedKitchenPassword);
+        setPasswordsLoaded(true);
+      }
+
+      if (!setupComplete) {
+        setSetupRestaurantName(fetchedRestaurantName || "");
+        setSetupOwnerPassword(
+          fetchedOwnerPassword === "setup_pending" ? "" : fetchedOwnerPassword
+        );
+        setSetupWaiterPassword(
+          fetchedWaiterPassword === "setup_pending" ? "" : fetchedWaiterPassword
+        );
+        setSetupKitchenPassword(
+          fetchedKitchenPassword === "setup_pending" ? "" : fetchedKitchenPassword
+        );
+        setOwnerUnlocked(false);
+
+        if (typeof window !== "undefined") {
+          localStorage.removeItem(`owner_logged_in_${restaurantId}`);
+        }
+      }
+    } finally {
+      restaurantFetchInFlightRef.current = false;
+      setCheckingRestaurant(false);
+    }
   }
 
   async function fetchOrders() {
     if (!restaurantId || !isSetupDone) return;
+    if (ordersFetchInFlightRef.current) return;
 
-    const { data, error } = await supabase
-      .from("orders")
-      .select("*, order_items(*)")
-      .eq("restaurant_id", restaurantId)
-      .order("created_at", { ascending: false });
+    ordersFetchInFlightRef.current = true;
 
-    if (!error && data) {
-      setOrders(data as OrderRow[]);
+    try {
+      const { data, error } = await supabase
+        .from("orders")
+        .select("*, order_items(*)")
+        .eq("restaurant_id", restaurantId)
+        .order("created_at", { ascending: false });
+
+      if (!error && data) {
+        setOrders(data as OrderRow[]);
+      }
+    } finally {
+      ordersFetchInFlightRef.current = false;
     }
   }
 
   async function fetchMenu() {
     if (!restaurantId || !isSetupDone) return;
+    if (menuFetchInFlightRef.current) return;
 
-    const { data, error } = await supabase
-      .from("menu_items")
-      .select("*")
-      .eq("restaurant_id", restaurantId)
-      .order("item_name", { ascending: true });
+    menuFetchInFlightRef.current = true;
 
-    if (!error && data) {
-      setMenuItems(data as MenuItem[]);
+    try {
+      const { data, error } = await supabase
+        .from("menu_items")
+        .select("*")
+        .eq("restaurant_id", restaurantId)
+        .order("item_name", { ascending: true });
+
+      if (!error && data) {
+        setMenuItems(data as MenuItem[]);
+      }
+    } finally {
+      menuFetchInFlightRef.current = false;
     }
   }
 
+  function scheduleOrdersRefresh(delay = 120) {
+    if (typeof window === "undefined") {
+      void fetchOrders();
+      return;
+    }
+
+    if (ordersRefreshTimerRef.current) {
+      clearTimeout(ordersRefreshTimerRef.current);
+    }
+
+    ordersRefreshTimerRef.current = setTimeout(() => {
+      ordersRefreshTimerRef.current = null;
+      void fetchOrders();
+    }, delay);
+  }
+
+  function scheduleMenuRefresh(delay = 120) {
+    if (typeof window === "undefined") {
+      void fetchMenu();
+      return;
+    }
+
+    if (menuRefreshTimerRef.current) {
+      clearTimeout(menuRefreshTimerRef.current);
+    }
+
+    menuRefreshTimerRef.current = setTimeout(() => {
+      menuRefreshTimerRef.current = null;
+      void fetchMenu();
+    }, delay);
+  }
+
+  function scheduleRestaurantRefresh(delay = 150) {
+    if (typeof window === "undefined") {
+      void fetchRestaurant();
+      return;
+    }
+
+    if (restaurantRefreshTimerRef.current) {
+      clearTimeout(restaurantRefreshTimerRef.current);
+    }
+
+    restaurantRefreshTimerRef.current = setTimeout(() => {
+      restaurantRefreshTimerRef.current = null;
+      void fetchRestaurant();
+    }, delay);
+  }
+
   useEffect(() => {
-    fetchRestaurant(true);
+    void fetchRestaurant(true);
   }, [restaurantId]);
 
   useEffect(() => {
     if (!restaurantId || !isSetupDone) return;
 
-    fetchOrders();
-    fetchMenu();
+    void fetchOrders();
+    void fetchMenu();
 
     const ordersChannel = supabase
       .channel(`owner-orders-${restaurantId}`)
@@ -439,7 +514,7 @@ useEffect(() => {
           filter: `restaurant_id=eq.${restaurantId}`,
         },
         () => {
-          fetchOrders();
+          scheduleOrdersRefresh(80);
         }
       )
       .subscribe();
@@ -455,7 +530,7 @@ useEffect(() => {
           filter: `restaurant_id=eq.${restaurantId}`,
         },
         () => {
-          fetchMenu();
+          scheduleMenuRefresh(80);
         }
       )
       .subscribe();
@@ -466,22 +541,47 @@ useEffect(() => {
         "postgres_changes",
         { event: "*", schema: "public", table: "order_items" },
         () => {
-          fetchOrders();
+          scheduleOrdersRefresh(120);
         }
       )
       .subscribe();
 
-    const interval = setInterval(() => {
-      fetchOrders();
-      fetchMenu();
-      fetchRestaurant();
-    }, 2000);
+    const restaurantsChannel = supabase
+      .channel(`owner-restaurant-${restaurantId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "restaurants",
+          filter: `id=eq.${restaurantId}`,
+        },
+        () => {
+          scheduleRestaurantRefresh(120);
+        }
+      )
+      .subscribe();
 
     return () => {
       supabase.removeChannel(ordersChannel);
       supabase.removeChannel(menuItemsChannel);
       supabase.removeChannel(orderItemsChannel);
-      clearInterval(interval);
+      supabase.removeChannel(restaurantsChannel);
+
+      if (ordersRefreshTimerRef.current) {
+        window.clearTimeout(ordersRefreshTimerRef.current);
+        ordersRefreshTimerRef.current = null;
+      }
+
+      if (menuRefreshTimerRef.current) {
+        window.clearTimeout(menuRefreshTimerRef.current);
+        menuRefreshTimerRef.current = null;
+      }
+
+      if (restaurantRefreshTimerRef.current) {
+        window.clearTimeout(restaurantRefreshTimerRef.current);
+        restaurantRefreshTimerRef.current = null;
+      }
     };
   }, [restaurantId, isSetupDone]);
 
@@ -1262,7 +1362,7 @@ const todayPaymentBreakdown = useMemo(() => {
       return;
     }
 
-    await fetchOrders();
+    scheduleOrdersRefresh(60);
     showToast(`Table ${normalizedTableNo} marked as paid`, "success", "Payment Updated");
   }
 
