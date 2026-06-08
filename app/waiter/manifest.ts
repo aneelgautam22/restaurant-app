@@ -2,22 +2,23 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "ServeX",
+    name: "ServeX Staff",
     short_name: "ServeX",
-    description: "Smart Restaurant Management",
-    display: "standalone",
+    description: "Modern Restaurant POS Staff Panel",
 
-    background_color: "#dc2626",
-    theme_color: "#dc2626",
+    display: "standalone",
+    background_color: "#0f172a",
+    theme_color: "#0f172a",
+    orientation: "portrait",
 
     icons: [
       {
-        src: "/icon-192-v2.png",
+        src: "/logo.png",
         sizes: "192x192",
         type: "image/png",
       },
       {
-        src: "/icon-512-v2.png",
+        src: "/logo.png",
         sizes: "512x512",
         type: "image/png",
       },

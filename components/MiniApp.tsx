@@ -1,0 +1,21914 @@
+"use client";
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { supabase } from "@/lib/supabase";
+import AppSplash from "@/components/AppSplash";
+import { QRCodeCanvas } from "qrcode.react";
+import jsPDF from "jspdf";
+import { miniDB } from "@/lib/mini-db";
+import type { Table } from "dexie";
+
+
+function NavSvgIcon({ type, size = 25, className = "", strokeWidth = 2.3 }: { type: "home" | "order" | "insights" | "manage" | "grid" | "logout"; size?: number; className?: string; strokeWidth?: number }) {
+  const common = {
+    width: size,
+    height: size,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    className,
+  };
+
+  if (type === "home") {
+    return (
+      <svg {...common}>
+        <path d="M3.5 10.8 12 4l8.5 6.8" />
+        <path d="M5.5 10.5V20h13v-9.5" />
+        <path d="M9.5 20v-6h5v6" />
+      </svg>
+    );
+  }
+
+  if (type === "order") {
+    return (
+      <svg {...common}>
+        <path d="M8 4h8a2 2 0 0 1 2 2v14l-3-1.5L12 20l-3-1.5L6 20V6a2 2 0 0 1 2-2Z" />
+        <path d="M9 9h6" />
+        <path d="M9 13h6" />
+        <path d="M9 17h3" />
+      </svg>
+    );
+  }
+
+  if (type === "insights") {
+    return (
+      <svg {...common}>
+        <path d="M4 19V5" />
+        <path d="M4 19h16" />
+        <path d="M8 16v-5" />
+        <path d="M12 16V8" />
+        <path d="M16 16v-9" />
+      </svg>
+    );
+  }
+
+  if (type === "manage") {
+    return (
+      <svg {...common}>
+        <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" />
+        <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.05.05a2 2 0 0 1-2.83 2.83l-.05-.05A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.35 1.05V21a2 2 0 0 1-4 0v-.07A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.87.34l-.05.05a2 2 0 0 1-2.83-2.83l.05-.05A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.05-.35H3a2 2 0 0 1 0-4h.07A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.87l-.05-.05a2 2 0 0 1 2.83-2.83l.05.05A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .35-1.05V3a2 2 0 0 1 4 0v.07A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.87-.34l.05-.05a2 2 0 0 1 2.83 2.83l-.05.05A1.7 1.7 0 0 0 19.4 9c.25.42.6.75 1 .95.32.16.68.24 1.05.24H21a2 2 0 0 1 0 4h-.07A1.7 1.7 0 0 0 19.4 15Z" />
+      </svg>
+    );
+  }
+
+  if (type === "grid") {
+    return (
+      <svg {...common}>
+        <rect x="4" y="4" width="6" height="6" rx="1.5" />
+        <rect x="14" y="4" width="6" height="6" rx="1.5" />
+        <rect x="4" y="14" width="6" height="6" rx="1.5" />
+        <rect x="14" y="14" width="6" height="6" rx="1.5" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg {...common}>
+      <path d="M10 17l5-5-5-5" />
+      <path d="M15 12H3" />
+      <path d="M21 4v16" />
+    </svg>
+  );
+}
+
+type MenuItem = {
+  id: number;
+  item_name: string;
+  price: number;
+  category?: string | null;
+  image_url?: string | null;
+  created_at?: string;
+};
+
+type OrderItem = {
+  id: number;
+  item_name: string;
+  menu_item_id?: number | null;
+  quantity: number;
+  unit_price?: number | null;
+  status?: string | null;
+  menu_item_variant_id?: number | null;
+};
+
+type OrderRow = {
+  id: number;
+  table_number: string;
+  status: string;
+  created_at: string;
+  waiter_cleared?: boolean | null;
+  is_paid?: boolean | null;
+  payment_method?: string | null;
+  paid_at?: string | null;
+  subtotal?: number | null;
+  discount_enabled?: boolean | null;
+  discount_percent?: number | null;
+  discount_amount?: number | null;
+  tax_enabled?: boolean | null;
+  tax_percent?: number | null;
+  tax_amount?: number | null;
+  grand_total?: number | null;
+  remarks?: string | null;
+  inventory_deducted?: boolean | null;
+  sync_status?: "synced" | "pending_create" | "pending_update" | "pending_payment" | "pending_delete";
+  order_items?: OrderItem[];
+};
+
+type SalesItem = {
+  item_name: string;
+  total_quantity: number;
+  total_revenue: number;
+};
+
+type MiniView =
+  | "dashboard"
+  | "order"
+  | "manage"
+  | "kitchen"
+  | "salesOverview"
+  | "report"
+  | "paymentHistory";
+
+type PopupView = "menuItems" | "inventory" | "passwords" | "settings" | "taxDiscount" | null;
+type SalesPeriod = "day" | "week" | "month" | "year";
+type InsightRange = "today" | "yesterday" | "thisWeek" | "lastWeek" | "thisMonth" | "lastMonth" | "thisYear" | "previousYear" | "lifetime" | "custom";
+type OwnerCsvPeriod = "day" | "week" | "month";
+
+type CalendarMode = "ad" | "bs";
+
+type DailyTrendPoint = {
+  date: string;
+  shortLabel: string;
+  sales: number;
+};
+
+type HoveredTrendPoint = {
+  label: string;
+  sales: number;
+  x: number;
+  y: number;
+} | null;
+
+type HourlyTrendPoint = {
+  hour: number;
+  label: string;
+  shortLabel: string;
+  sales: number;
+};
+
+type HoveredHourlyPoint = {
+  hour: number;
+  label: string;
+  sales: number;
+  x: number;
+  y: number;
+} | null;
+
+type KitchenStatusKey = "pending" | "preparing" | "ready";
+
+type GroupedTableOrder = {
+  table_number: string;
+  order_ids: number[];
+  remarks: string[];
+  items: {
+    item_name: string;
+    quantity: number;
+    total: number;
+    status: KitchenStatusKey;
+  }[];
+  total: number;
+  unpaid_orders_count: number;
+  table_status: KitchenStatusKey;
+};
+
+
+
+type BillReceiptTable = {
+  table_number: string;
+  order_ids: number[];
+  remarks: string[];
+  items: {
+    item_name: string;
+    quantity: number;
+    total: number;
+    statuses: string[];
+  }[];
+  total: number;
+  subtotal?: number;
+  discount_enabled?: boolean;
+  discount_percent?: number;
+  discount_amount?: number;
+  tax_enabled?: boolean;
+  tax_percent?: number;
+  tax_amount?: number;
+  grand_total?: number;
+  paid_amount?: number;
+  due_amount?: number;
+  payment_method?: string | null;
+  paid_at?: string | null;
+  unpaid_orders_count: number;
+  sourceOrders: OrderRow[];
+};
+
+type MenuItemVariant = {
+  id: number;
+  menu_item_id: number;
+  variant_name: string;
+  price: number;
+  created_at?: string;
+};
+
+type TakeOrderCartItem = {
+  id: string;
+  menu_id: number;
+  item_name: string;
+  price: number;
+  quantity: number;
+  variant_id?: number | null;
+  variant_name?: string | null;
+  remarks?: string;
+};
+
+type TakeOrderStep = "table" | "items";
+
+type TakeOrderCategoryMap = Record<number, string>;
+
+type EditableVariantInput = {
+  id?: number;
+  variant_name: string;
+  price: string;
+};
+
+type DraftMenuVariant = {
+  variant_name: string;
+  price: number;
+};
+
+type DraftMenuItem = {
+  id: number;
+  item_name: string;
+  price: number;
+  category: string;
+  variants?: DraftMenuVariant[];
+  existing_menu_item_id?: number | null;
+};
+
+
+type InventoryItem = {
+  id: number;
+  restaurant_id?: number;
+  item_name: string;
+  item_type: string;
+  unit: string;
+  current_stock: number;
+  low_stock_threshold?: number | null;
+  cost_per_unit?: number | null;
+  category?: string | null;
+  is_active?: boolean | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
+type MenuItemRecipeLink = {
+  id: number;
+  menu_item_id: number;
+  menu_item_variant_id?: number | null;
+  inventory_item_id: number;
+  quantity_used: number;
+  created_at?: string;
+  updated_at?: string;
+};
+
+type MenuItemStockLink = {
+  id: number;
+  menu_item_id: number;
+  menu_item_variant_id?: number | null;
+  inventory_item_id: number;
+  quantity_per_sale: number;
+  created_at?: string;
+  updated_at?: string;
+};
+
+type InventoryTransaction = {
+  id: number;
+  restaurant_id?: number;
+  inventory_item_id: number;
+  transaction_type: string;
+  quantity: number;
+  note?: string | null;
+  created_at?: string;
+};
+
+
+type Supplier = {
+  id: number;
+  restaurant_id?: number;
+  name: string;
+  phone?: string | null;
+  note?: string | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
+type SupplierPurchase = {
+  id: number;
+  restaurant_id?: number;
+  supplier_id: number;
+  inventory_item_id: number;
+  quantity: number;
+  unit_cost: number;
+  total_amount: number;
+  paid_amount: number;
+  due_amount: number;
+  note?: string | null;
+  created_at?: string;
+};
+
+type SupplierPayment = {
+  id: number;
+  restaurant_id?: number;
+  supplier_id: number;
+  amount: number;
+  note?: string | null;
+  created_at?: string;
+};
+
+type SalesTrendPoint = {
+  label: string;
+  fullLabel: string;
+  sales: number;
+};
+
+type SalesDetailBoxPoint = {
+  key: string;
+  label: string;
+  sublabel: string;
+  sales: number;
+  cardClass: string;
+  badgeClass: string;
+  badgeText: string;
+};
+
+type LocalMenuItemRow = {
+  id?: number;
+  server_id?: number | null;
+  restaurant_id: number;
+  item_name: string;
+  price: number;
+  category?: string | null;
+  image_url?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  sync_status?: "synced" | "pending_create" | "pending_update" | "pending_payment" | "pending_delete";
+};
+
+type LocalOrderRow = {
+  id?: number;
+  server_id?: number | null;
+  restaurant_id: number;
+  table_number: string;
+  status: string;
+  created_at: string;
+  updated_at?: string;
+  waiter_cleared?: boolean | null;
+  is_paid?: boolean | null;
+  payment_method?: string | null;
+  paid_at?: string | null;
+  subtotal?: number | null;
+  discount_enabled?: boolean | null;
+  discount_percent?: number | null;
+  discount_amount?: number | null;
+  tax_enabled?: boolean | null;
+  tax_percent?: number | null;
+  tax_amount?: number | null;
+  grand_total?: number | null;
+  remarks?: string | null;
+  sync_status?: "synced" | "pending_create" | "pending_update" | "pending_payment" | "pending_delete";
+};
+
+type LocalOrderItemRow = {
+  id?: number;
+  local_order_id: number;
+  server_order_id?: number | null;
+  server_id?: number | null;
+  item_name: string;
+  menu_item_id?: number | null;
+  quantity: number;
+  unit_price?: number | null;
+  status?: string | null;
+  menu_item_variant_id?: number | null;
+  created_at?: string;
+  updated_at?: string;
+  sync_status?: "synced" | "pending_create" | "pending_update" | "pending_delete";
+};
+
+type LocalRestaurantCacheRow = {
+  id?: number;
+  restaurant_id: number;
+  name: string;
+  profit_percent?: number;
+  payment_qr_url?: string;
+  restaurant_logo_url?: string;
+  inventory_enabled?: boolean;
+  enable_tax?: boolean;
+  default_tax_percent?: number;
+  enable_discount?: boolean;
+  is_setup_done?: boolean;
+  updated_at?: string;
+};
+
+type RecipeBuilderRow = {
+  rowId: string;
+  inventoryId: string;
+  quantity: string;
+  category: string;
+};
+
+type CostInsightMaterialRow = {
+  key: string;
+  item_name: string;
+  unit: string;
+  quantity: number;
+  cost: number;
+  type: string;
+};
+
+type CostInsightItemBreakdown = {
+  key: string;
+  order_id: number;
+  item_name: string;
+  quantity: number;
+  unit_price: number;
+  selling: number;
+  cost: number;
+  profit: number;
+  materials: CostInsightMaterialRow[];
+};
+
+type CostInsightBill = {
+  table_number: string;
+  order_ids: number[];
+  selling: number;
+  cost: number;
+  profit: number;
+  materials: CostInsightMaterialRow[];
+  itemBreakdowns: CostInsightItemBreakdown[];
+  orders: OrderRow[];
+  cost_locked?: boolean;
+};
+
+type OrderCostSnapshot = {
+  id: number;
+  order_id: number;
+  restaurant_id: number;
+  total_cost: number;
+  total_revenue: number;
+  total_profit: number;
+  created_at?: string;
+  table_number?: string | null;
+  order_created_at?: string | null;
+  order_paid_at?: string | null;
+  order_status?: string | null;
+  order_is_paid?: boolean | null;
+  order_payment_method?: string | null;
+  order_inventory_deducted?: boolean | null;
+  order_remarks?: string | null;
+};
+
+type OrderCostSnapshotItem = {
+  id: number;
+  order_id: number;
+  restaurant_id: number;
+  menu_item_id?: number | null;
+  menu_item_variant_id?: number | null;
+  item_name: string;
+  quantity: number;
+  unit_price: number;
+  selling: number;
+  cost: number;
+  profit: number;
+  materials: CostInsightMaterialRow[];
+  created_at?: string;
+};
+
+type TrustedDeviceRow = {
+  id: number;
+  restaurant_id: number;
+  panel: "owner" | "staff" | string;
+  device_id?: string | null;
+  device_name?: string | null;
+  is_active?: boolean | null;
+  created_at?: string | null;
+  last_used_at?: string | null;
+};
+
+const INVENTORY_UNIT_OPTIONS = ["kg", "g", "ltr", "ml", "pcs", "pack"] as const;
+
+const INVENTORY_CATEGORIES = [
+  "Meat",
+  "Vegetables",
+  "Dry Goods",
+  "Dairy",
+  "Spices",
+  "Beverages",
+  "Oils & Sauces",
+  "Packaging",
+  "Frozen Items",
+  "Other",
+] as const;
+
+type MiniAppProps = {
+  forcedRole?: "owner" | "staff";
+};
+
+export default function MiniApp({
+  forcedRole = "owner",
+}: MiniAppProps) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const restaurantIdParam = searchParams.get("id");
+  const [restaurantId, setRestaurantId] = useState<number | null>(null);
+  const [restaurantIdReady, setRestaurantIdReady] = useState(false);
+
+  const localOrdersTable = miniDB.orders as Table<LocalOrderRow, number>;
+  const localOrderItemsTable = miniDB.order_items as Table<LocalOrderItemRow, number>;
+  const localMenuItemsTable = miniDB.menu_items as Table<LocalMenuItemRow, number>;
+  const localRestaurantCacheTable = miniDB.restaurant_cache as Table<LocalRestaurantCacheRow, number>;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function resolveRestaurantId() {
+      setRestaurantIdReady(false);
+
+      const paramId = restaurantIdParam ? Number(restaurantIdParam) : null;
+
+      if (paramId && !Number.isNaN(paramId)) {
+        if (typeof window !== "undefined") {
+          localStorage.setItem("lastRestaurantId", String(paramId));
+        }
+
+        if (!cancelled) {
+          setRestaurantId(paramId);
+          setRestaurantIdReady(true);
+        }
+        return;
+      }
+
+      const savedMiniId =
+        typeof window !== "undefined" ? localStorage.getItem("mini:lastRestaurantId") : null;
+      const savedGlobalId =
+        typeof window !== "undefined" ? localStorage.getItem("lastRestaurantId") : null;
+      const savedId = savedMiniId || savedGlobalId;
+
+      if (savedId && !Number.isNaN(Number(savedId))) {
+        const normalizedSavedId = Number(savedId);
+
+        if (typeof window !== "undefined") {
+          localStorage.setItem("lastRestaurantId", String(normalizedSavedId));
+          localStorage.setItem("mini:lastRestaurantId", String(normalizedSavedId));
+        }
+
+        if (!cancelled) {
+          setRestaurantId(normalizedSavedId);
+          setRestaurantIdReady(true);
+        }
+        return;
+      }
+
+      try {
+        const [localOrders, localMenuItems, cachedRestaurants] = await Promise.all([
+          localOrdersTable.toArray(),
+          localMenuItemsTable.toArray(),
+          localRestaurantCacheTable.toArray(),
+        ]);
+
+        const latestCachedRestaurant = [...cachedRestaurants]
+          .filter((item) => Number.isFinite(Number(item.restaurant_id)) && Number(item.restaurant_id) > 0)
+          .sort((a, b) => {
+            const aTime = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+            const bTime = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+            return bTime - aTime;
+          })[0];
+
+        const fallbackIds = [
+          latestCachedRestaurant?.restaurant_id ? Number(latestCachedRestaurant.restaurant_id) : null,
+          ...localOrders
+            .sort((a, b) => new Date(b.updated_at || b.created_at).getTime() - new Date(a.updated_at || a.created_at).getTime())
+            .map((item) => Number(item.restaurant_id)),
+          ...localMenuItems
+            .sort((a, b) => new Date(b.updated_at || b.created_at || 0).getTime() - new Date(a.updated_at || a.created_at || 0).getTime())
+            .map((item) => Number(item.restaurant_id)),
+        ].filter((id): id is number => {
+          return typeof id === "number" && Number.isFinite(id) && id > 0;
+        });
+
+        const recoveredId = fallbackIds[0] || null;
+
+        if (recoveredId) {
+          if (typeof window !== "undefined") {
+            localStorage.setItem("lastRestaurantId", String(recoveredId));
+            localStorage.setItem("mini:lastRestaurantId", String(recoveredId));
+          }
+
+          if (!cancelled) {
+            setRestaurantId(recoveredId);
+            setRestaurantIdReady(true);
+          }
+          return;
+        }
+      } catch (error) {
+        console.error("Failed to recover cached restaurant id", error);
+      }
+
+      if (!cancelled) {
+        setRestaurantId(null);
+        setRestaurantIdReady(true);
+      }
+    }
+
+    resolveRestaurantId();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [restaurantIdParam]);
+
+  const [miniView, setMiniView] = useState<MiniView>(
+    "dashboard"
+  );
+  const [orderTopTab, setOrderTopTab] = useState<"orders" | "table" | "kot">("orders");
+  const [selectedTableOrderId, setSelectedTableOrderId] = useState<number | null>(null);
+  const isStaffMode = forcedRole === "staff";
+  const isOwnerMode = forcedRole === "owner";
+  const [popupView, setPopupView] = useState<PopupView>(null);
+  const [showHeaderMenu, setShowHeaderMenu] = useState(false);
+  const [menuManageMode, setMenuManageMode] = useState<"items" | "categories" | "csv">("items");
+  const [plusMenuSearch, setPlusMenuSearch] = useState("");
+  const [plusMenuDragStartY, setPlusMenuDragStartY] = useState<number | null>(null);
+  const [plusMenuDragOffsetY, setPlusMenuDragOffsetY] = useState(0);
+  const [isSwitching, setIsSwitching] = useState(false);
+  const [showQR, setShowQR] = useState(false);
+  const [settingsDevices, setSettingsDevices] = useState<TrustedDeviceRow[]>([]);
+  const [loadingSettingsDevices, setLoadingSettingsDevices] = useState(false);
+  const [removingTrustedDeviceId, setRemovingTrustedDeviceId] = useState<number | null>(null);
+  const [isOnline, setIsOnline] = useState(true);
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof navigator === "undefined") return;
+
+    const updateNetwork = () => setIsOnline(navigator.onLine);
+
+    updateNetwork();
+    window.addEventListener("online", updateNetwork);
+    window.addEventListener("offline", updateNetwork);
+
+    return () => {
+      window.removeEventListener("online", updateNetwork);
+      window.removeEventListener("offline", updateNetwork);
+    };
+  }, []);
+
+  const [showTakeOrderModal, setShowTakeOrderModal] = useState(false);
+  const [takeOrderStep, setTakeOrderStep] = useState<TakeOrderStep>("table");
+  const [takeOrderVisibleTableCount, setTakeOrderVisibleTableCount] = useState(9);
+  const [takeOrderVisibleCabinCount, setTakeOrderVisibleCabinCount] = useState(3);
+  const [takeOrderTableNumber, setTakeOrderTableNumber] = useState("");
+  const [takeOrderSearch, setTakeOrderSearch] = useState("");
+  const [showTakeOrderSearch, setShowTakeOrderSearch] = useState(false);
+  const [takeOrderSelectedCategory, setTakeOrderSelectedCategory] = useState("all");
+  const [takeOrderCategories, setTakeOrderCategories] = useState<string[]>([]);
+  const [takeOrderCategoryInput, setTakeOrderCategoryInput] = useState("");
+  const [takeOrderRemarks, setTakeOrderRemarks] = useState("");
+  const [takeOrderItems, setTakeOrderItems] = useState<TakeOrderCartItem[]>([]);
+  const [submittingTakeOrder, setSubmittingTakeOrder] = useState(false);
+  const [showTakeOrderCart, setShowTakeOrderCart] = useState(false);
+  const [cartDragStartY, setCartDragStartY] = useState<number | null>(null);
+  const [cartSheetOffsetY, setCartSheetOffsetY] = useState(0);
+  const [reportOrder, setReportOrder] = useState<OrderRow | null>(null);
+  const [reportMode, setReportMode] = useState<"kot" | "pay">("pay");
+  const [selectedPaidOrder, setSelectedPaidOrder] = useState<OrderRow | null>(null);
+  const [editingOrderId, setEditingOrderId] = useState<number | null>(null);
+  const [editingOrderLoading, setEditingOrderLoading] = useState(false);
+
+
+  const [restaurantName, setRestaurantName] = useState("");
+  const [restaurantLogoUrl, setRestaurantLogoUrl] = useState("");
+  const [restaurantLogoFile, setRestaurantLogoFile] = useState<File | null>(null);
+  const [restaurantLogoPreview, setRestaurantLogoPreview] = useState<string | null>(null);
+  const [savingRestaurantLogo, setSavingRestaurantLogo] = useState(false);
+  const [paymentQrUrl, setPaymentQrUrl] = useState("");
+  const [paymentQrFile, setPaymentQrFile] = useState<File | null>(null);
+  const [paymentQrPreview, setPaymentQrPreview] = useState<string | null>(null);
+  const [savingPaymentQr, setSavingPaymentQr] = useState(false);
+  const [inventoryEnabled, setInventoryEnabled] = useState(false);
+  const [savingInventoryEnabled, setSavingInventoryEnabled] = useState(false);
+  const [enableTax, setEnableTax] = useState(false);
+  const [defaultTaxPercent, setDefaultTaxPercent] = useState<number>(13);
+  const [enableDiscount, setEnableDiscount] = useState(false);
+  const [savingTaxDiscount, setSavingTaxDiscount] = useState(false);
+ useEffect(() => {
+  if (!restaurantId || typeof window === "undefined") return;
+
+  localStorage.setItem("lastRestaurantId", String(restaurantId));
+  localStorage.setItem("mini:lastRestaurantId", String(restaurantId));
+  localStorage.setItem("lastPanel", isStaffMode ? "waiter" : "mini");
+
+  const url = new URL(window.location.href);
+  const currentId = url.searchParams.get("id");
+  const deviceToken = url.searchParams.get("device");
+  const trustedPanel = isStaffMode ? "staff" : "owner";
+
+  if (deviceToken) {
+    localStorage.setItem("activeRestaurantId", String(restaurantId));
+    localStorage.setItem("activePanel", trustedPanel);
+    localStorage.setItem(
+      `trustedDeviceToken:${restaurantId}:${trustedPanel}`,
+      deviceToken
+    );
+  }
+
+  if (currentId !== String(restaurantId)) {
+    url.searchParams.set("id", String(restaurantId));
+    window.history.replaceState({}, "", url.toString());
+  }
+}, [restaurantId, isStaffMode]);
+  const [restaurantExists, setRestaurantExists] = useState(true);
+  const [isSetupDone, setIsSetupDone] = useState(false);
+  const [checkingRestaurant, setCheckingRestaurant] = useState(true);
+
+  const [setupRestaurantName, setSetupRestaurantName] = useState("");
+
+  const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [menuItemVariants, setMenuItemVariants] = useState<MenuItemVariant[]>([]);
+  const [showVariantSheet, setShowVariantSheet] = useState(false);
+  const [selectedVariantMenu, setSelectedVariantMenu] = useState<MenuItem | null>(null);
+  const [selectedVariantOptionId, setSelectedVariantOptionId] = useState<number | null>(null);
+  const [selectedVariantQty, setSelectedVariantQty] = useState(1);
+  const [selectedVariantRemarks, setSelectedVariantRemarks] = useState("");
+  const [variantDragStartY, setVariantDragStartY] = useState<number | null>(null);
+  const [variantSheetOffsetY, setVariantSheetOffsetY] = useState(0);
+
+  const [newItemName, setNewItemName] = useState("");
+  const [newItemPrice, setNewItemPrice] = useState("");
+  const [newItemCategory, setNewItemCategory] = useState("Uncategorized");
+  const [showNewItemCategoryPicker, setShowNewItemCategoryPicker] = useState(false);
+  const [menuItemWorkMode, setMenuItemWorkMode] = useState<"list" | "add" | "edit">("list");
+  const [manageMenuSelectedCategory, setManageMenuSelectedCategory] = useState("all");
+  const [selectedImage, setSelectedImage] = useState<File | null>(null);
+  const [selectedImagePreview, setSelectedImagePreview] = useState<string | null>(null);
+  const [newItemHasVariants, setNewItemHasVariants] = useState(false);
+  const [newItemVariants, setNewItemVariants] = useState<EditableVariantInput[]>([{ variant_name: "", price: "" }]);
+  const [draftMenuItems, setDraftMenuItems] = useState<DraftMenuItem[]>([]);
+  const [savingDraftMenuItems, setSavingDraftMenuItems] = useState(false);
+  const [savingNewMenuItem, setSavingNewMenuItem] = useState(false);
+  const csvMenuFileInputRef = useRef<HTMLInputElement | null>(null);
+  const csvInventoryItemsFileInputRef = useRef<HTMLInputElement | null>(null);
+  const csvInventoryLinksFileInputRef = useRef<HTMLInputElement | null>(null);
+  const csvInventoryPurchaseFileInputRef = useRef<HTMLInputElement | null>(null);
+
+
+  const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
+  const [archivedInventoryItems, setArchivedInventoryItems] = useState<InventoryItem[]>([]);
+  const [menuItemRecipes, setMenuItemRecipes] = useState<MenuItemRecipeLink[]>([]);
+  const [menuItemStockLinks, setMenuItemStockLinks] = useState<MenuItemStockLink[]>([]);
+  const [loadingInventory, setLoadingInventory] = useState(false);
+  const [savingInventory, setSavingInventory] = useState(false);
+  const [newInventoryItemName, setNewInventoryItemName] = useState("");
+  const [newInventoryCategory, setNewInventoryCategory] = useState("Other");
+  const [showNewInventoryCategoryPicker, setShowNewInventoryCategoryPicker] = useState(false);
+  const [showInlineInventoryCategoryForm, setShowInlineInventoryCategoryForm] = useState(false);
+  const [inlineInventoryCategoryName, setInlineInventoryCategoryName] = useState("");
+  const [newInventoryItemType, setNewInventoryItemType] = useState<"raw" | "direct">("raw");
+  const [newInventoryUnit, setNewInventoryUnit] = useState("kg");
+  const [newInventoryStock, setNewInventoryStock] = useState("");
+  const [newInventoryLowStock, setNewInventoryLowStock] = useState("");
+  const [newInventoryCost, setNewInventoryCost] = useState("");
+  const [selectedRecipeMenuId, setSelectedRecipeMenuId] = useState("");
+  const [selectedRecipeVariantId, setSelectedRecipeVariantId] = useState("");
+  const [selectedRecipeInventoryId, setSelectedRecipeInventoryId] = useState("");
+  const [recipeQuantityUsed, setRecipeQuantityUsed] = useState("");
+  const [selectedStockMenuId, setSelectedStockMenuId] = useState("");
+  const [selectedStockVariantId, setSelectedStockVariantId] = useState("");
+  const [selectedStockInventoryId, setSelectedStockInventoryId] = useState("");
+  const [stockQuantityPerSale, setStockQuantityPerSale] = useState("");
+  const [restockInventoryItemId, setRestockInventoryItemId] = useState("");
+  const [restockQuantity, setRestockQuantity] = useState("");
+  const [restockCostPerUnit, setRestockCostPerUnit] = useState("");
+  const [restockNotes, setRestockNotes] = useState("");
+  const [restockSupplier, setRestockSupplier] = useState("");
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [supplierPurchases, setSupplierPurchases] = useState<SupplierPurchase[]>([]);
+  const [supplierPayments, setSupplierPayments] = useState<SupplierPayment[]>([]);
+  const [loadingSuppliers, setLoadingSuppliers] = useState(false);
+  const [showAddSupplierForm, setShowAddSupplierForm] = useState(false);
+  const [newSupplierName, setNewSupplierName] = useState("");
+  const [newSupplierPhone, setNewSupplierPhone] = useState("");
+  const [newSupplierNote, setNewSupplierNote] = useState("");
+  const [supplierSearch, setSupplierSearch] = useState("");
+  const [restockSupplierId, setRestockSupplierId] = useState("");
+  const [restockPaidAmount, setRestockPaidAmount] = useState("");
+  const [restockPanel, setRestockPanel] = useState<"buy" | "adjustment">("buy");
+  const [adjustmentInventoryItemId, setAdjustmentInventoryItemId] = useState("");
+  const [adjustmentQuantity, setAdjustmentQuantity] = useState("");
+  const [adjustmentMode, setAdjustmentMode] = useState<"add" | "minus">("minus");
+  const [adjustmentReason, setAdjustmentReason] = useState("");
+  const [inventoryStockFilter, setInventoryStockFilter] = useState<"all" | "low">("all");
+  const [inventoryCategoryFilter, setInventoryCategoryFilter] = useState("all");
+  const [showInventorySearch, setShowInventorySearch] = useState(false);
+  const [inventorySearchQuery, setInventorySearchQuery] = useState("");
+  const [showArchivedInventoryView, setShowArchivedInventoryView] = useState(false);
+  const [inventoryTab, setInventoryTab] = useState<"items" | "recipes" | "measuringUnits" | "stockGroups" | "restock" | "history" | "suppliers" | "csvSetup" | "costInsight">("items");
+  const [inventoryRecipePanel, setInventoryRecipePanel] = useState<"addRecipe" | "menuRecipe">("menuRecipe");
+  const DEFAULT_MEASURING_UNITS = [
+    { name: "Pieces", code: "pcs" },
+    { name: "Kilogram", code: "kg" },
+    { name: "Gram", code: "g" },
+    { name: "Liter", code: "l" },
+    { name: "Milliliter", code: "ml" },
+    { name: "Packet", code: "packet" },
+    { name: "Plate", code: "plate" },
+  ];
+  const [customMeasuringUnits, setCustomMeasuringUnits] = useState<{ name: string; code: string }[]>([]);
+  const [deletedMeasuringUnitCodes, setDeletedMeasuringUnitCodes] = useState<string[]>([]);
+  const [measuringUnitSearch, setMeasuringUnitSearch] = useState("");
+  const [showAddMeasuringUnitForm, setShowAddMeasuringUnitForm] = useState(false);
+  const [newMeasuringUnitName, setNewMeasuringUnitName] = useState("");
+  const [newMeasuringUnitCode, setNewMeasuringUnitCode] = useState("");
+  const [editingMeasuringUnitCode, setEditingMeasuringUnitCode] = useState<string | null>(null);
+  const [measuringUnitsLoaded, setMeasuringUnitsLoaded] = useState(false);
+
+  const DEFAULT_STOCK_GROUPS = [
+    { name: "Meat", note: "Chicken, mutton, fish and meat items" },
+    { name: "Vegetables", note: "Fresh vegetables and greens" },
+    { name: "Dry Goods", note: "Rice, flour, lentils and dry stock" },
+    { name: "Drinks", note: "Soft drinks, water and beverages" },
+    { name: "Spices", note: "Masala, salt and seasoning" },
+    { name: "Dairy", note: "Milk, curd, cheese and butter" },
+    { name: "Frozen", note: "Frozen stock items" },
+    { name: "Packaging", note: "Takeaway boxes, bags and wraps" },
+  ];
+  const [customStockGroups, setCustomStockGroups] = useState<{ name: string; note?: string }[]>([]);
+  const [deletedStockGroupNames, setDeletedStockGroupNames] = useState<string[]>([]);
+  const [stockGroupSearch, setStockGroupSearch] = useState("");
+  const [showAddStockGroupForm, setShowAddStockGroupForm] = useState(false);
+  const [newStockGroupName, setNewStockGroupName] = useState("");
+  const [newStockGroupNote, setNewStockGroupNote] = useState("");
+  const [editingStockGroupName, setEditingStockGroupName] = useState<string | null>(null);
+  const [stockGroupsLoaded, setStockGroupsLoaded] = useState(false);
+
+  const [inventoryRecipeCategory, setInventoryRecipeCategory] = useState("all");
+  const [showRecipeMaterialForm, setShowRecipeMaterialForm] = useState(false);
+  const [desktopInventoryExpanded, setDesktopInventoryExpanded] = useState(false);
+  const [desktopInventoryContentOpen, setDesktopInventoryContentOpen] = useState(false);
+  const [desktopMenuExpanded, setDesktopMenuExpanded] = useState(false);
+  const [showInventoryMoreMenu, setShowInventoryMoreMenu] = useState(false);
+  const [costInsightSearch, setCostInsightSearch] = useState("");
+  const [selectedCostInsightBill, setSelectedCostInsightBill] = useState<CostInsightBill | null>(null);
+  const [orderCostSnapshots, setOrderCostSnapshots] = useState<OrderCostSnapshot[]>([]);
+  const [orderCostSnapshotItems, setOrderCostSnapshotItems] = useState<OrderCostSnapshotItem[]>([]);
+  const [showAddInventoryItemForm, setShowAddInventoryItemForm] = useState(false);
+  const [purchaseTransactions, setPurchaseTransactions] = useState<InventoryTransaction[]>([]);
+  const [inventorySummaryModal, setInventorySummaryModal] = useState<null | "total" | "low" | "value" | "purchase">(null);
+  const [inventoryDetailItemId, setInventoryDetailItemId] = useState<number | null>(null);
+  const [inventoryDeleteDialog, setInventoryDeleteDialog] = useState<null | {
+    item: InventoryItem;
+    recipeCount: number;
+    stockLinkCount: number;
+    linkedMenuNames: string[];
+  }>(null);
+  const [deletingInventoryItemId, setDeletingInventoryItemId] = useState<number | null>(null);
+  const [restoringInventoryItemId, setRestoringInventoryItemId] = useState<number | null>(null);
+
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setMeasuringUnitsLoaded(false);
+    try {
+      const saved = localStorage.getItem(`servex:measuringUnits:${restaurantId || "local"}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          setCustomMeasuringUnits(parsed.filter((unit) => unit?.name && unit?.code));
+          setDeletedMeasuringUnitCodes([]);
+        } else if (parsed && typeof parsed === "object") {
+          setCustomMeasuringUnits(Array.isArray(parsed.units) ? parsed.units.filter((unit: { name?: string; code?: string }) => unit?.name && unit?.code) : []);
+          setDeletedMeasuringUnitCodes(Array.isArray(parsed.deletedCodes) ? parsed.deletedCodes.filter(Boolean).map((code: string) => String(code).toLowerCase()) : []);
+        }
+      }
+    } catch {
+      setCustomMeasuringUnits([]);
+      setDeletedMeasuringUnitCodes([]);
+    } finally {
+      setMeasuringUnitsLoaded(true);
+    }
+  }, [restaurantId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !measuringUnitsLoaded) return;
+    localStorage.setItem(`servex:measuringUnits:${restaurantId || "local"}`, JSON.stringify({ units: customMeasuringUnits, deletedCodes: deletedMeasuringUnitCodes }));
+  }, [customMeasuringUnits, deletedMeasuringUnitCodes, restaurantId, measuringUnitsLoaded]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setStockGroupsLoaded(false);
+    try {
+      const saved = localStorage.getItem(`servex:stockGroups:${restaurantId || "local"}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          setCustomStockGroups(parsed.filter((group) => group?.name));
+          setDeletedStockGroupNames([]);
+        } else if (parsed && typeof parsed === "object") {
+          setCustomStockGroups(Array.isArray(parsed.groups) ? parsed.groups.filter((group: { name?: string }) => group?.name) : []);
+          setDeletedStockGroupNames(Array.isArray(parsed.deletedNames) ? parsed.deletedNames.filter(Boolean).map((name: string) => String(name).toLowerCase()) : []);
+        }
+      } else {
+        setCustomStockGroups([]);
+        setDeletedStockGroupNames([]);
+      }
+    } catch {
+      setCustomStockGroups([]);
+      setDeletedStockGroupNames([]);
+    } finally {
+      setStockGroupsLoaded(true);
+    }
+  }, [restaurantId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !stockGroupsLoaded) return;
+    localStorage.setItem(`servex:stockGroups:${restaurantId || "local"}`, JSON.stringify({ groups: customStockGroups, deletedNames: deletedStockGroupNames }));
+  }, [customStockGroups, deletedStockGroupNames, restaurantId, stockGroupsLoaded]);
+
+  const inventoryItemById = useMemo(() => {
+    return new Map(inventoryItems.map((item) => [Number(item.id), item]));
+  }, [inventoryItems]);
+
+  const menuItemById = useMemo(() => {
+    return new Map(menuItems.map((item) => [Number(item.id), item]));
+  }, [menuItems]);
+
+  const menuItemVariantById = useMemo(() => {
+    return new Map(menuItemVariants.map((item) => [Number(item.id), item]));
+  }, [menuItemVariants]);
+
+  const menuVariantsByMenuId = useMemo(() => {
+    const map = new Map<number, MenuItemVariant[]>();
+
+    menuItemVariants.forEach((variant) => {
+      const menuId = Number(variant.menu_item_id);
+      const existing = map.get(menuId);
+      if (existing) {
+        existing.push(variant);
+      } else {
+        map.set(menuId, [variant]);
+      }
+    });
+
+    return map;
+  }, [menuItemVariants]);
+
+  const recipeVariantKey = (menuId: number, variantId?: number | null) =>
+    `${Number(menuId)}:${variantId == null ? "base" : Number(variantId)}`;
+
+  const recipeLinksByMenuVariant = useMemo(() => {
+    const map = new Map<string, MenuItemRecipeLink[]>();
+
+    menuItemRecipes.forEach((link) => {
+      const key = recipeVariantKey(link.menu_item_id, link.menu_item_variant_id);
+      const existing = map.get(key);
+      if (existing) {
+        existing.push(link);
+      } else {
+        map.set(key, [link]);
+      }
+    });
+
+    return map;
+  }, [menuItemRecipes]);
+
+  const stockLinksByMenuVariant = useMemo(() => {
+    const map = new Map<string, MenuItemStockLink[]>();
+
+    menuItemStockLinks.forEach((link) => {
+      const key = recipeVariantKey(link.menu_item_id, link.menu_item_variant_id);
+      const existing = map.get(key);
+      if (existing) {
+        existing.push(link);
+      } else {
+        map.set(key, [link]);
+      }
+    });
+
+    return map;
+  }, [menuItemStockLinks]);
+
+  const recipeStatusCountByMenuId = useMemo(() => {
+    const map = new Map<number, number>();
+
+    menuItemRecipes.forEach((link) => {
+      const menuId = Number(link.menu_item_id);
+      map.set(menuId, (map.get(menuId) || 0) + 1);
+    });
+
+    menuItemStockLinks.forEach((link) => {
+      const menuId = Number(link.menu_item_id);
+      map.set(menuId, (map.get(menuId) || 0) + 1);
+    });
+
+    return map;
+  }, [menuItemRecipes, menuItemStockLinks]);
+
+  const inventoryUsageByItemId = useMemo(() => {
+    const map = new Map<number, { recipeLinks: MenuItemRecipeLink[]; stockLinks: MenuItemStockLink[] }>();
+
+    menuItemRecipes.forEach((link) => {
+      const inventoryId = Number(link.inventory_item_id);
+      const existing = map.get(inventoryId) || { recipeLinks: [], stockLinks: [] };
+      existing.recipeLinks.push(link);
+      map.set(inventoryId, existing);
+    });
+
+    menuItemStockLinks.forEach((link) => {
+      const inventoryId = Number(link.inventory_item_id);
+      const existing = map.get(inventoryId) || { recipeLinks: [], stockLinks: [] };
+      existing.stockLinks.push(link);
+      map.set(inventoryId, existing);
+    });
+
+    return map;
+  }, [menuItemRecipes, menuItemStockLinks]);
+
+  const supplierFinancialsById = useMemo(() => {
+    const map = new Map<number, { totalPurchase: number; cashPaid: number; creditLeft: number; purchaseCount: number }>();
+
+    supplierPurchases.forEach((purchase) => {
+      const supplierId = Number(purchase.supplier_id);
+      const existing = map.get(supplierId) || {
+        totalPurchase: 0,
+        cashPaid: 0,
+        creditLeft: 0,
+        purchaseCount: 0,
+      };
+
+      existing.totalPurchase += Number(purchase.total_amount || 0);
+      existing.cashPaid += Number(purchase.paid_amount || 0);
+      existing.creditLeft += Number(purchase.due_amount || 0);
+      existing.purchaseCount += 1;
+      map.set(supplierId, existing);
+    });
+
+    supplierPayments.forEach((payment) => {
+      const supplierId = Number(payment.supplier_id);
+      const existing = map.get(supplierId) || {
+        totalPurchase: 0,
+        cashPaid: 0,
+        creditLeft: 0,
+        purchaseCount: 0,
+      };
+
+      const amount = Number(payment.amount || 0);
+      existing.cashPaid += amount;
+      existing.creditLeft -= amount;
+      map.set(supplierId, existing);
+    });
+
+    map.forEach((value) => {
+      value.creditLeft = Math.max(value.creditLeft, 0);
+    });
+
+    return map;
+  }, [supplierPurchases, supplierPayments]);
+
+  const inventoryCategoryOptions = useMemo(() => {
+    const deletedGroupSet = new Set(deletedStockGroupNames.map((name) => String(name).toLowerCase()));
+    const names = [...customStockGroups.map((group) => group.name), ...DEFAULT_STOCK_GROUPS.map((group) => group.name), ...INVENTORY_CATEGORIES, ...inventoryItems.map((item) => item.category || "Other")];
+    return names.reduce<string[]>((acc, name) => {
+      const clean = String(name || "").trim() || "Other";
+      const key = clean.toLowerCase();
+      if (deletedGroupSet.has(key) || acc.some((item) => item.toLowerCase() === key)) return acc;
+      acc.push(clean);
+      return acc;
+    }, []);
+  }, [customStockGroups, deletedStockGroupNames, inventoryItems]);
+
+  const inventoryUnitUsageCountByCode = useMemo(() => {
+    const map = new Map<string, number>();
+
+    inventoryItems.forEach((item) => {
+      const code = String(item.unit || "").trim().toLowerCase();
+      if (!code) return;
+      map.set(code, (map.get(code) || 0) + 1);
+    });
+
+    return map;
+  }, [inventoryItems]);
+
+  const inventoryGroupUsageCountByName = useMemo(() => {
+    const map = new Map<string, number>();
+
+    inventoryItems.forEach((item) => {
+      const name = String(item.category || "Other").trim().toLowerCase() || "other";
+      map.set(name, (map.get(name) || 0) + 1);
+    });
+
+    return map;
+  }, [inventoryItems]);
+
+  function getInventoryCategoryOptions() {
+    return inventoryCategoryOptions;
+  }
+
+  function saveInlineInventoryCategory() {
+    const name = inlineInventoryCategoryName.trim();
+    if (!name) {
+      showToast("Category name required", "error");
+      return;
+    }
+
+    const exists = getInventoryCategoryOptions().some((category) => category.toLowerCase() === name.toLowerCase());
+    if (exists) {
+      setNewInventoryCategory(getInventoryCategoryOptions().find((category) => category.toLowerCase() === name.toLowerCase()) || name);
+      setInlineInventoryCategoryName("");
+      setShowInlineInventoryCategoryForm(false);
+      setShowNewInventoryCategoryPicker(false);
+      return;
+    }
+
+    setCustomStockGroups((prev) => [...prev, { name, note: "Added from stock item form" }]);
+    setDeletedStockGroupNames((prev) => prev.filter((item) => item !== name.toLowerCase()));
+    setNewInventoryCategory(name);
+    setInlineInventoryCategoryName("");
+    setShowInlineInventoryCategoryForm(false);
+    setShowNewInventoryCategoryPicker(false);
+    showToast("Category added", "success");
+  }
+
+
+function getInventoryTransactionBadgeClass(transactionType: string) {
+  if (transactionType === "purchase") return "bg-amber-50 text-amber-700 ring-1 ring-amber-100";
+  if (transactionType === "adjustment_minus" || transactionType === "sale_deduction" || transactionType === "waste") return "bg-rose-50 text-rose-700 ring-1 ring-rose-100";
+  if (transactionType === "adjustment_add") return "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100";
+  return "bg-slate-100 text-slate-700 ring-1 ring-slate-200";
+}
+
+function getInventoryTransactionSignedText(tx: InventoryTransaction) {
+  const negativeTypes = new Set(["adjustment_minus", "sale_deduction", "waste"]);
+  return `${negativeTypes.has(String(tx.transaction_type || "")) ? "-" : "+"}${Number(tx.quantity || 0)}`;
+}
+
+  const [editingInventoryId, setEditingInventoryId] = useState<number | null>(null);
+  const [editingInventoryItemName, setEditingInventoryItemName] = useState("");
+  const [editingInventoryCategory, setEditingInventoryCategory] = useState("Other");
+  const [editingInventoryItemType, setEditingInventoryItemType] = useState<"raw" | "direct">("raw");
+  const [editingInventoryUnit, setEditingInventoryUnit] = useState("kg");
+  const [editingInventoryStock, setEditingInventoryStock] = useState("");
+  const [editingInventoryLowStock, setEditingInventoryLowStock] = useState("");
+  const [editingInventoryCost, setEditingInventoryCost] = useState("");
+  const [editingRecipeId, setEditingRecipeId] = useState<number | null>(null);
+  const [editingRecipeMenuId, setEditingRecipeMenuId] = useState("");
+  const [editingRecipeVariantId, setEditingRecipeVariantId] = useState("");
+  const [editingRecipeInventoryId, setEditingRecipeInventoryId] = useState("");
+  const [editingRecipeQuantityUsed, setEditingRecipeQuantityUsed] = useState("");
+  const [editingStockLinkId, setEditingStockLinkId] = useState<number | null>(null);
+  const [editingStockMenuId, setEditingStockMenuId] = useState("");
+  const [editingStockVariantId, setEditingStockVariantId] = useState("");
+  const [editingStockInventoryId, setEditingStockInventoryId] = useState("");
+  const [editingStockQuantityPerSale, setEditingStockQuantityPerSale] = useState("");
+  const [recipeViewerMenuId, setRecipeViewerMenuId] = useState("");
+  const [recipeViewerVariantId, setRecipeViewerVariantId] = useState("");
+  const [ingredientLinkType, setIngredientLinkType] = useState<"raw" | "direct">("raw");
+
+  const [rawBuilderRows, setRawBuilderRows] = useState<RecipeBuilderRow[]>([{ rowId: `raw-${Date.now()}`, inventoryId: "", quantity: "", category: "all" }]);
+  const [directBuilderRows, setDirectBuilderRows] = useState<RecipeBuilderRow[]>([{ rowId: `direct-${Date.now()}`, inventoryId: "", quantity: "", category: "all" }]);
+  const [addRecipeMenuPickerOpen, setAddRecipeMenuPickerOpen] = useState(false);
+  const [addRecipeMenuSearch, setAddRecipeMenuSearch] = useState("");
+  const [addRecipeStockPickerRowId, setAddRecipeStockPickerRowId] = useState<string | null>(null);
+  const [addRecipeStockSearch, setAddRecipeStockSearch] = useState("");
+  const [quickRecipeReturnToMenu, setQuickRecipeReturnToMenu] = useState(false);
+
+  const [editingMenuId, setEditingMenuId] = useState<number | null>(null);
+  const [editingItemName, setEditingItemName] = useState("");
+  const [editingItemPrice, setEditingItemPrice] = useState("");
+  const [editingItemCategory, setEditingItemCategory] = useState("Uncategorized");
+  const [editingImage, setEditingImage] = useState<File | null>(null);
+  const [editingImageUrl, setEditingImageUrl] = useState<string | null>(null);
+  const [editingImagePreview, setEditingImagePreview] = useState<string | null>(null);
+  const [editingItemHasVariants, setEditingItemHasVariants] = useState(false);
+  const [editingItemVariants, setEditingItemVariants] = useState<EditableVariantInput[]>([{ variant_name: "", price: "" }]);
+
+  const [savingPasswords, setSavingPasswords] = useState(false);
+  const [currentOwnerPassword, setCurrentOwnerPassword] = useState("");
+  const [newOwnerPassword, setNewOwnerPassword] = useState("");
+  const [newStaffPassword, setNewStaffPassword] = useState("");
+  const [showCurrentOwnerPassword, setShowCurrentOwnerPassword] = useState(false);
+  const [showNewOwnerPassword, setShowNewOwnerPassword] = useState(false);
+  const [showNewStaffPassword, setShowNewStaffPassword] = useState(false);
+  const [logoutAllDevicesAfterPasswordChange, setLogoutAllDevicesAfterPasswordChange] = useState(false);
+  const [profitPercent, setProfitPercent] = useState<number>(40);
+  const [savingProfitPercent, setSavingProfitPercent] = useState(false);
+  const [showProfitSetupInMenuItems, setShowProfitSetupInMenuItems] = useState(false);
+
+  useEffect(() => {
+    if (inventoryEnabled) {
+      setShowProfitSetupInMenuItems(false);
+    } else {
+      setShowDashboardLowStockModal(false);
+    }
+  }, [inventoryEnabled]);
+
+  const [hoveredTrendPoint, setHoveredTrendPoint] = useState<HoveredTrendPoint>(null);
+  const [hoveredHourlyPoint, setHoveredHourlyPoint] = useState<HoveredHourlyPoint>(null);
+
+  const [tableSearch, setTableSearch] = useState("");
+  const [showChangeTableModal, setShowChangeTableModal] = useState(false);
+  const [changeTableFrom, setChangeTableFrom] = useState("");
+  const [changeTableTo, setChangeTableTo] = useState("");
+  const [changingTable, setChangingTable] = useState(false);
+  const [markingPaidTable, setMarkingPaidTable] = useState<string | null>(null);
+  const [retryingPaymentSyncOrderId, setRetryingPaymentSyncOrderId] = useState<number | null>(null);
+  const [showPaymentSyncQueue, setShowPaymentSyncQueue] = useState(false);
+  const [showDashboardLowStockModal, setShowDashboardLowStockModal] = useState(false);
+  const [localPendingPaymentOrders, setLocalPendingPaymentOrders] = useState<OrderRow[]>([]);
+  const [tablePaymentMethods, setTablePaymentMethods] = useState<
+    Record<string, "cash" | "qr" | "card">
+  >({});
+  const [tableDiscountPercents, setTableDiscountPercents] = useState<Record<string, string>>({});
+
+  const [dashboardMobileTab, setDashboardMobileTab] = useState<"unpaid" | "paid" | "activity">(
+    "unpaid"
+  );
+  const [salesPeriod, setSalesPeriod] = useState<SalesPeriod>("day");
+  const [insightRange, setInsightRange] = useState<InsightRange>("today");
+  const [showInsightRangeMenu, setShowInsightRangeMenu] = useState(false);
+  const [calendarMode, setCalendarMode] = useState<CalendarMode>("ad");
+  const [kitchenStatusExpanded, setKitchenStatusExpanded] = useState(false);
+  const [openKitchenStatusTable, setOpenKitchenStatusTable] = useState<string | null>(null);
+  const [kitchenStatusFilter, setKitchenStatusFilter] = useState<"all" | KitchenStatusKey>("all");
+  const [openedKitchenTables, setOpenedKitchenTables] = useState<Record<string, boolean>>({});
+  const [kitchenUpdatingTable, setKitchenUpdatingTable] = useState<string | null>(null);
+  const [kitchenUpdatingStatus, setKitchenUpdatingStatus] = useState<KitchenStatusKey | null>(null);
+  const [selectedKitchenKotTable, setSelectedKitchenKotTable] = useState<BillReceiptTable | null>(null);
+
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const contentScrollRef = useRef<HTMLDivElement | null>(null);
+  const ordersRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const menuRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const orderIdsRef = useRef<number[]>([]);
+
+  const getTodayLocalDate = () => {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, "0");
+    const day = String(today.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  };
+
+  const [selectedReportDate, setSelectedReportDate] = useState(getTodayLocalDate());
+  const [reportFromDate, setReportFromDate] = useState(getTodayLocalDate());
+  const [reportToDate, setReportToDate] = useState(getTodayLocalDate());
+  const [showSplash, setShowSplash] = useState(true);
+  const [toast, setToast] = useState<{
+    message: string;
+    kind: "success" | "error" | "info";
+  } | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const confirmResolverRef = useRef<((value: boolean) => void) | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    message: string;
+    confirmText: string;
+    cancelText: string;
+  } | null>(null);
+
+  useEffect(() => {
+  const timer = setTimeout(() => {
+    setShowSplash(false);
+  }, 700);
+
+  return () => clearTimeout(timer);
+}, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
+
+
+  function showToast(message: string, kind: "success" | "error" | "info" = "info") {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+    }
+    
+
+    setToast({ message, kind });
+
+    toastTimerRef.current = setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, 2200);
+  }
+  async function compressMenuImage(file: File): Promise<File> {
+  const imageBitmap = await createImageBitmap(file);
+
+  const maxSize = 600;
+  const scale = Math.min(maxSize / imageBitmap.width, maxSize / imageBitmap.height, 1);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(imageBitmap.width * scale);
+  canvas.height = Math.round(imageBitmap.height * scale);
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Image compression failed");
+
+  ctx.drawImage(imageBitmap, 0, 0, canvas.width, canvas.height);
+
+  const blob = await new Promise<Blob | null>((resolve) => {
+    canvas.toBlob(resolve, "image/webp", 0.75);
+  });
+
+  if (!blob) throw new Error("Image compression failed");
+
+  return new File(
+    [blob],
+    `${file.name.replace(/\.[^/.]+$/, "")}.webp`,
+    { type: "image/webp" }
+  );
+}
+async function uploadMenuImage(file: File) {
+  if (!restaurantId) {
+    throw new Error("Invalid restaurant link");
+  }
+
+  const compressedFile = await compressMenuImage(file);
+
+  const safeFileName = compressedFile.name
+    .toLowerCase()
+    .replace(/[^a-z0-9.]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+
+  const fileName = `${restaurantId}/${Date.now()}-${safeFileName || "menu-image.webp"}`;
+
+  const { error } = await supabase.storage
+    .from("menu-images")
+    .upload(fileName, compressedFile, {
+      cacheControl: "31536000",
+      upsert: false,
+      contentType: "image/webp",
+    });
+
+  if (error) throw error;
+
+  const { data } = supabase.storage
+    .from("menu-images")
+    .getPublicUrl(fileName);
+
+  return data.publicUrl;
+}
+async function uploadPaymentQrImage(file: File) {
+  if (!restaurantId) {
+    throw new Error("Invalid restaurant link");
+  }
+
+  // Do NOT compress payment QR images.
+  // Compression/resizing can blur QR patterns and make bank/eSewa/Fonepay scanners show "invalid QR".
+  const safeFileName = file.name
+    .toLowerCase()
+    .replace(/[^a-z0-9.]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+
+  const fileName = `${restaurantId}/${Date.now()}-${safeFileName || "payment-qr.png"}`;
+
+  const { error } = await supabase.storage
+    .from("payment-qr")
+    .upload(fileName, file, {
+      cacheControl: "31536000",
+      upsert: false,
+      contentType: file.type || "image/png",
+    });
+
+  if (error) throw error;
+
+  const { data } = supabase.storage
+    .from("payment-qr")
+    .getPublicUrl(fileName);
+
+  return data.publicUrl;
+}
+
+async function compressRestaurantLogo(file: File): Promise<File> {
+  const imageBitmap = await createImageBitmap(file);
+
+  const maxSize = 300;
+  const scale = Math.min(maxSize / imageBitmap.width, maxSize / imageBitmap.height, 1);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(imageBitmap.width * scale);
+  canvas.height = Math.round(imageBitmap.height * scale);
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Logo compression failed");
+
+  ctx.drawImage(imageBitmap, 0, 0, canvas.width, canvas.height);
+
+  const blob = await new Promise<Blob | null>((resolve) => {
+    canvas.toBlob(resolve, "image/webp", 0.72);
+  });
+
+  if (!blob) throw new Error("Logo compression failed");
+
+  return new File([blob], `${file.name.replace(/\.[^/.]+$/, "")}.webp`, {
+    type: "image/webp",
+  });
+}
+
+async function uploadRestaurantLogoImage(file: File) {
+  if (!restaurantId) {
+    throw new Error("Invalid restaurant link");
+  }
+
+  const compressedFile = await compressRestaurantLogo(file);
+
+  const safeFileName = compressedFile.name
+    .toLowerCase()
+    .replace(/[^a-z0-9.]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+
+  const fileName = `${restaurantId}/${Date.now()}-${safeFileName || "restaurant-logo.webp"}`;
+
+  const { error } = await supabase.storage
+    .from("restaurant-logos")
+    .upload(fileName, compressedFile, {
+      cacheControl: "31536000",
+      upsert: false,
+      contentType: "image/webp",
+    });
+
+  if (error) throw error;
+
+  const { data } = supabase.storage
+    .from("restaurant-logos")
+    .getPublicUrl(fileName);
+
+  return data.publicUrl;
+}
+
+  function handleSelectedMenuImageChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0] || null;
+    setSelectedImage(file);
+    setSelectedImagePreview(file ? URL.createObjectURL(file) : null);
+  }
+
+  function handleEditingMenuImageChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0] || null;
+    setEditingImage(file);
+    setEditingImagePreview(file ? URL.createObjectURL(file) : null);
+  }
+  function handleRestaurantLogoChange(event: React.ChangeEvent<HTMLInputElement>) {
+  const file = event.target.files?.[0] || null;
+
+  setRestaurantLogoFile(file);
+
+  if (file) {
+    setRestaurantLogoPreview(URL.createObjectURL(file));
+  }
+}
+
+  function handlePaymentQrChange(event: React.ChangeEvent<HTMLInputElement>) {
+  const file = event.target.files?.[0] || null;
+
+  setPaymentQrFile(file);
+
+  if (file) {
+    setPaymentQrPreview(URL.createObjectURL(file));
+  }
+}
+
+  function normalizeDefaultImageKeyword(value: string) {
+    return String(value || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function findDefaultImageUrlForItemName(
+    itemName: string,
+    rows: { keyword?: string | null; image_url?: string | null }[]
+  ) {
+    const cleanName = normalizeDefaultImageKeyword(itemName);
+    if (!cleanName) return null;
+
+    const sortedRows = [...rows].sort(
+      (a, b) => normalizeDefaultImageKeyword(b.keyword || "").length - normalizeDefaultImageKeyword(a.keyword || "").length
+    );
+
+    const matchedRow = sortedRows.find((row) => {
+      const keyword = normalizeDefaultImageKeyword(row.keyword || "");
+      return keyword && cleanName.includes(keyword) && row.image_url;
+    });
+
+    return matchedRow?.image_url || null;
+  }
+
+  async function fetchDefaultMenuImageRows() {
+    const { data, error } = await supabase
+      .from("default_menu_images")
+      .select("keyword, image_url");
+
+    if (error) {
+      console.warn("Failed to fetch default menu images", error);
+      return [];
+    }
+
+    return (data || []) as { keyword?: string | null; image_url?: string | null }[];
+  }
+
+  async function resolveMenuImageUrlForItemName(itemName: string, imageFile?: File | null) {
+    if (imageFile) {
+      return uploadMenuImage(imageFile);
+    }
+
+    const defaultImageRows = await fetchDefaultMenuImageRows();
+    return findDefaultImageUrlForItemName(itemName, defaultImageRows);
+  }
+
+  function askConfirm(
+    message: string,
+    confirmText = "Confirm",
+    cancelText = "Cancel"
+  ) {
+    return new Promise<boolean>((resolve) => {
+      confirmResolverRef.current = resolve;
+      setConfirmDialog({ message, confirmText, cancelText });
+    });
+  }
+
+  function getReadableError(error: unknown) {
+    if (error instanceof Error) {
+      return error.message || "Unknown error";
+    }
+
+    if (typeof error === "string") {
+      return error;
+    }
+
+    if (error && typeof error === "object") {
+      const maybeMessage =
+        "message" in error && typeof (error as { message?: unknown }).message === "string"
+          ? (error as { message: string }).message
+          : null;
+
+      if (maybeMessage) return maybeMessage;
+
+      const maybeErrorDescription =
+        "error_description" in error &&
+        typeof (error as { error_description?: unknown }).error_description === "string"
+          ? (error as { error_description: string }).error_description
+          : null;
+
+      if (maybeErrorDescription) return maybeErrorDescription;
+
+      const maybeDetails =
+        "details" in error && typeof (error as { details?: unknown }).details === "string"
+          ? (error as { details: string }).details
+          : null;
+
+      if (maybeDetails) return maybeDetails;
+
+      const maybeHint =
+        "hint" in error && typeof (error as { hint?: unknown }).hint === "string"
+          ? (error as { hint: string }).hint
+          : null;
+
+      if (maybeHint) return maybeHint;
+
+      try {
+        return JSON.stringify(error);
+      } catch {
+        return "Unknown error";
+      }
+    }
+
+    return "Unknown error";
+  }
+
+  function handleConfirmResponse(value: boolean) {
+    const resolver = confirmResolverRef.current;
+    confirmResolverRef.current = null;
+    setConfirmDialog(null);
+    if (resolver) resolver(value);
+  }
+
+  function isDuplicateConstraintError(error: unknown) {
+    if (!error || typeof error !== "object") return false;
+
+    const maybeError = error as { code?: unknown; message?: unknown; details?: unknown };
+    const code = typeof maybeError.code === "string" ? maybeError.code : "";
+    const message = typeof maybeError.message === "string" ? maybeError.message.toLowerCase() : "";
+    const details = typeof maybeError.details === "string" ? maybeError.details.toLowerCase() : "";
+
+    return code === "23505" || message.includes("duplicate key") || details.includes("already exists");
+  }
+
+  function getMenuDuplicateMessage(error: unknown) {
+    if (!isDuplicateConstraintError(error)) return null;
+
+    const text = getReadableError(error).toLowerCase();
+
+    if (text.includes("unique_menu_name_ci")) {
+      return "Item already exists";
+    }
+
+    if (text.includes("menu_item_variants") || text.includes("variant")) {
+      return "This variant already exists for this item";
+    }
+
+    if (text.includes("menu_categories")) {
+      return "This category already exists";
+    }
+
+    return "This menu item already exists";
+  }
+
+
+  function getRestaurantInitial() {
+    const cleanName = String(restaurantName || "Restaurant").trim();
+    return cleanName ? cleanName.charAt(0).toUpperCase() : "R";
+  }
+
+  function renderFeedbackOverlays() {
+    return (
+      <>
+        {toast && (
+          <div className="pointer-events-none fixed inset-x-0 top-4 z-[9999] flex justify-center px-4">
+            <div
+              className={`pointer-events-auto rounded-2xl px-4 py-3 text-sm font-semibold text-white shadow-[0_18px_50px_rgba(15,23,42,0.25)] ${
+                toast.kind === "success"
+                  ? "bg-emerald-600"
+                  : toast.kind === "error"
+                    ? "bg-rose-600"
+                    : "bg-slate-900"
+              }`}
+            >
+              {toast.message}
+            </div>
+          </div>
+        )}
+
+        {confirmDialog && (
+          <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-slate-900/50 px-4">
+            <div className="w-full max-w-sm rounded-[28px] bg-white p-5 shadow-[0_24px_80px_rgba(15,23,42,0.30)]">
+              <h3 className="text-lg font-bold text-slate-900">Please confirm</h3>
+              <p className="mt-2 text-sm leading-6 text-slate-600">{confirmDialog.message}</p>
+              <div className="mt-5 grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => handleConfirmResponse(false)}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700"
+                >
+                  {confirmDialog.cancelText}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleConfirmResponse(true)}
+                  className="rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white"
+                >
+                  {confirmDialog.confirmText}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {selectedKitchenKotTable && (
+          <div className="fixed inset-0 z-[9998] flex items-end justify-center bg-slate-950/60 px-4 pb-4 pt-10 sm:items-center">
+            <div className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-[30px] bg-slate-100 p-4 shadow-[0_28px_90px_rgba(15,23,42,0.35)]">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Kitchen Order Ticket</p>
+                  <h3 className="text-lg font-black text-slate-900">Table {selectedKitchenKotTable.table_number}</h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedKitchenKotTable(null)}
+                  className="rounded-full bg-white px-3 py-2 text-xs font-bold text-slate-600 shadow-sm"
+                >
+                  Close
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => selectedKitchenKotTable && printBill(selectedKitchenKotTable, "kot")}
+                className="mb-3 w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-black text-white shadow-sm"
+              >
+                Print KOT
+              </button>
+              <button
+                type="button"
+                onClick={() => selectedKitchenKotTable && downloadBill(selectedKitchenKotTable, "kot")}
+                className="mb-4 w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm font-black text-slate-800 shadow-sm"
+              >
+                Download KOT
+              </button>
+
+              <div className="mx-auto w-full max-w-[320px] rounded-sm bg-white px-4 py-5 font-mono text-slate-950 shadow-[0_14px_45px_rgba(15,23,42,0.18)]">
+                <div className="text-center">
+                  <p className="text-base font-black uppercase tracking-wide">{restaurantName || "Restaurant"}</p>
+                  <p className="mt-1 text-sm font-black">KOT</p>
+                </div>
+                <div className="my-3 border-t border-dashed border-slate-400" />
+                <div className="space-y-1 text-xs font-bold">
+                  <p>Table : {selectedKitchenKotTable.table_number}</p>
+                  <p>Time  : {formatBillDate(getPrimaryOrderTime(selectedKitchenKotTable))}</p>
+                  <p>Orders: {selectedKitchenKotTable.order_ids.join(", ")}</p>
+                </div>
+                <div className="my-3 border-t border-dashed border-slate-400" />
+                {(() => {
+                  const activeKotItems = getActiveKotItems(selectedKitchenKotTable.items);
+                  const readyKotItems = getReadyKotItems(selectedKitchenKotTable.items);
+                  const activeQty = activeKotItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+
+                  return (
+                    <>
+                      <div className="space-y-2 text-sm">
+                        {activeKotItems.length > 0 && (
+                          <div className="rounded-xl bg-orange-50 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-orange-700">
+                            New / remaining items — print हुने items
+                          </div>
+                        )}
+                        {activeKotItems.map((item, itemIndex) => (
+                          <div key={`kot-modal-active-item-${itemIndex}`} className="grid grid-cols-[1fr_auto] gap-3">
+                            <p className="break-words font-black">{item.item_name}</p>
+                            <p className="font-black">x{item.quantity}</p>
+                          </div>
+                        ))}
+                        {readyKotItems.length > 0 && (
+                          <div className="mt-2 space-y-2 border-t border-dashed border-slate-300 pt-2">
+                            <div className="rounded-xl bg-slate-100 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-slate-500">
+                              Already ready — print हुँदैन
+                            </div>
+                            {readyKotItems.map((item, itemIndex) => (
+                              <div key={`kot-modal-ready-item-${itemIndex}`} className="grid grid-cols-[1fr_auto] gap-3 rounded-xl bg-slate-100/80 px-2 py-2 opacity-45 blur-[0.35px]">
+                                <p className="break-words font-black line-through decoration-slate-500/60">{item.item_name}</p>
+                                <p className="font-black line-through decoration-slate-500/60">x{item.quantity}</p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <div className="my-3 border-t border-dashed border-slate-400" />
+                      <div className="space-y-1 text-xs font-bold">
+                        <div className="flex justify-between"><span>Print Items</span><span>{activeKotItems.length}</span></div>
+                        <div className="flex justify-between"><span>Print Qty</span><span>{activeQty}</span></div>
+                        {readyKotItems.length > 0 && (
+                          <div className="flex justify-between text-slate-500"><span>Ready Hidden From Print</span><span>{readyKotItems.length}</span></div>
+                        )}
+                      </div>
+                    </>
+                  );
+                })()}
+                {selectedKitchenKotTable.remarks.length > 0 && (
+                  <>
+                    <div className="my-3 border-t border-dashed border-slate-400" />
+                    <p className="text-xs font-black uppercase">Remarks</p>
+                    <div className="mt-1 space-y-1 text-xs font-bold">
+                      {selectedKitchenKotTable.remarks.map((remark, remarkIndex) => (
+                        <p key={`kot-modal-remark-${remarkIndex}`}>• {remark}</p>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </>
+    );
+  }
+
+  useEffect(() => {
+    // Permanent auth rule: /launcher verifies hashed passwords and writes activePanel.
+    // MiniApp does not perform any plain-password unlock.
+    }, [restaurantId, isStaffMode]);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (!menuRef.current) return;
+      if (!menuRef.current.contains(event.target as Node)) {
+        setShowHeaderMenu(false);
+      }
+    }
+
+    if (showHeaderMenu) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [showHeaderMenu]);
+
+  useEffect(() => {
+    if (popupView === "settings") {
+      fetchTrustedDevicesForSettings();
+    }
+  }, [popupView, restaurantId]);
+
+
+  useEffect(() => {
+    if (!isStaffMode) return;
+
+    if (!(["dashboard", "order"] as MiniView[]).includes(miniView)) {
+      setMiniView("dashboard");
+    }
+
+    if (popupView !== null) {
+      setPopupView(null);
+    }
+
+    setShowQR(false);
+    setShowHeaderMenu(false);
+    setShowProfitSetupInMenuItems(false);
+  }, [isStaffMode, miniView, popupView]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+
+    const previousTitle = document.title;
+   document.title = isStaffMode ? "ServeX Staff" : "ServeX Owner";
+
+    return () => {
+      document.title = previousTitle;
+    };
+  }, [isStaffMode]);
+
+  useEffect(() => {
+    if (!isStaffMode || typeof window === "undefined") return;
+
+    const handlePopState = () => {
+      setPopupView(null);
+      setShowQR(false);
+      setShowHeaderMenu(false);
+      setMiniView((current) => ((["dashboard", "order"] as MiniView[]).includes(current) ? current : "dashboard"));
+    };
+
+    window.addEventListener("popstate", handlePopState);
+
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, [isStaffMode]);
+
+  useEffect(() => {
+    if (!isStaffMode || !restaurantId || !isOnline) return;
+
+    const timer = window.setInterval(() => {
+      fetchOrders();
+      syncLocalChanges();
+    }, 8000);
+
+    return () => window.clearInterval(timer);
+  }, [isStaffMode, restaurantId, isOnline]);
+
+  function scrollMainContentToTop() {
+    if (contentScrollRef.current) {
+      contentScrollRef.current.scrollTo({ top: 0, behavior: "auto" });
+    }
+  }
+
+  function scheduleOrdersRefresh(delay = 500) {
+    if (ordersRefreshTimeoutRef.current) {
+      clearTimeout(ordersRefreshTimeoutRef.current);
+    }
+
+    ordersRefreshTimeoutRef.current = setTimeout(() => {
+      ordersRefreshTimeoutRef.current = null;
+      fetchOrders();
+    }, delay);
+  }
+
+  function scheduleMenuRefresh(delay = 120) {
+    if (menuRefreshTimeoutRef.current) {
+      clearTimeout(menuRefreshTimeoutRef.current);
+    }
+
+    menuRefreshTimeoutRef.current = setTimeout(() => {
+      menuRefreshTimeoutRef.current = null;
+      fetchMenu();
+    }, delay);
+  }
+
+  function changeView(view: MiniView) {
+    if (isStaffMode && !(["dashboard", "order"] as MiniView[]).includes(view)) {
+      setMiniView("dashboard");
+      setPopupView(null);
+      setShowQR(false);
+      setShowHeaderMenu(false);
+      showToast("Staff can access only Dashboard and Order", "error");
+      return;
+    }
+
+    if (miniView === view && popupView === null) {
+      scrollMainContentToTop();
+      return;
+    }
+
+    setIsSwitching(true);
+    setShowHeaderMenu(false);
+    setDesktopInventoryContentOpen(false);
+    setDesktopMenuExpanded(false);
+
+    // 🔥 instant switch
+    setMiniView(view);
+    setPopupView(null);
+    scrollMainContentToTop();
+
+    // 🔥 smooth without delay
+    requestAnimationFrame(() => {
+      setIsSwitching(false);
+    });
+  }
+
+
+  const miniQrLink =
+    typeof window !== "undefined" && restaurantId
+      ? `${window.location.origin}/launcher?id=${restaurantId}`
+      : "";
+
+  function openQrAccess() {
+    if (isStaffMode) {
+      showToast("Staff cannot access QR settings", "error");
+      return;
+    }
+
+    if (!restaurantId) {
+      showToast("Invalid restaurant link", "error");
+      return;
+    }
+
+    setShowHeaderMenu(false);
+    setDesktopInventoryContentOpen(false);
+    setShowQR(true);
+  }
+
+  async function copyMiniQrLink() {
+    if (!miniQrLink) {
+      showToast("Link not ready", "error");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(miniQrLink);
+      showToast("Link copied", "success");
+    } catch {
+      showToast("Failed to copy link", "error");
+    }
+  }
+
+  function downloadMiniQr() {
+    if (!restaurantId) {
+      showToast("Invalid restaurant link", "error");
+      return;
+    }
+
+    const canvas = document.getElementById("mini-qr-canvas") as HTMLCanvasElement | null;
+
+    if (!canvas) {
+      showToast("QR not found", "error");
+      return;
+    }
+
+    const pngUrl = canvas.toDataURL("image/png");
+    const link = document.createElement("a");
+    link.href = pngUrl;
+    link.download = `mini-qr-${restaurantId}.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+
+  function escapeCsvValue(value: unknown) {
+    const text = String(value ?? "");
+
+    if (/[",\n\r]/.test(text)) {
+      return `"${text.replace(/"/g, '""')}"`;
+    }
+
+    return text;
+  }
+
+  function downloadCsvFile(filename: string, rows: unknown[][]) {
+    const csv = rows
+      .map((row) => row.map(escapeCsvValue).join(","))
+      .join("\n");
+
+    const blob = new Blob(["\uFEFF" + csv], {
+      type: "text/csv;charset=utf-8;",
+    });
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = filename;
+
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    URL.revokeObjectURL(url);
+  }
+
+  function getOwnerCsvRange(period: OwnerCsvPeriod) {
+    const end = new Date();
+    end.setHours(23, 59, 59, 999);
+
+    const start = new Date();
+
+    if (period === "day") {
+      start.setHours(0, 0, 0, 0);
+    }
+
+    if (period === "week") {
+      start.setDate(start.getDate() - 6);
+      start.setHours(0, 0, 0, 0);
+    }
+
+    if (period === "month") {
+      start.setDate(start.getDate() - 29);
+      start.setHours(0, 0, 0, 0);
+    }
+
+    return {
+      start,
+      end,
+      startIso: start.toISOString(),
+      endIso: end.toISOString(),
+      startDate: getLocalDateString(start.toISOString()),
+      endDate: getLocalDateString(end.toISOString()),
+    };
+  }
+
+  function getOwnerCsvPeriodLabel(period: OwnerCsvPeriod) {
+    if (period === "day") return "today";
+    if (period === "week") return "last-7-days";
+    return "last-30-days";
+  }
+
+  function getOwnerCsvSafeFilename(label: string, type: "summary" | "item-details") {
+    return `${restaurantName || "restaurant"}-${label}-${type}-report.csv`
+      .toLowerCase()
+      .replace(/[^a-z0-9.-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+  }
+
+  function getOwnerCsvRangeFromDates(fromDate: string, toDate: string) {
+    const start = new Date(`${fromDate}T00:00:00`);
+    const end = new Date(`${toDate}T23:59:59.999`);
+
+    return {
+      start,
+      end,
+      startIso: start.toISOString(),
+      endIso: end.toISOString(),
+      startDate: fromDate,
+      endDate: toDate,
+    };
+  }
+
+  function assertValidReportDateRange(fromDate: string, toDate: string) {
+    if (!fromDate || !toDate) {
+      showToast("Please select date range", "error");
+      return false;
+    }
+
+    if (fromDate > toDate) {
+      showToast("From date cannot be greater than To date", "error");
+      return false;
+    }
+
+    return true;
+  }
+
+  async function fetchPaidOrdersForCsv(range: { startIso: string; endIso: string }) {
+    if (!restaurantId) return [];
+
+    const { data, error } = await supabase
+      .from("orders")
+      .select(
+        `
+        id,
+        table_number,
+        created_at,
+        paid_at,
+        payment_method,
+        subtotal,
+        discount_enabled,
+        discount_percent,
+        discount_amount,
+        tax_enabled,
+        tax_percent,
+        tax_amount,
+        grand_total,
+        remarks,
+        order_items (
+          id,
+          item_name,
+          quantity,
+          unit_price,
+          menu_item_id,
+          menu_item_variant_id
+        )
+      `
+      )
+      .eq("restaurant_id", restaurantId)
+      .eq("is_paid", true)
+      .gte("paid_at", range.startIso)
+      .lte("paid_at", range.endIso)
+      .order("paid_at", { ascending: true });
+
+    if (error) throw error;
+
+    return (data || []) as OrderRow[];
+  }
+
+  async function fetchOrderCostSnapshotMap(orderIds: number[]) {
+    const snapshotMap = new Map<number, OrderCostSnapshot>();
+
+    if (!restaurantId || !inventoryEnabled || orderIds.length === 0) {
+      return snapshotMap;
+    }
+
+    const { data, error } = await supabase
+      .from("order_cost_snapshots")
+      .select("id, order_id, restaurant_id, total_cost, total_revenue, total_profit, created_at")
+      .eq("restaurant_id", restaurantId)
+      .in("order_id", orderIds);
+
+    if (error) throw error;
+
+    ((data || []) as OrderCostSnapshot[]).forEach((snapshot) => {
+      snapshotMap.set(Number(snapshot.order_id), snapshot);
+    });
+
+    return snapshotMap;
+  }
+
+  async function fetchOrderCostSnapshotItemMap(orderIds: number[]) {
+    const costItemMap = new Map<string, OrderCostSnapshotItem>();
+
+    if (!restaurantId || !inventoryEnabled || orderIds.length === 0) {
+      return costItemMap;
+    }
+
+    const { data, error } = await supabase
+      .from("order_cost_snapshot_items")
+      .select(
+        "id, order_id, restaurant_id, menu_item_id, menu_item_variant_id, item_name, quantity, unit_price, selling, cost, profit, materials, created_at"
+      )
+      .eq("restaurant_id", restaurantId)
+      .in("order_id", orderIds);
+
+    if (error) throw error;
+
+    ((data || []) as OrderCostSnapshotItem[]).forEach((item) => {
+      const key = [
+        Number(item.order_id),
+        Number(item.menu_item_id || 0),
+        Number(item.menu_item_variant_id || 0),
+        String(item.item_name || "").trim().toLowerCase(),
+      ].join("|");
+
+      costItemMap.set(key, item);
+    });
+
+    return costItemMap;
+  }
+
+  function getOrderTotalForCsv(order: OrderRow) {
+    const storedGrandTotal = Number(order.grand_total || 0);
+    if (storedGrandTotal > 0) return storedGrandTotal;
+
+    return (order.order_items || []).reduce((sum, item) => {
+      return sum + Number(item.quantity || 0) * Number(item.unit_price || 0);
+    }, 0);
+  }
+
+  async function downloadOwnerSummaryCsvForDates(fromDate: string, toDate: string, label?: string) {
+    if (!isOwnerMode) {
+      showToast("Only owner can download report", "error");
+      return;
+    }
+
+    if (!restaurantId) {
+      showToast("Invalid restaurant link", "error");
+      return;
+    }
+
+    if (!assertValidReportDateRange(fromDate, toDate)) return;
+
+    try {
+      const range = getOwnerCsvRangeFromDates(fromDate, toDate);
+      const ordersForCsv = await fetchPaidOrdersForCsv(range);
+
+      if (ordersForCsv.length === 0) {
+        showToast("No paid orders found for this period", "info");
+        return;
+      }
+
+      const orderIds = ordersForCsv
+        .map((order) => Number(order.id))
+        .filter((id) => Number.isFinite(id) && id > 0);
+
+      const snapshotMap = await fetchOrderCostSnapshotMap(orderIds);
+      const dayMap = new Map<
+        string,
+        {
+          date: string;
+          totalSales: number;
+          paidOrders: number;
+          itemsSold: number;
+          cashSales: number;
+          qrSales: number;
+          cardSales: number;
+          totalCost: number;
+          totalProfit: number;
+        }
+      >();
+
+      ordersForCsv.forEach((order) => {
+        const paidDate = order.paid_at ? getLocalDateString(order.paid_at) : "unknown";
+        const orderTotal = getOrderTotalForCsv(order);
+        const method = order.payment_method === "qr" || order.payment_method === "card" ? order.payment_method : "cash";
+        const itemCount = (order.order_items || []).reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+        const snapshot = snapshotMap.get(Number(order.id));
+
+        const current = dayMap.get(paidDate) || {
+          date: paidDate,
+          totalSales: 0,
+          paidOrders: 0,
+          itemsSold: 0,
+          cashSales: 0,
+          qrSales: 0,
+          cardSales: 0,
+          totalCost: 0,
+          totalProfit: 0,
+        };
+
+        current.totalSales += orderTotal;
+        current.paidOrders += 1;
+        current.itemsSold += itemCount;
+        current.cashSales += method === "cash" ? orderTotal : 0;
+        current.qrSales += method === "qr" ? orderTotal : 0;
+        current.cardSales += method === "card" ? orderTotal : 0;
+
+        if (inventoryEnabled) {
+          current.totalCost += Number(snapshot?.total_cost || 0);
+          current.totalProfit += Number(snapshot?.total_profit || 0);
+        }
+
+        dayMap.set(paidDate, current);
+      });
+
+      const header = inventoryEnabled
+        ? ["date", "total_sales", "paid_orders", "items_sold", "cash_sales", "qr_sales", "card_sales", "total_cost", "total_profit"]
+        : ["date", "total_sales", "paid_orders", "items_sold", "cash_sales", "qr_sales", "card_sales"];
+
+      const rows: unknown[][] = [header];
+
+      Array.from(dayMap.values())
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .forEach((day) => {
+          if (inventoryEnabled) {
+            rows.push([
+              day.date,
+              day.totalSales,
+              day.paidOrders,
+              day.itemsSold,
+              day.cashSales,
+              day.qrSales,
+              day.cardSales,
+              day.totalCost,
+              day.totalProfit,
+            ]);
+            return;
+          }
+
+          rows.push([
+            day.date,
+            day.totalSales,
+            day.paidOrders,
+            day.itemsSold,
+            day.cashSales,
+            day.qrSales,
+            day.cardSales,
+          ]);
+        });
+
+      const fileLabel = label || `${fromDate}-to-${toDate}`;
+      downloadCsvFile(getOwnerCsvSafeFilename(fileLabel, "summary"), rows);
+      showToast("Summary CSV downloaded", "success");
+    } catch (error) {
+      console.error("Summary CSV download failed", error);
+      showToast(getReadableError(error) || "Summary CSV download failed", "error");
+    }
+  }
+
+  async function downloadOwnerItemDetailsCsvForDates(fromDate: string, toDate: string, label?: string) {
+    if (!isOwnerMode) {
+      showToast("Only owner can download report", "error");
+      return;
+    }
+
+    if (!restaurantId) {
+      showToast("Invalid restaurant link", "error");
+      return;
+    }
+
+    if (!assertValidReportDateRange(fromDate, toDate)) return;
+
+    try {
+      const range = getOwnerCsvRangeFromDates(fromDate, toDate);
+      const ordersForCsv = await fetchPaidOrdersForCsv(range);
+
+      if (ordersForCsv.length === 0) {
+        showToast("No paid orders found for this period", "info");
+        return;
+      }
+
+      const orderIds = ordersForCsv
+        .map((order) => Number(order.id))
+        .filter((id) => Number.isFinite(id) && id > 0);
+
+      const costItemMap = await fetchOrderCostSnapshotItemMap(orderIds);
+
+      const header = inventoryEnabled
+        ? [
+            "paid_date",
+            "order_id",
+            "table_number",
+            "item_name",
+            "quantity",
+            "unit_price",
+            "item_total",
+            "payment_method",
+            "paid_time",
+            "item_cost",
+            "item_profit",
+            "remarks",
+          ]
+        : [
+            "paid_date",
+            "order_id",
+            "table_number",
+            "item_name",
+            "quantity",
+            "unit_price",
+            "item_total",
+            "payment_method",
+            "paid_time",
+            "remarks",
+          ];
+
+      const rows: unknown[][] = [header];
+
+      ordersForCsv.forEach((order) => {
+        const paidDate = order.paid_at ? getLocalDateString(order.paid_at) : "";
+        const paidTimeText = order.paid_at ? new Date(order.paid_at).toLocaleString() : "";
+        const items = order.order_items || [];
+
+        items.forEach((item) => {
+          const quantity = Number(item.quantity || 0);
+          const unitPrice = Number(item.unit_price || 0);
+          const itemTotal = quantity * unitPrice;
+
+          if (inventoryEnabled) {
+            const costKey = [
+              Number(order.id),
+              Number(item.menu_item_id || 0),
+              Number(item.menu_item_variant_id || 0),
+              String(item.item_name || "").trim().toLowerCase(),
+            ].join("|");
+
+            const lockedCostItem = costItemMap.get(costKey);
+
+            rows.push([
+              paidDate,
+              order.id,
+              order.table_number,
+              item.item_name,
+              quantity,
+              unitPrice,
+              itemTotal,
+              order.payment_method || "cash",
+              paidTimeText,
+              lockedCostItem ? Number(lockedCostItem.cost || 0) : "",
+              lockedCostItem ? Number(lockedCostItem.profit || 0) : "",
+              order.remarks || "",
+            ]);
+
+            return;
+          }
+
+          rows.push([
+            paidDate,
+            order.id,
+            order.table_number,
+            item.item_name,
+            quantity,
+            unitPrice,
+            itemTotal,
+            order.payment_method || "cash",
+            paidTimeText,
+            order.remarks || "",
+          ]);
+        });
+      });
+
+      const fileLabel = label || `${fromDate}-to-${toDate}`;
+      downloadCsvFile(getOwnerCsvSafeFilename(fileLabel, "item-details"), rows);
+      showToast("Item details CSV downloaded", "success");
+    } catch (error) {
+      console.error("Item details CSV download failed", error);
+      showToast(getReadableError(error) || "Item details CSV download failed", "error");
+    }
+  }
+
+
+
+  async function buildOwnerSummaryReportData(fromDate: string, toDate: string, label?: string) {
+    const range = getOwnerCsvRangeFromDates(fromDate, toDate);
+    const ordersForReport = await fetchPaidOrdersForCsv(range);
+
+    if (ordersForReport.length === 0) {
+      return null;
+    }
+
+    const orderIds = ordersForReport
+      .map((order) => Number(order.id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+
+    const snapshotMap = await fetchOrderCostSnapshotMap(orderIds);
+
+    let totalSales = 0;
+    let totalOrders = 0;
+    let itemsSold = 0;
+    let cashSales = 0;
+    let qrSales = 0;
+    let cardSales = 0;
+    let totalCost = 0;
+    let totalProfit = 0;
+
+    const itemTotals = new Map<string, { item_name: string; quantity: number; revenue: number }>();
+
+    ordersForReport.forEach((order) => {
+      const orderTotal = getOrderTotalForCsv(order);
+      const method = order.payment_method === "qr" || order.payment_method === "card" ? order.payment_method : "cash";
+      const snapshot = snapshotMap.get(Number(order.id));
+
+      totalSales += orderTotal;
+      totalOrders += 1;
+
+      if (method === "cash") cashSales += orderTotal;
+      if (method === "qr") qrSales += orderTotal;
+      if (method === "card") cardSales += orderTotal;
+
+      if (inventoryEnabled) {
+        totalCost += Number(snapshot?.total_cost || 0);
+        totalProfit += Number(snapshot?.total_profit || 0);
+      }
+
+      (order.order_items || []).forEach((item) => {
+        const quantity = Number(item.quantity || 0);
+        const unitPrice = Number(item.unit_price || 0);
+        const key = String(item.item_name || "").trim().toLowerCase();
+        const existing = itemTotals.get(key) || {
+          item_name: String(item.item_name || "Unknown Item"),
+          quantity: 0,
+          revenue: 0,
+        };
+
+        existing.quantity += quantity;
+        existing.revenue += quantity * unitPrice;
+        itemsSold += quantity;
+
+        itemTotals.set(key, existing);
+      });
+    });
+
+    const topItems = Array.from(itemTotals.values())
+      .sort((a, b) => b.quantity - a.quantity || b.revenue - a.revenue)
+      .slice(0, 5);
+
+    return {
+      periodLabel: label || `${fromDate} to ${toDate}`,
+      generatedAt: new Date().toLocaleString(),
+      totalSales,
+      totalOrders,
+      itemsSold,
+      cashSales,
+      qrSales,
+      cardSales,
+      totalCost,
+      totalProfit,
+      topItems,
+    };
+  }
+
+  function formatMoneyForReport(value: number) {
+    return `Rs. ${Number(value || 0).toFixed(2)}`;
+  }
+
+  function escapeHtmlForReport(value: unknown) {
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  async function printOwnerSummaryForDates(fromDate: string, toDate: string, label?: string) {
+    if (!isOwnerMode) {
+      showToast("Only owner can print report", "error");
+      return;
+    }
+
+    if (!restaurantId) {
+      showToast("Invalid restaurant link", "error");
+      return;
+    }
+
+    if (!assertValidReportDateRange(fromDate, toDate)) return;
+
+    try {
+      const report = await buildOwnerSummaryReportData(fromDate, toDate, label);
+
+      if (!report) {
+        showToast("No paid orders found for this period", "info");
+        return;
+      }
+
+      const topItemsHtml =
+        report.topItems.length === 0
+          ? "<p class='muted'>No item data found.</p>"
+          : report.topItems
+              .map(
+                (item, index) => `
+                  <div class="row">
+                    <span>${index + 1}. ${escapeHtmlForReport(item.item_name)} · Qty ${item.quantity}</span>
+                    <strong>${formatMoneyForReport(item.revenue)}</strong>
+                  </div>
+                `
+              )
+              .join("");
+
+      const printWindow = window.open("", "_blank", "width=420,height=720");
+
+      if (!printWindow) {
+        showToast("Popup blocked. Allow popup to print.", "error");
+        return;
+      }
+
+      printWindow.document.write(`
+        <!doctype html>
+        <html>
+          <head>
+            <title>Sales Summary Report</title>
+            <style>
+              * { box-sizing: border-box; }
+              body {
+                margin: 0;
+                padding: 18px;
+                font-family: Arial, sans-serif;
+                color: #0f172a;
+                background: #ffffff;
+              }
+              .paper {
+                width: 100%;
+                max-width: 380px;
+                margin: 0 auto;
+              }
+              .center { text-align: center; }
+              h1 {
+                margin: 0;
+                font-size: 18px;
+                font-weight: 800;
+              }
+              h2 {
+                margin: 5px 0 0;
+                font-size: 14px;
+                font-weight: 800;
+              }
+              .muted {
+                color: #64748b;
+                font-size: 11px;
+                margin: 4px 0;
+              }
+              .line {
+                border-top: 1px dashed #94a3b8;
+                margin: 12px 0;
+              }
+              .row {
+                display: flex;
+                justify-content: space-between;
+                gap: 12px;
+                padding: 5px 0;
+                font-size: 12px;
+              }
+              .row strong {
+                white-space: nowrap;
+              }
+              .section-title {
+                margin: 0 0 6px;
+                font-size: 12px;
+                font-weight: 800;
+                text-transform: uppercase;
+                letter-spacing: 0.08em;
+              }
+              @media print {
+                body { padding: 8px; }
+                .paper { max-width: none; }
+              }
+            </style>
+          </head>
+          <body>
+            <div class="paper">
+              <div class="center">
+                <h1>${escapeHtmlForReport(restaurantName || "Restaurant")}</h1>
+                <h2>Sales Summary Report</h2>
+                <p class="muted">Period: ${escapeHtmlForReport(report.periodLabel)}</p>
+                <p class="muted">Generated: ${escapeHtmlForReport(report.generatedAt)}</p>
+              </div>
+
+              <div class="line"></div>
+
+              <div class="row"><span>Total Sales</span><strong>${formatMoneyForReport(report.totalSales)}</strong></div>
+              <div class="row"><span>Paid Orders</span><strong>${report.totalOrders}</strong></div>
+              <div class="row"><span>Items Sold</span><strong>${report.itemsSold}</strong></div>
+              <div class="row"><span>Avg Order</span><strong>${formatMoneyForReport(report.totalOrders > 0 ? report.totalSales / report.totalOrders : 0)}</strong></div>
+
+              <div class="line"></div>
+
+              <div class="row"><span>Cash Sales</span><strong>${formatMoneyForReport(report.cashSales)}</strong></div>
+              <div class="row"><span>QR Sales</span><strong>${formatMoneyForReport(report.qrSales)}</strong></div>
+              <div class="row"><span>Card Sales</span><strong>${formatMoneyForReport(report.cardSales)}</strong></div>
+
+              ${
+                inventoryEnabled
+                  ? `
+                    <div class="line"></div>
+                    <div class="row"><span>Total Cost</span><strong>${formatMoneyForReport(report.totalCost)}</strong></div>
+                    <div class="row"><span>Total Profit</span><strong>${formatMoneyForReport(report.totalProfit)}</strong></div>
+                  `
+                  : ""
+              }
+
+              <div class="line"></div>
+              <p class="section-title">Top Selling Items</p>
+              ${topItemsHtml}
+
+              <div class="line"></div>
+              <p class="muted center">Use Item Details CSV for full order-level details.</p>
+            </div>
+
+            <script>
+              window.onload = function () {
+                window.focus();
+                window.print();
+              };
+            </script>
+          </body>
+        </html>
+      `);
+
+      printWindow.document.close();
+      showToast("Print report opened", "success");
+    } catch (error) {
+      console.error("Summary print failed", error);
+      showToast(getReadableError(error) || "Summary print failed", "error");
+    }
+  }
+
+  async function printOwnerSummary(period: OwnerCsvPeriod) {
+    const range = getOwnerCsvRange(period);
+    await printOwnerSummaryForDates(range.startDate, range.endDate, getOwnerCsvPeriodLabel(period));
+  }
+
+  async function downloadOwnerSummaryPdfForDates(fromDate: string, toDate: string, label?: string) {
+    if (!isOwnerMode) {
+      showToast("Only owner can download report", "error");
+      return;
+    }
+
+    if (!restaurantId) {
+      showToast("Invalid restaurant link", "error");
+      return;
+    }
+
+    if (!assertValidReportDateRange(fromDate, toDate)) return;
+
+    try {
+      const range = getOwnerCsvRangeFromDates(fromDate, toDate);
+      const ordersForPdf = await fetchPaidOrdersForCsv(range);
+
+      if (ordersForPdf.length === 0) {
+        showToast("No paid orders found for this period", "info");
+        return;
+      }
+
+      const orderIds = ordersForPdf
+        .map((order) => Number(order.id))
+        .filter((id) => Number.isFinite(id) && id > 0);
+
+      const snapshotMap = await fetchOrderCostSnapshotMap(orderIds);
+
+      let totalSales = 0;
+      let totalOrders = 0;
+      let itemsSold = 0;
+      let cashSales = 0;
+      let qrSales = 0;
+      let cardSales = 0;
+      let totalCost = 0;
+      let totalProfit = 0;
+
+      const itemTotals = new Map<string, { item_name: string; quantity: number; revenue: number }>();
+
+      ordersForPdf.forEach((order) => {
+        const orderTotal = getOrderTotalForCsv(order);
+        const method = order.payment_method === "qr" || order.payment_method === "card" ? order.payment_method : "cash";
+        const snapshot = snapshotMap.get(Number(order.id));
+
+        totalSales += orderTotal;
+        totalOrders += 1;
+
+        if (method === "cash") cashSales += orderTotal;
+        if (method === "qr") qrSales += orderTotal;
+        if (method === "card") cardSales += orderTotal;
+
+        if (inventoryEnabled) {
+          totalCost += Number(snapshot?.total_cost || 0);
+          totalProfit += Number(snapshot?.total_profit || 0);
+        }
+
+        (order.order_items || []).forEach((item) => {
+          const quantity = Number(item.quantity || 0);
+          const unitPrice = Number(item.unit_price || 0);
+          const key = String(item.item_name || "").trim().toLowerCase();
+          const existing = itemTotals.get(key) || {
+            item_name: String(item.item_name || "Unknown Item"),
+            quantity: 0,
+            revenue: 0,
+          };
+
+          existing.quantity += quantity;
+          existing.revenue += quantity * unitPrice;
+          itemsSold += quantity;
+
+          itemTotals.set(key, existing);
+        });
+      });
+
+      const topItems = Array.from(itemTotals.values())
+        .sort((a, b) => b.quantity - a.quantity || b.revenue - a.revenue)
+        .slice(0, 5);
+
+      const periodLabel = label || `${fromDate} to ${toDate}`;
+      const generatedAt = new Date().toLocaleString();
+
+      const doc = new jsPDF({
+        orientation: "portrait",
+        unit: "mm",
+        format: "a4",
+      });
+
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const marginX = 16;
+      let y = 18;
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(18);
+      doc.text(restaurantName || "Restaurant", pageWidth / 2, y, { align: "center" });
+
+      y += 8;
+      doc.setFontSize(14);
+      doc.text("Sales Summary Report", pageWidth / 2, y, { align: "center" });
+
+      y += 8;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      doc.text(`Period: ${periodLabel}`, pageWidth / 2, y, { align: "center" });
+
+      y += 6;
+      doc.text(`Generated: ${generatedAt}`, pageWidth / 2, y, { align: "center" });
+
+      y += 10;
+      doc.setDrawColor(220);
+      doc.line(marginX, y, pageWidth - marginX, y);
+
+      const writeRow = (labelText: string, valueText: string) => {
+        y += 9;
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(11);
+        doc.text(labelText, marginX, y);
+        doc.setFont("helvetica", "bold");
+        doc.text(valueText, pageWidth - marginX, y, { align: "right" });
+      };
+
+      writeRow("Total Sales", `Rs. ${totalSales.toFixed(2)}`);
+      writeRow("Paid Orders", String(totalOrders));
+      writeRow("Items Sold", String(itemsSold));
+      writeRow("Average Order Value", `Rs. ${(totalOrders > 0 ? totalSales / totalOrders : 0).toFixed(2)}`);
+
+      y += 8;
+      doc.line(marginX, y, pageWidth - marginX, y);
+
+      writeRow("Cash Sales", `Rs. ${cashSales.toFixed(2)}`);
+      writeRow("QR Sales", `Rs. ${qrSales.toFixed(2)}`);
+      writeRow("Card Sales", `Rs. ${cardSales.toFixed(2)}`);
+
+      if (inventoryEnabled) {
+        y += 8;
+        doc.line(marginX, y, pageWidth - marginX, y);
+
+        writeRow("Total Cost", `Rs. ${totalCost.toFixed(2)}`);
+        writeRow("Total Profit", `Rs. ${totalProfit.toFixed(2)}`);
+      }
+
+      y += 12;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(12);
+      doc.text("Top Selling Items", marginX, y);
+
+      y += 7;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+
+      if (topItems.length === 0) {
+        doc.text("No item data found.", marginX, y);
+      } else {
+        topItems.forEach((item, index) => {
+          const line = `${index + 1}. ${item.item_name} - Qty ${item.quantity} - Rs. ${item.revenue.toFixed(2)}`;
+          doc.text(line.slice(0, 95), marginX, y);
+          y += 6;
+        });
+      }
+
+      y += 8;
+      doc.setDrawColor(230);
+      doc.line(marginX, y, pageWidth - marginX, y);
+
+      y += 8;
+      doc.setFontSize(9);
+      doc.setFont("helvetica", "normal");
+      doc.text("This is a summary report. Use Item Details CSV for order-level/accounting details.", marginX, y);
+
+      const safeLabel = (label || `${fromDate}-to-${toDate}`)
+        .toLowerCase()
+        .replace(/[^a-z0-9.-]+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "");
+
+      const safeRestaurantName = (restaurantName || "restaurant")
+        .toLowerCase()
+        .replace(/[^a-z0-9.-]+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "");
+
+      doc.save(`${safeRestaurantName}-${safeLabel}-summary-report.pdf`);
+      showToast("Summary PDF downloaded", "success");
+    } catch (error) {
+      console.error("Summary PDF download failed", error);
+      showToast(getReadableError(error) || "Summary PDF download failed", "error");
+    }
+  }
+
+  async function downloadOwnerSummaryPdf(period: OwnerCsvPeriod) {
+    const range = getOwnerCsvRange(period);
+    await downloadOwnerSummaryPdfForDates(range.startDate, range.endDate, getOwnerCsvPeriodLabel(period));
+  }
+
+  async function downloadOwnerSummaryCsv(period: OwnerCsvPeriod) {
+    const range = getOwnerCsvRange(period);
+    await downloadOwnerSummaryCsvForDates(range.startDate, range.endDate, getOwnerCsvPeriodLabel(period));
+  }
+
+  async function downloadOwnerItemDetailsCsv(period: OwnerCsvPeriod) {
+    const range = getOwnerCsvRange(period);
+    await downloadOwnerItemDetailsCsvForDates(range.startDate, range.endDate, getOwnerCsvPeriodLabel(period));
+  }
+
+  async function downloadOwnerSalesCsv(period: OwnerCsvPeriod) {
+    await downloadOwnerItemDetailsCsv(period);
+  }
+
+  function openTakeOrderModal() {
+    if (!restaurantId) {
+      showToast("Invalid restaurant link", "error");
+      return;
+    }
+
+    setShowHeaderMenu(false);
+    setTakeOrderStep("table");
+    setTakeOrderVisibleTableCount(9);
+    setShowTakeOrderModal(true);
+  }
+
+  function resetTakeOrderForm() {
+    setTakeOrderStep("table");
+    setTakeOrderVisibleTableCount(15);
+    setTakeOrderTableNumber("");
+    setTakeOrderSearch("");
+    setShowTakeOrderSearch(false);
+    setTakeOrderRemarks("");
+    setTakeOrderItems([]);
+    setShowTakeOrderCart(false);
+    setCartDragStartY(null);
+    setCartSheetOffsetY(0);
+    setEditingOrderId(null);
+    setEditingOrderLoading(false);
+    setShowVariantSheet(false);
+    setSelectedVariantMenu(null);
+    setSelectedVariantOptionId(null);
+    setSelectedVariantQty(1);
+    setSelectedVariantRemarks("");
+  }
+
+  function closeTakeOrderModal() {
+    if (submittingTakeOrder) return;
+    setShowTakeOrderModal(false);
+    resetTakeOrderForm();
+  }
+
+  function getVariantsForMenuItem(menuId: number) {
+    return menuVariantsByMenuId.get(Number(menuId)) || [];
+  }
+
+  function closeVariantSheet() {
+    setShowVariantSheet(false);
+    setSelectedVariantMenu(null);
+    setSelectedVariantOptionId(null);
+    setSelectedVariantQty(1);
+    setSelectedVariantRemarks("");
+    setVariantDragStartY(null);
+    setVariantSheetOffsetY(0);
+  }
+
+  function handleVariantSheetPointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    setVariantDragStartY(event.clientY);
+  }
+
+  function handleVariantSheetPointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    if (variantDragStartY === null) return;
+    const diff = event.clientY - variantDragStartY;
+    if (diff > 0) {
+      setVariantSheetOffsetY(diff);
+    }
+  }
+
+  function handleVariantSheetPointerUp() {
+    if (variantSheetOffsetY > 110) {
+      closeVariantSheet();
+      return;
+    }
+
+    setVariantSheetOffsetY(0);
+    setVariantDragStartY(null);
+  }
+
+  function addSimpleTakeOrderItem(menu: MenuItem) {
+    assignTakeOrderItemToSelectedCategory(menu.id);
+
+    const cartKey = `menu-${menu.id}`;
+
+    setTakeOrderItems((prev) => {
+      const existing = prev.find((item) => item.id === cartKey);
+      if (existing) {
+        return prev.map((item) =>
+          item.id === cartKey ? { ...item, quantity: item.quantity + 1 } : item
+        );
+      }
+
+      return [
+        ...prev,
+        {
+          id: cartKey,
+          menu_id: menu.id,
+          item_name: menu.item_name,
+          price: Number(menu.price || 0),
+          quantity: 1,
+          variant_id: null,
+          variant_name: null,
+          remarks: "",
+        },
+      ];
+    });
+  }
+
+  function openVariantSheet(menu: MenuItem) {
+    const variants = getVariantsForMenuItem(menu.id);
+    if (variants.length === 0) {
+      addSimpleTakeOrderItem(menu);
+      return;
+    }
+
+    assignTakeOrderItemToSelectedCategory(menu.id);
+    setSelectedVariantMenu(menu);
+    setSelectedVariantOptionId(variants[0]?.id ?? null);
+    setSelectedVariantQty(1);
+    setSelectedVariantRemarks("");
+    setShowVariantSheet(true);
+  }
+
+  function handleTakeOrderMenuClick(menu: MenuItem) {
+    const variants = getVariantsForMenuItem(menu.id);
+
+    if (variants.length > 0) {
+      openVariantSheet(menu);
+      return;
+    }
+
+    addSimpleTakeOrderItem(menu);
+  }
+
+  function addSelectedVariantToCart() {
+    if (!selectedVariantMenu) return;
+
+    const selectedVariant =
+      selectedVariantOptionId == null ? null : menuItemVariantById.get(Number(selectedVariantOptionId));
+
+    if (!selectedVariant) {
+      showToast("Please select variant", "error");
+      return;
+    }
+
+    const cartKey = `menu-${selectedVariantMenu.id}-variant-${selectedVariant.id}`;
+    const displayName = `${selectedVariantMenu.item_name} (${selectedVariant.variant_name})`;
+
+    setTakeOrderItems((prev) => {
+      const existing = prev.find((item) => item.id === cartKey);
+
+      if (existing) {
+        return prev.map((item) =>
+          item.id === cartKey
+            ? {
+                ...item,
+                quantity: item.quantity + selectedVariantQty,
+                remarks: selectedVariantRemarks.trim() || item.remarks || "",
+              }
+            : item
+        );
+      }
+
+      return [
+        ...prev,
+        {
+          id: cartKey,
+          menu_id: selectedVariantMenu.id,
+          item_name: displayName,
+          price: Number(selectedVariant.price || 0),
+          quantity: selectedVariantQty,
+          variant_id: selectedVariant.id,
+          variant_name: selectedVariant.variant_name,
+          remarks: selectedVariantRemarks.trim(),
+        },
+      ];
+    });
+
+    closeVariantSheet();
+  }
+
+  function decreaseTakeOrderItem(menuKey: string) {
+    setTakeOrderItems((prev) =>
+      prev
+        .map((item) =>
+          item.id === menuKey ? { ...item, quantity: item.quantity - 1 } : item
+        )
+        .filter((item) => item.quantity > 0)
+    );
+  }
+
+  function increaseTakeOrderItem(menuKey: string) {
+    setTakeOrderItems((prev) =>
+      prev.map((item) =>
+        item.id === menuKey ? { ...item, quantity: item.quantity + 1 } : item
+      )
+    );
+  }
+
+  function removeTakeOrderItem(menuKey: string) {
+    setTakeOrderItems((prev) => prev.filter((item) => item.id !== menuKey));
+  }
+
+  function closeTakeOrderCart() {
+    setShowTakeOrderCart(false);
+    setCartDragStartY(null);
+    setCartSheetOffsetY(0);
+  }
+
+  function handleCartSheetPointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    setCartDragStartY(event.clientY);
+  }
+
+  function handleCartSheetPointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    if (cartDragStartY === null) return;
+    const diff = event.clientY - cartDragStartY;
+    if (diff > 0) {
+      setCartSheetOffsetY(diff);
+    }
+  }
+
+  function handleCartSheetPointerUp() {
+    if (cartSheetOffsetY > 110) {
+      closeTakeOrderCart();
+      return;
+    }
+
+    setCartSheetOffsetY(0);
+    setCartDragStartY(null);
+  }
+
+  async function confirmTakeOrderFromCart() {
+    const success = await submitTakeOrder();
+    if (success) {
+      closeTakeOrderCart();
+    }
+  }
+
+  async function getLocalOrderForUiId(uiOrderId: number) {
+    if (!restaurantId) return null;
+
+    const localOrders = await localOrdersTable
+      .where("restaurant_id")
+      .equals(restaurantId)
+      .toArray();
+
+    return (
+      localOrders.find((order) => order.server_id === uiOrderId) ||
+      localOrders.find((order) => order.id === uiOrderId) ||
+      null
+    );
+  }
+
+  async function waitForLocalOrderServerId(localOrderId: number, timeoutMs = 4500) {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const localOrder = await localOrdersTable.get(localOrderId);
+      if (localOrder?.server_id) return localOrder;
+      await new Promise((resolve) => setTimeout(resolve, 180));
+    }
+
+    return (await localOrdersTable.get(localOrderId)) || null;
+  }
+
+  async function syncSingleLocalOrder(localOrderId: number) {
+    if (!restaurantId || !isOnline) return;
+
+    const localOrder = await localOrdersTable.get(localOrderId);
+    if (!localOrder || localOrder.restaurant_id !== restaurantId) return;
+
+    const localItems = await localOrderItemsTable
+      .where("local_order_id")
+      .equals(localOrderId)
+      .toArray();
+
+    const orderPayload = {
+      restaurant_id: restaurantId,
+      table_number: String(localOrder.table_number || "").trim(),
+      status: localOrder.status || "pending",
+      remarks: localOrder.remarks || null,
+      waiter_cleared: localOrder.waiter_cleared ?? false,
+      is_paid: localOrder.is_paid ?? false,
+      payment_method: localOrder.payment_method || null,
+      paid_at: localOrder.paid_at || null,
+      subtotal: Number(localOrder.subtotal || 0),
+      discount_enabled: Boolean(localOrder.discount_enabled),
+      discount_percent: Number(localOrder.discount_percent || 0),
+      discount_amount: Number(localOrder.discount_amount || 0),
+      tax_enabled: Boolean(localOrder.tax_enabled),
+      tax_percent: Number(localOrder.tax_percent || 0),
+      tax_amount: Number(localOrder.tax_amount || 0),
+      grand_total: Number(localOrder.grand_total || 0),
+    };
+
+    let remoteOrderId = localOrder.server_id || null;
+    const shouldAppendOnlyToRemoteOrder = Boolean(remoteOrderId) && localItems.some(
+      (item) => item.sync_status === "pending_update" && !item.server_id
+    );
+
+    if (remoteOrderId) {
+      const { error: updateOrderError } = await supabase
+        .from("orders")
+        .update(orderPayload)
+        .eq("id", remoteOrderId)
+        .eq("restaurant_id", restaurantId);
+
+      if (updateOrderError) {
+        throw updateOrderError;
+      }
+
+      if (!shouldAppendOnlyToRemoteOrder) {
+        const { error: deleteRemoteItemsError } = await supabase
+          .from("order_items")
+          .delete()
+          .eq("order_id", remoteOrderId);
+
+        if (deleteRemoteItemsError) {
+          throw deleteRemoteItemsError;
+        }
+      }
+    } else {
+      const { data: insertedOrder, error: insertOrderError } = await supabase
+        .from("orders")
+        .insert([orderPayload])
+        .select()
+        .single();
+
+      if (insertOrderError || !insertedOrder) {
+        throw insertOrderError || new Error("Failed to create order");
+      }
+
+      remoteOrderId = insertedOrder.id;
+
+      await localOrdersTable.update(localOrderId, {
+        server_id: remoteOrderId,
+        updated_at: new Date().toISOString(),
+      });
+    }
+
+    const localItemsToUpload = shouldAppendOnlyToRemoteOrder
+      ? localItems.filter((item) => item.sync_status !== "synced" && !item.server_id)
+      : localItems;
+
+    if (localItemsToUpload.length > 0) {
+      const invalidLocalItems = localItemsToUpload.filter((item) => {
+        const menuId = Number(item.menu_item_id || 0);
+        return !Number.isFinite(menuId) || menuId <= 0;
+      });
+
+      if (invalidLocalItems.length > 0) {
+        throw new Error("Menu reference missing in offline order. Remove and create the order again.");
+      }
+
+      const itemPayload = localItemsToUpload.map((item) => ({
+        order_id: remoteOrderId,
+        item_name: item.item_name,
+        menu_item_id: Number(item.menu_item_id),
+        quantity: Number(item.quantity || 0),
+        unit_price: Number(item.unit_price || 0),
+        status: item.status || orderPayload.status,
+        menu_item_variant_id: item.menu_item_variant_id ?? null,
+      }));
+
+      const { data: insertedItems, error: insertItemsError } = await supabase
+        .from("order_items")
+        .insert(itemPayload)
+        .select();
+
+      if (insertItemsError) {
+        throw insertItemsError;
+      }
+
+      const insertedList = Array.isArray(insertedItems) ? insertedItems : [];
+
+      for (let index = 0; index < localItemsToUpload.length; index += 1) {
+        const localItem = localItemsToUpload[index];
+        const remoteItem = insertedList[index];
+        await localOrderItemsTable.update(localItem.id!, {
+          server_order_id: remoteOrderId,
+          server_id: remoteItem?.id || null,
+          updated_at: new Date().toISOString(),
+          sync_status: "synced",
+        });
+      }
+    }
+
+    await localOrdersTable.update(localOrderId, {
+      server_id: remoteOrderId,
+      updated_at: new Date().toISOString(),
+      sync_status: "synced",
+    });
+  }
+
+async function runInventoryDeductionAndCostLock(
+  remoteOrderId: number,
+  options: { throwOnError?: boolean; localOrderId?: number | null } = {}
+) {
+  if (!restaurantId || !remoteOrderId) {
+    if (options.throwOnError) throw new Error("Invalid order for inventory sync");
+    return false;
+  }
+
+  if (!isOnline) {
+    if (options.throwOnError) throw new Error("Offline: inventory deduction will retry when online");
+    return false;
+  }
+
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const { error } = await supabase.rpc("deduct_inventory_and_lock_cost", {
+        p_order_id: remoteOrderId,
+      });
+
+      if (error) throw error;
+
+      setOrders((prev) =>
+        prev.map((order) =>
+          Number(order.id) === Number(remoteOrderId)
+            ? { ...order, inventory_deducted: true, sync_status: order.sync_status === "pending_payment" ? "synced" : order.sync_status }
+            : order
+        )
+      );
+
+      setReportOrder((current) =>
+        current && Number(current.id) === Number(remoteOrderId)
+          ? { ...current, inventory_deducted: true, sync_status: current.sync_status === "pending_payment" ? "synced" : current.sync_status }
+          : current
+      );
+
+      if (options.localOrderId) {
+        await localOrdersTable.update(options.localOrderId, {
+          server_id: remoteOrderId,
+          updated_at: new Date().toISOString(),
+          sync_status: "synced",
+        });
+      }
+
+      if (popupView === "inventory") {
+        setTimeout(() => {
+          fetchInventoryData(inventoryTab);
+        }, 300);
+      }
+
+      return true;
+    } catch (error) {
+      lastError = error;
+      console.error("Inventory deduction/cost lock failed:", error);
+
+      if (attempt === 1) {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        continue;
+      }
+    }
+  }
+
+  if (options.localOrderId) {
+    await localOrdersTable.update(options.localOrderId, {
+      server_id: remoteOrderId,
+      updated_at: new Date().toISOString(),
+      sync_status: "pending_payment",
+    });
+  }
+
+  if (options.throwOnError) {
+    throw lastError || new Error("Inventory deduction/cost lock failed");
+  }
+
+  return false;
+}
+
+async function ensureRemoteOrderIdForPayment(
+  uiOrderId: number,
+  localOrder: LocalOrderRow | null
+) {
+  if (localOrder?.server_id) {
+    return Number(localOrder.server_id);
+  }
+
+  if (localOrder?.id) {
+    const preservedPaymentState = {
+      is_paid: localOrder.is_paid ?? false,
+      payment_method: localOrder.payment_method ?? null,
+      paid_at: localOrder.paid_at ?? null,
+      sync_status: localOrder.sync_status || "synced",
+    };
+
+    // Create/update the remote order as unpaid first.
+    // Payment + inventory deduction must happen only through RPC after a real server order id exists.
+    await localOrdersTable.update(localOrder.id, {
+      is_paid: false,
+      payment_method: null,
+      paid_at: null,
+      updated_at: new Date().toISOString(),
+      // Keep this as pending_payment so live/unpaid UI never shows it while remote id is being created.
+      sync_status: "pending_payment",
+    });
+
+    try {
+      await syncSingleLocalOrder(localOrder.id);
+
+      const refreshedLocalOrder = await localOrdersTable.get(localOrder.id);
+      const remoteOrderId = Number(refreshedLocalOrder?.server_id || 0);
+
+      if (!remoteOrderId || Number.isNaN(remoteOrderId)) {
+        throw new Error("Missing server order id for payment sync");
+      }
+
+      // syncSingleLocalOrder temporarily writes unpaid/synced locally so the server order can be created unpaid.
+      // Restore local pending-paid state immediately before RPC runs, otherwise the bill can flash back in live unpaid list.
+      await localOrdersTable.update(localOrder.id, {
+        server_id: remoteOrderId,
+        ...preservedPaymentState,
+        sync_status: "pending_payment",
+        updated_at: new Date().toISOString(),
+      });
+
+      return remoteOrderId;
+    } catch (error) {
+      await localOrdersTable.update(localOrder.id, {
+        ...preservedPaymentState,
+        updated_at: new Date().toISOString(),
+      });
+      throw error;
+    }
+  }
+
+  const fallbackRemoteOrderId = Number(uiOrderId);
+  if (!fallbackRemoteOrderId || Number.isNaN(fallbackRemoteOrderId)) {
+    throw new Error("Invalid remote order id");
+  }
+
+  return fallbackRemoteOrderId;
+}
+
+async function syncPaymentForLocalOrder(localOrder: LocalOrderRow) {
+  if (!localOrder.id) return;
+
+  const preservedPaymentState = {
+    server_id: localOrder.server_id ?? null,
+    is_paid: localOrder.is_paid ?? false,
+    payment_method: localOrder.payment_method ?? null,
+    paid_at: localOrder.paid_at ?? null,
+    sync_status: localOrder.sync_status || "pending_payment",
+  };
+
+  try {
+    const remoteOrderId = await ensureRemoteOrderIdForPayment(
+      Number(localOrder.server_id || localOrder.id),
+      localOrder
+    );
+
+    const paymentMethod =
+      localOrder.payment_method === "qr" || localOrder.payment_method === "card"
+        ? localOrder.payment_method
+        : "cash";
+
+    const { data, error } = await supabase.rpc("mark_order_paid_fast", {
+      p_order_id: remoteOrderId,
+      p_payment_method: paymentMethod,
+    });
+
+    if (error) throw error;
+
+    const result = data as { success?: boolean; message?: string };
+
+    if (!result?.success) {
+      const alreadyPaid = String(result?.message || "").toLowerCase().includes("already paid");
+      if (!alreadyPaid) {
+        throw new Error(result?.message || "Payment sync failed");
+      }
+    }
+
+    await supabase
+      .from("orders")
+      .update({
+        subtotal: Number(localOrder.subtotal || 0),
+        discount_enabled: Boolean(localOrder.discount_enabled),
+        discount_percent: Number(localOrder.discount_percent || 0),
+        discount_amount: Number(localOrder.discount_amount || 0),
+        tax_enabled: Boolean(localOrder.tax_enabled),
+        tax_percent: Number(localOrder.tax_percent || 0),
+        tax_amount: Number(localOrder.tax_amount || 0),
+        grand_total: Number(localOrder.grand_total || 0),
+      })
+      .eq("id", remoteOrderId)
+      .eq("restaurant_id", restaurantId);
+
+    // Offline/payment queue is not complete until inventory deduction + locked snapshots also succeed.
+    // If this fails, keep the local row as pending_payment so it retries next time the app is online.
+    await runInventoryDeductionAndCostLock(remoteOrderId, {
+      throwOnError: true,
+      localOrderId: localOrder.id,
+    });
+
+    await localOrdersTable.update(localOrder.id, {
+      server_id: remoteOrderId,
+      is_paid: true,
+      payment_method: paymentMethod,
+      paid_at: localOrder.paid_at || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      sync_status: "synced",
+    });
+  } catch (error) {
+    await localOrdersTable.update(localOrder.id, {
+      ...preservedPaymentState,
+      updated_at: new Date().toISOString(),
+    });
+    throw error;
+  }
+}
+
+async function syncPendingOrders() {
+  if (!restaurantId || !isOnline) return;
+
+  const localOrders = await localOrdersTable
+    .where("restaurant_id")
+    .equals(restaurantId)
+    .toArray();
+
+  for (const localOrder of localOrders) {
+    const syncStatus = localOrder.sync_status || "synced";
+
+    if (syncStatus === "synced") continue;
+
+    // Pending payments retry full chain: save remote order, mark paid fast, deduct inventory, and lock cost snapshots.
+if (syncStatus === "pending_payment" || localOrder.is_paid === true) {
+      try {
+        await syncPaymentForLocalOrder(localOrder);
+      } catch (err) {
+        console.error("Payment sync failed:", err);
+        // Do not mark synced. It will retry next time the app comes online.
+      }
+      continue;
+    }
+
+    await syncSingleLocalOrder(localOrder.id!);
+  }
+}
+  async function syncLocalChanges() {
+    if (!restaurantId || !isOnline) return;
+    await syncPendingOrders();
+  }
+
+async function refreshPendingPaymentQueue() {
+  if (!restaurantId) {
+    setLocalPendingPaymentOrders([]);
+    return;
+  }
+
+  try {
+    const localOrders = await localOrdersTable
+      .where("restaurant_id")
+      .equals(restaurantId)
+      .toArray();
+
+    const pendingLocalOrders = localOrders.filter(
+      (order) => order.sync_status === "pending_payment"
+    );
+
+    const pendingLocalOrderIds = pendingLocalOrders
+      .map((order) => order.id)
+      .filter((id): id is number => typeof id === "number");
+
+    const allLocalItems = await localOrderItemsTable.toArray();
+    const pendingLocalItems = allLocalItems.filter((item) =>
+      pendingLocalOrderIds.includes(item.local_order_id)
+    );
+
+    const mappedPendingOrders: OrderRow[] = pendingLocalOrders
+      .map((order) => ({
+        id: order.server_id || order.id || 0,
+        table_number: order.table_number,
+        status: order.status,
+        created_at: order.created_at,
+        waiter_cleared: order.waiter_cleared ?? false,
+        // Pending payment remains queued until Supabase RPC succeeds.
+        // Preserve local paid state so the UI can show it as paid locally.
+        is_paid: order.is_paid ?? false,
+        payment_method: order.payment_method ?? null,
+        paid_at: order.paid_at ?? null,
+        subtotal: order.subtotal ?? null,
+        discount_enabled: order.discount_enabled ?? false,
+        discount_percent: order.discount_percent ?? 0,
+        discount_amount: order.discount_amount ?? 0,
+        tax_enabled: order.tax_enabled ?? false,
+        tax_percent: order.tax_percent ?? 0,
+        tax_amount: order.tax_amount ?? 0,
+        grand_total: order.grand_total ?? null,
+        remarks: order.remarks ?? null,
+        sync_status: "pending_payment" as const,
+        order_items: pendingLocalItems
+          .filter((item) => item.local_order_id === order.id)
+          .map((item) => ({
+            id: item.server_id || item.id || 0,
+            item_name: item.item_name,
+            menu_item_id: item.menu_item_id == null ? null : Number(item.menu_item_id),
+            quantity: Number(item.quantity || 0),
+            unit_price: Number(item.unit_price || 0),
+            status: item.status || order.status,
+            menu_item_variant_id:
+              item.menu_item_variant_id == null ? null : Number(item.menu_item_variant_id),
+          })),
+      }))
+      .filter((order) => Number(order.id || 0) > 0)
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+
+    setLocalPendingPaymentOrders(mappedPendingOrders);
+  } catch (error) {
+    console.warn("Failed to refresh pending payment queue", error);
+  }
+}
+
+async function submitTakeOrder() {
+  if (!restaurantId) {
+    showToast("Invalid restaurant link", "error");
+    return false;
+  }
+
+  const cleanTableNumber = takeOrderTableNumber.trim();
+
+  if (!cleanTableNumber) {
+    showToast("Please enter table number", "error");
+    return false;
+  }
+
+  const normalizedPlaceNumber = cleanTableNumber.toUpperCase();
+
+  if (!/^(\d+|C\d+)$/.test(normalizedPlaceNumber)) {
+    showToast("Please select valid table or cabin", "error");
+    return false;
+  }
+
+  if (takeOrderItems.length === 0) {
+    showToast("Please add at least one item", "error");
+    return false;
+  }
+
+  const validatedTakeOrderItems = takeOrderItems.map((item) => ({
+    ...item,
+    menu_id: Number(item.menu_id || 0),
+  }));
+
+  const hasInvalidMenuReference = validatedTakeOrderItems.some((item) => {
+    const menuId = Number(item.menu_id || 0);
+    return !Number.isFinite(menuId) || menuId <= 0;
+  });
+  if (hasInvalidMenuReference) {
+    showToast("Menu reference missing. Please remove and add the item again.", "error");
+    return false;
+  }
+
+  setSubmittingTakeOrder(true);
+
+  const now = new Date().toISOString();
+  const existingEditingOrder = editingOrderId
+    ? orders.find((order) => Number(order.id) === Number(editingOrderId)) || null
+    : null;
+
+  const itemRows: OrderItem[] = validatedTakeOrderItems.map((item, index) => ({
+    id: Date.now() + index,
+    item_name: item.item_name,
+    menu_item_id: item.menu_id,
+    quantity: item.quantity,
+    unit_price: item.price,
+    // Add Dish must always go back to kitchen as a fresh pending KOT.
+    // Existing ready/preparing items stay untouched and remain inside the same customer bill.
+    status: "pending",
+    menu_item_variant_id: item.variant_id ?? null,
+  }));
+
+  const optimisticOrder: OrderRow = {
+    ...(existingEditingOrder || {}),
+    id: editingOrderId || Date.now(),
+    table_number: normalizedPlaceNumber,
+    status: "pending",
+    created_at: existingEditingOrder?.created_at || now,
+    waiter_cleared: false,
+    is_paid: false,
+    payment_method: null,
+    paid_at: null,
+    remarks: takeOrderRemarks || null,
+    order_items: editingOrderId ? [...(existingEditingOrder?.order_items || []), ...itemRows] : itemRows,
+  };
+
+  const previousOrders = orders;
+
+  // Fast UI: update screen first, then save DB.
+  setOrders((prev) => {
+    if (editingOrderId) {
+      return prev.map((order) => Number(order.id) === Number(editingOrderId) ? optimisticOrder : order);
+    }
+
+    return [optimisticOrder, ...prev];
+  });
+
+  resetTakeOrderForm();
+  setShowTakeOrderModal(false);
+
+  // After sending an order from Home / Insights / Manage / plus button,
+  // always move the user to Order navigation and show the active order list.
+  setMiniView("order");
+  setOrderTopTab("orders");
+  setTableSearch(normalizedPlaceNumber);
+  setPopupView(null);
+  setShowHeaderMenu(false);
+  scrollMainContentToTop();
+
+  showToast(isOnline ? "Order sent to kitchen" : "Offline order saved", "success");
+
+  const orderPayload = {
+    restaurant_id: restaurantId,
+    table_number: normalizedPlaceNumber,
+    status: "pending",
+    remarks: takeOrderRemarks || null,
+    waiter_cleared: false,
+    is_paid: false,
+  };
+
+  // Critical: even online orders get a local shadow immediately.
+  // Without this, a fast Pay click can hit a temporary Date.now() id, then fetchOrders removes it,
+  // making the bill disappear from live/history.
+  let onlineShadowLocalOrderId: number | null = null;
+  const canUseOnlineSubmit = isOnline === true;
+
+  const isSubmitNetworkError = (error: unknown) => {
+    let stringifiedError = "";
+
+    try {
+      stringifiedError = JSON.stringify(error) || "";
+    } catch {
+      stringifiedError = "";
+    }
+
+    const maybeError = error as { name?: unknown; message?: unknown; details?: unknown; hint?: unknown; code?: unknown };
+    const checkedText = [
+      getReadableError(error),
+      typeof maybeError?.message === "string" ? maybeError.message : "",
+      typeof maybeError?.details === "string" ? maybeError.details : "",
+      typeof maybeError?.hint === "string" ? maybeError.hint : "",
+      typeof maybeError?.code === "string" ? maybeError.code : "",
+      stringifiedError,
+    ].map((value) => String(value || "").toLowerCase());
+
+    const searchable = checkedText.join(" ");
+
+    return (
+      searchable.includes("failed to fetch") ||
+      searchable.includes("typeerror: failed to fetch") ||
+      searchable.includes("network") ||
+      searchable.includes("err_name_not_resolved") ||
+      searchable.includes("dns") ||
+      searchable.includes("load failed")
+    );
+  };
+
+  const saveOrderLocally = async () => {
+    let localOrderId: number | null = null;
+    let existingLocalOrder: LocalOrderRow | null = null;
+    let shouldAddLocalItems = true;
+
+    if (editingOrderId) {
+      existingLocalOrder = await getLocalOrderForUiId(editingOrderId);
+      if (!existingLocalOrder?.id) {
+        throw new Error("Local order not found");
+      }
+
+      localOrderId = existingLocalOrder.id;
+
+      await localOrdersTable.update(localOrderId, {
+        table_number: normalizedPlaceNumber,
+        remarks: takeOrderRemarks || null,
+        status: "pending",
+        waiter_cleared: false,
+        is_paid: false,
+        payment_method: null,
+        paid_at: null,
+        updated_at: now,
+        sync_status: existingLocalOrder.server_id ? "pending_update" : "pending_create",
+      });
+
+      // Add Dish is append-only for local/offline too. Do not delete existing local items.
+    } else if (onlineShadowLocalOrderId) {
+      localOrderId = onlineShadowLocalOrderId;
+      shouldAddLocalItems = false;
+    } else {
+      localOrderId = await localOrdersTable.add({
+        restaurant_id: restaurantId,
+        table_number: normalizedPlaceNumber,
+        status: "pending",
+        remarks: takeOrderRemarks || null,
+        waiter_cleared: false,
+        is_paid: false,
+        payment_method: null,
+        paid_at: null,
+        created_at: now,
+        updated_at: now,
+        sync_status: "pending_create",
+      });
+    }
+
+    if (shouldAddLocalItems) {
+      await localOrderItemsTable.bulkAdd(
+        validatedTakeOrderItems.map((item) => ({
+          local_order_id: localOrderId!,
+          server_order_id: existingLocalOrder?.server_id || null,
+          item_name: item.item_name,
+          menu_item_id: item.menu_id,
+          quantity: item.quantity,
+          unit_price: item.price,
+          status: "pending",
+          menu_item_variant_id: item.variant_id ?? null,
+          created_at: now,
+          updated_at: now,
+          sync_status: existingLocalOrder?.server_id ? "pending_update" : "pending_create",
+        }))
+      );
+    }
+
+    const localUiOrder: OrderRow = { ...optimisticOrder, id: localOrderId || optimisticOrder.id };
+
+    setOrders((prev) =>
+      prev.map((order) =>
+        Number(order.id) === Number(optimisticOrder.id)
+          ? localUiOrder
+          : order
+      )
+    );
+
+    setReportOrder((current) =>
+      current && Number(current.id) === Number(optimisticOrder.id) ? localUiOrder : current
+    );
+
+    return true;
+  };
+
+  try {
+    if (canUseOnlineSubmit && !editingOrderId) {
+      onlineShadowLocalOrderId = Number(optimisticOrder.id);
+
+      await localOrdersTable.put({
+        id: onlineShadowLocalOrderId,
+        restaurant_id: restaurantId,
+        table_number: normalizedPlaceNumber,
+        status: "pending",
+        remarks: takeOrderRemarks || null,
+        waiter_cleared: false,
+        is_paid: false,
+        payment_method: null,
+        paid_at: null,
+        created_at: now,
+        updated_at: now,
+        sync_status: "pending_create",
+      });
+
+      await localOrderItemsTable.bulkAdd(
+        validatedTakeOrderItems.map((item) => ({
+          local_order_id: onlineShadowLocalOrderId!,
+          server_order_id: null,
+          item_name: item.item_name,
+          menu_item_id: item.menu_id,
+          quantity: item.quantity,
+          unit_price: item.price,
+          status: "pending",
+          menu_item_variant_id: item.variant_id ?? null,
+          created_at: now,
+          updated_at: now,
+          sync_status: "pending_create" as const,
+        }))
+      );
+    }
+    if (canUseOnlineSubmit) {
+      try {
+        let remoteOrderId: number | null = null;
+        let savedOrder: OrderRow | null = null;
+        let existingLocalOrder: LocalOrderRow | null = null;
+
+        if (editingOrderId) {
+          existingLocalOrder = await getLocalOrderForUiId(editingOrderId);
+
+          // Editing/Add Dish can open an order while it is still only a local/optimistic row.
+          // Never send a Date.now() local id to Supabase as the real orders.id.
+          const editingIdNumber = Number(editingOrderId);
+          remoteOrderId = existingLocalOrder?.server_id || null;
+
+          if (!remoteOrderId && editingIdNumber > 0 && editingIdNumber < 1000000000000) {
+            remoteOrderId = editingIdNumber;
+          }
+
+          if (!remoteOrderId && existingLocalOrder?.id) {
+            await syncSingleLocalOrder(existingLocalOrder.id);
+            const syncedLocalOrder = await localOrdersTable.get(existingLocalOrder.id);
+            remoteOrderId = syncedLocalOrder?.server_id || null;
+            existingLocalOrder = syncedLocalOrder || existingLocalOrder;
+          }
+
+          if (!remoteOrderId || Number.isNaN(remoteOrderId)) {
+            throw new Error("Order is still syncing. Wait a moment and try Add Dish again.");
+          }
+
+          const { data: updatedOrder, error: updateOrderError } = await supabase
+            .from("orders")
+            .update(orderPayload)
+            .eq("id", remoteOrderId)
+            .eq("restaurant_id", restaurantId)
+            .select("id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, remarks, inventory_deducted")
+            .maybeSingle();
+
+          if (updateOrderError) throw updateOrderError;
+          if (!updatedOrder) {
+            throw new Error("Order not found on server. Refresh and try Add Dish again.");
+          }
+
+          savedOrder = updatedOrder as OrderRow;
+
+          // Add Dish is append-only. Do not delete old items, because ready items must stay ready
+          // and the customer bill must remain one combined bill.
+        } else {
+          const { data: insertedOrder, error: insertOrderError } = await supabase
+            .from("orders")
+            .insert([orderPayload])
+            .select("id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, remarks, inventory_deducted")
+            .single();
+
+          if (insertOrderError || !insertedOrder) {
+            throw insertOrderError || new Error("Failed to create order");
+          }
+
+          savedOrder = insertedOrder as OrderRow;
+          remoteOrderId = Number(insertedOrder.id);
+        }
+
+        const itemPayload = validatedTakeOrderItems.map((item) => ({
+          order_id: remoteOrderId,
+          item_name: item.item_name,
+          menu_item_id: item.menu_id,
+          quantity: item.quantity,
+          unit_price: item.price,
+          status: "pending",
+          menu_item_variant_id: item.variant_id ?? null,
+        }));
+
+        const { data: insertedItems, error: insertItemsError } = await supabase
+          .from("order_items")
+          .insert(itemPayload)
+          .select("id, item_name, menu_item_id, quantity, unit_price, status, menu_item_variant_id");
+
+        if (insertItemsError) throw insertItemsError;
+
+        const finalOrder: OrderRow = {
+          ...(savedOrder || optimisticOrder),
+          order_items: editingOrderId
+            ? [...(existingEditingOrder?.order_items || []), ...((insertedItems || []) as OrderItem[])]
+            : ((insertedItems || []) as OrderItem[]),
+        };
+
+        if (onlineShadowLocalOrderId && remoteOrderId) {
+          await localOrdersTable.update(onlineShadowLocalOrderId, {
+            server_id: remoteOrderId,
+            updated_at: new Date().toISOString(),
+            sync_status: "synced",
+          });
+
+          const shadowItems = await localOrderItemsTable
+            .where("local_order_id")
+            .equals(onlineShadowLocalOrderId)
+            .toArray();
+          const insertedList = Array.isArray(insertedItems) ? insertedItems : [];
+
+          for (let index = 0; index < shadowItems.length; index += 1) {
+            const shadowItem = shadowItems[index];
+            const remoteItem = insertedList[index];
+            if (!shadowItem.id) continue;
+            await localOrderItemsTable.update(shadowItem.id, {
+              server_order_id: remoteOrderId,
+              server_id: remoteItem?.id || null,
+              updated_at: new Date().toISOString(),
+              sync_status: "synced",
+            });
+          }
+        }
+
+        setOrders((prev) => {
+          if (editingOrderId) {
+            return prev.map((order) => Number(order.id) === Number(editingOrderId) ? finalOrder : order);
+          }
+
+          return prev.map((order) => Number(order.id) === Number(optimisticOrder.id) ? finalOrder : order);
+        });
+
+        // If user opened the payment/detail sheet while the optimistic order was still saving,
+        // replace the temporary UI id with the real Supabase order id inside the open sheet too.
+        setReportOrder((current) =>
+          current && Number(current.id) === Number(optimisticOrder.id) ? finalOrder : current
+        );
+
+        return true;
+      } catch (onlineSubmitError) {
+        if (isSubmitNetworkError(onlineSubmitError)) {
+          return await saveOrderLocally();
+        }
+
+        throw onlineSubmitError;
+      }
+    }
+
+    return await saveOrderLocally();
+  } catch (error: any) {
+    let stringifiedError: string | null = null;
+
+    try {
+      stringifiedError = JSON.stringify(error);
+    } catch {
+      stringifiedError = null;
+    }
+
+    console.error("submitTakeOrder failed:", {
+      readable: getReadableError(error),
+      name: error instanceof Error ? error.name : error?.name,
+      message: error instanceof Error ? error.message : error?.message,
+      stack: error instanceof Error ? error.stack : error?.stack,
+      json: stringifiedError,
+      raw: error,
+    });
+
+    if (canUseOnlineSubmit && isSubmitNetworkError(error)) {
+      try {
+        if (onlineShadowLocalOrderId) {
+          setOrders((prev) => {
+            const exists = prev.some((order) => Number(order.id) === Number(optimisticOrder.id));
+            return exists ? prev : [optimisticOrder, ...prev];
+          });
+          showToast("Order local maa safe cha. Server sync retry huncha.", "info");
+          return true;
+        }
+
+        return await saveOrderLocally();
+      } catch (fallbackError: any) {
+        console.error("submitTakeOrder offline fallback failed:", {
+          readable: getReadableError(fallbackError),
+          name: fallbackError instanceof Error ? fallbackError.name : fallbackError?.name,
+          message: fallbackError instanceof Error ? fallbackError.message : fallbackError?.message,
+          stack: fallbackError instanceof Error ? fallbackError.stack : fallbackError?.stack,
+          raw: fallbackError,
+        });
+      }
+    }
+
+    if (onlineShadowLocalOrderId) {
+      setOrders((prev) => {
+        const exists = prev.some((order) => Number(order.id) === Number(optimisticOrder.id));
+        return exists ? prev : [optimisticOrder, ...prev];
+      });
+      showToast("Order local maa safe cha. Server sync retry huncha.", "info");
+    } else {
+      setOrders(previousOrders);
+      showToast(error?.message || "Failed to save order", "error");
+    }
+
+    return false;
+  } finally {
+    setSubmittingTakeOrder(false);
+  }
+}
+
+  function getOrderDisplayStatus(order: OrderRow): KitchenStatusKey {
+    const normalizeStatus = (value?: string | null): KitchenStatusKey => {
+      if (value === "ready") return "ready";
+      if (value === "preparing") return "preparing";
+      return "pending";
+    };
+
+    const statuses = (order.order_items || []).map((item) => normalizeStatus(item.status || order.status));
+    if (statuses.length > 0 && statuses.every((status) => status === "ready")) return "ready";
+    if (statuses.some((status) => status === "pending")) return "pending";
+    if (statuses.some((status) => status === "preparing")) return "preparing";
+    return normalizeStatus(order.status);
+  }
+
+  async function handleEditOrder(order: OrderRow) {
+    if (order.is_paid) {
+      showToast("Paid order edit garna mildaina", "error");
+      return;
+    }
+
+    // Ready table can still receive extra dishes later. Only paid orders are locked.
+    setEditingOrderLoading(true);
+    setEditingOrderId(order.id);
+    setTakeOrderTableNumber(String(order.table_number || ""));
+    setTakeOrderSearch("");
+    setTakeOrderRemarks(order.remarks || "");
+    // Add Dish mode starts with an empty cart. Existing items remain in the same bill;
+    // only newly selected dishes are sent as pending KOT items.
+    setTakeOrderItems([]);
+    setShowHeaderMenu(false);
+    setShowTakeOrderCart(false);
+    setTakeOrderStep("items");
+    setShowTakeOrderModal(true);
+    setMiniView("order");
+    setEditingOrderLoading(false);
+  }
+
+  async function handleCancelOrder(orderId: number) {
+    if (!restaurantId) {
+      showToast("Invalid restaurant link", "error");
+      return;
+    }
+
+    const targetOrder = orders.find((order) => order.id === orderId);
+    if (!targetOrder) {
+      showToast("Order not found", "error");
+      return;
+    }
+
+    if (targetOrder.is_paid) {
+      showToast("Paid order cancel garna mildaina", "error");
+      return;
+    }
+
+    const currentStatus = getOrderDisplayStatus(targetOrder);
+    if (currentStatus === "ready") {
+      showToast("Ready bhayeko order cancel garna mildaina", "error");
+      return;
+    }
+
+    const confirmCancel = await askConfirm(`Cancel this order for table ${targetOrder.table_number}?`, "Yes, cancel", "Keep");
+    if (!confirmCancel) return;
+
+    try {
+      const localOrder = await getLocalOrderForUiId(orderId);
+      const remoteOrderId = localOrder?.server_id || orderId;
+
+      if (isOnline) {
+        const { error: deleteItemsError } = await supabase
+          .from("order_items")
+          .delete()
+          .eq("order_id", remoteOrderId);
+
+        if (deleteItemsError) throw deleteItemsError;
+
+        const { error: deleteOrderError } = await supabase
+          .from("orders")
+          .delete()
+          .eq("id", remoteOrderId)
+          .eq("restaurant_id", restaurantId);
+
+        if (deleteOrderError) throw deleteOrderError;
+
+        if (localOrder?.id) {
+          const localItems = await localOrderItemsTable
+            .where("local_order_id")
+            .equals(localOrder.id)
+            .toArray();
+
+          if (localItems.length) {
+            await localOrderItemsTable.bulkDelete(
+              localItems
+                .map((item) => item.id)
+                .filter((id): id is number => typeof id === "number")
+            );
+          }
+
+          await localOrdersTable.delete(localOrder.id);
+        }
+      } else {
+        if (!localOrder?.id) {
+          throw new Error("Local order not found");
+        }
+
+        if (localOrder.server_id) {
+          showToast("Saved remote order offline cancel garna mildaina", "error");
+          return;
+        }
+
+        const localItems = await localOrderItemsTable
+          .where("local_order_id")
+          .equals(localOrder.id)
+          .toArray();
+
+        if (localItems.length) {
+          await localOrderItemsTable.bulkDelete(
+            localItems
+              .map((item) => item.id)
+              .filter((id): id is number => typeof id === "number")
+          );
+        }
+
+        await localOrdersTable.delete(localOrder.id);
+      }
+
+      if (editingOrderId === orderId) {
+        resetTakeOrderForm();
+        setShowTakeOrderModal(false);
+      }
+
+      await fetchOrders();
+      showToast(isOnline ? "Order cancelled" : "Order cancelled offline", "success");
+    } catch (error: any) {
+      console.error("handleCancelOrder failed:", error);
+      showToast(error?.message || "Failed to cancel order", "error");
+    }
+  }
+
+
+  function openOrderReport(order: OrderRow, mode: "kot" | "pay" = "pay") {
+    if (mode === "kot") {
+      setReportMode("kot");
+      setReportOrder(order);
+      setShowHeaderMenu(false);
+      return;
+    }
+
+    // Payment is table-level only now.
+    // Opening a bill should show the customer bill, not a separate single-order payment flow.
+    setSelectedPaidOrder({
+      ...order,
+      payment_method: order.payment_method || null,
+      paid_at: order.paid_at || null,
+    });
+    setShowHeaderMenu(false);
+  }
+
+  function closeOrderReport() {
+    setReportOrder(null);
+    setReportMode("pay");
+  }
+
+  function getOrderTotal(order: OrderRow | null) {
+    if (!order) return 0;
+    return (order.order_items || []).reduce(
+      (sum, item) => sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
+      0
+    );
+  }
+
+  function getOrderFinalTotal(order: OrderRow | null) {
+    if (!order) return 0;
+    const storedGrandTotal = Number(order.grand_total || 0);
+    return storedGrandTotal > 0 ? storedGrandTotal : getOrderTotal(order);
+  }
+
+  function openPaidOrderBill(order: OrderRow) {
+    setSelectedPaidOrder(order);
+    setShowHeaderMenu(false);
+  }
+
+
+  function openDashboardUnpaidShortcut(table: GroupedTableOrder) {
+    const tableNo = String(table.table_number || "").trim();
+    if (!tableNo) return;
+
+    const relatedTodayUnpaidOrders = orders
+      .filter((order) => {
+        const sameTable = String(order.table_number || "").trim() === tableNo;
+        const isTodayOrder = getLocalDateString(order.created_at) === todayLocalDate;
+        const isUnpaidOrPendingSync = order.is_paid !== true || order.sync_status === "pending_payment";
+        return sameTable && isTodayOrder && isUnpaidOrPendingSync;
+      })
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+
+    const normalUnpaidOrders = relatedTodayUnpaidOrders.filter(
+      (order) => order.is_paid !== true && order.sync_status !== "pending_payment"
+    );
+    const pendingSyncOrders = relatedTodayUnpaidOrders.filter(
+      (order) => order.sync_status === "pending_payment"
+    );
+
+    if (normalUnpaidOrders.length === 1 && pendingSyncOrders.length === 0) {
+      openOrderReport(normalUnpaidOrders[0], "pay");
+      return;
+    }
+
+    if (normalUnpaidOrders.length === 0 && pendingSyncOrders.length > 0) {
+      setShowPaymentSyncQueue(true);
+      showToast("Payment sync queue खोलियो", "info");
+      return;
+    }
+
+    setTableSearch(tableNo);
+    changeView("report");
+    showToast(`Table ${tableNo} billing shortcut खोलियो`, "info");
+  }
+
+  function openDashboardOrderShortcut(order: OrderRow) {
+    if (order.is_paid === true) {
+      openPaidOrderBill(order);
+      return;
+    }
+
+    if (order.sync_status === "pending_payment") {
+      setSelectedPaidOrder({
+        ...order,
+        is_paid: true,
+        payment_method: order.payment_method || "cash",
+        paid_at: order.paid_at || new Date().toISOString(),
+        sync_status: "pending_payment",
+      });
+      setShowHeaderMenu(false);
+      showToast("Payment sync बाँकी छ. Customer bill खोलियो.", "info");
+      return;
+    }
+
+    openOrderReport(order, "pay");
+  }
+
+  function closePaidOrderBill() {
+    setSelectedPaidOrder(null);
+  }
+
+  function openChangeTableModal(currentTableNumber: string) {
+    const cleanTableNumber = String(currentTableNumber || "").trim();
+
+    if (!cleanTableNumber) {
+      showToast("Invalid table", "error");
+      return;
+    }
+
+    setChangeTableFrom(cleanTableNumber);
+    setChangeTableTo(cleanTableNumber);
+    setShowChangeTableModal(true);
+  }
+
+  function closeChangeTableModal() {
+    if (changingTable) return;
+    setShowChangeTableModal(false);
+    setChangeTableFrom("");
+    setChangeTableTo("");
+  }
+
+  async function confirmChangeTable() {
+    if (!restaurantId || changingTable) return;
+
+    const fromTable = String(changeTableFrom || "").trim();
+    const toTable = String(changeTableTo || "").trim();
+
+    if (!fromTable) {
+      showToast("Invalid old table", "error");
+      return;
+    }
+
+    if (!toTable || !/^\d+$/.test(toTable)) {
+      showToast("Please enter valid new table number", "error");
+      return;
+    }
+
+    if (fromTable === toTable) {
+      closeChangeTableModal();
+      return;
+    }
+
+    const affectedOrders = orders.filter((order) => {
+      return (
+        String(order.table_number || "").trim() === fromTable &&
+        order.is_paid !== true &&
+        order.sync_status !== "pending_payment"
+      );
+    });
+
+    if (affectedOrders.length === 0) {
+      showToast("No unpaid order found for this table", "error");
+      return;
+    }
+
+    const confirmed = await askConfirm(
+      `Table ${fromTable} ko unpaid orders Table ${toTable} maa move garne?`,
+      "Change",
+      "Cancel"
+    );
+
+    if (!confirmed) return;
+
+    const previousOrders = orders;
+    setChangingTable(true);
+
+    setOrders((prev) =>
+      prev.map((order) =>
+        String(order.table_number || "").trim() === fromTable &&
+        order.is_paid !== true &&
+        order.sync_status !== "pending_payment"
+          ? { ...order, table_number: toTable, sync_status: order.sync_status === "synced" ? "pending_update" : order.sync_status }
+          : order
+      )
+    );
+
+    setReportOrder((current) =>
+      current &&
+      String(current.table_number || "").trim() === fromTable &&
+      current.is_paid !== true &&
+      current.sync_status !== "pending_payment"
+        ? { ...current, table_number: toTable, sync_status: current.sync_status === "synced" ? "pending_update" : current.sync_status }
+        : current
+    );
+
+    try {
+      const localOrders = await localOrdersTable
+        .where("restaurant_id")
+        .equals(restaurantId)
+        .toArray();
+
+      const affectedIds = new Set(affectedOrders.map((order) => Number(order.id)));
+      const now = new Date().toISOString();
+
+      await Promise.all(
+        localOrders
+          .filter((localOrder) => {
+            const localUiId = Number(localOrder.id || 0);
+            const localServerId = Number(localOrder.server_id || 0);
+            return (
+              String(localOrder.table_number || "").trim() === fromTable &&
+              localOrder.is_paid !== true &&
+              localOrder.sync_status !== "pending_payment" &&
+              (affectedIds.has(localUiId) || affectedIds.has(localServerId))
+            );
+          })
+          .map((localOrder) =>
+            localOrdersTable.update(localOrder.id!, {
+              table_number: toTable,
+              updated_at: now,
+              sync_status: localOrder.sync_status === "synced" ? "pending_update" : localOrder.sync_status || "pending_update",
+            })
+          )
+      );
+
+      if (isOnline) {
+        const remoteOrderIds = affectedOrders
+          .map((order) => Number(order.id || 0))
+          .filter((id) => Number.isFinite(id) && id > 0 && id < 1000000000000);
+
+        if (remoteOrderIds.length > 0) {
+          const { error } = await supabase
+            .from("orders")
+            .update({ table_number: toTable })
+            .eq("restaurant_id", restaurantId)
+            .in("id", remoteOrderIds);
+
+          if (error) throw error;
+
+          const syncedLocals = await localOrdersTable
+            .where("restaurant_id")
+            .equals(restaurantId)
+            .toArray();
+
+          await Promise.all(
+            syncedLocals
+              .filter((localOrder) => localOrder.server_id && remoteOrderIds.includes(Number(localOrder.server_id)))
+              .map((localOrder) =>
+                localOrdersTable.update(localOrder.id!, {
+                  table_number: toTable,
+                  updated_at: now,
+                  sync_status: "synced",
+                })
+              )
+          );
+
+          setOrders((prev) =>
+            prev.map((order) =>
+              remoteOrderIds.includes(Number(order.id))
+                ? { ...order, table_number: toTable, sync_status: order.sync_status === "pending_update" ? "synced" : order.sync_status }
+                : order
+            )
+          );
+        }
+      }
+
+      setShowChangeTableModal(false);
+      setChangeTableFrom("");
+      setChangeTableTo("");
+      showToast(isOnline ? "Table changed" : "Table change saved offline", "success");
+      if (isOnline) {
+        scheduleOrdersRefresh(300);
+      }
+    } catch (error) {
+      console.error("confirmChangeTable failed:", error);
+      setOrders(previousOrders);
+      showToast(getReadableError(error) || "Failed to change table", "error");
+    } finally {
+      setChangingTable(false);
+    }
+  }
+
+  function convertOrderToBillReceipt(order: OrderRow | null): BillReceiptTable | null {
+    if (!order) return null;
+
+    const items = (order.order_items || []).map((item) => ({
+      item_name: item.item_name,
+      quantity: Number(item.quantity || 0),
+      total: Number(item.quantity || 0) * Number(item.unit_price || 0),
+      statuses: [item.status || order.status || "pending"],
+    }));
+
+    const rawSubtotal = items.reduce((sum, item) => sum + Number(item.total || 0), 0);
+    const subtotal = Number(order.subtotal || rawSubtotal);
+    const discountAmount = Number(order.discount_amount || 0);
+    const taxAmount = Number(order.tax_amount || 0);
+    const grandTotal = Number(order.grand_total || Math.max(0, subtotal - discountAmount + taxAmount));
+
+    return {
+      table_number: String(order.table_number || ""),
+      order_ids: [order.id],
+      remarks: order.remarks && order.remarks.trim() ? [order.remarks.trim()] : [],
+      items,
+      total: rawSubtotal,
+      subtotal,
+      discount_enabled: Boolean(order.discount_enabled),
+      discount_percent: Number(order.discount_percent || 0),
+      discount_amount: discountAmount,
+      tax_enabled: Boolean(order.tax_enabled),
+      tax_percent: Number(order.tax_percent || 0),
+      tax_amount: taxAmount,
+      grand_total: grandTotal,
+      unpaid_orders_count: order.is_paid === true ? 0 : 1,
+      sourceOrders: [order],
+    };
+  }
+
+  function convertGroupedTableToKotReceipt(table: GroupedTableOrder | null): BillReceiptTable | null {
+    if (!table) return null;
+
+    const sourceOrders = orders
+      .filter(
+        (order) =>
+          String(order.table_number || "").trim() === String(table.table_number || "").trim() &&
+          order.is_paid !== true
+      )
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+
+    const items = table.items.map((item) => ({
+      item_name: item.item_name,
+      quantity: Number(item.quantity || 0),
+      total: Number(item.total || 0),
+      statuses: [item.status || table.table_status || "pending"],
+    }));
+
+    return {
+      table_number: String(table.table_number || ""),
+      order_ids: table.order_ids,
+      remarks: table.remarks.filter((remark) => remark && remark.trim()),
+      items,
+      total: Number(table.total || 0),
+      unpaid_orders_count: Number(table.unpaid_orders_count || 0),
+      sourceOrders,
+    };
+  }
+
+
+  function isReadyReceiptItem(item: BillReceiptTable["items"][number]) {
+    return (item.statuses || []).some((status) => String(status || "").toLowerCase() === "ready");
+  }
+
+  function getActiveKotItems(items: BillReceiptTable["items"]) {
+    return items.filter((item) => !isReadyReceiptItem(item));
+  }
+
+  function getReadyKotItems(items: BillReceiptTable["items"]) {
+    return items.filter((item) => isReadyReceiptItem(item));
+  }
+
+  function getPrintableBillTable(table: BillReceiptTable, type: "kot" | "customer"): BillReceiptTable {
+    if (type !== "kot") return table;
+
+    const activeItems = getActiveKotItems(table.items);
+
+    return {
+      ...table,
+      items: activeItems,
+      total: activeItems.reduce((sum, item) => sum + Number(item.total || 0), 0),
+    };
+  }
+
+  const reportOrderBillTable = useMemo(() => convertOrderToBillReceipt(reportOrder), [reportOrder]);
+  const selectedPaidOrderBillTable = useMemo(
+    () => convertOrderToBillReceipt(selectedPaidOrder),
+    [selectedPaidOrder]
+  );
+
+  const RECEIPT_WIDTH_MM = 80;
+  const RECEIPT_MARGIN_MM = 4.5;
+  const RECEIPT_CONTENT_WIDTH_MM = RECEIPT_WIDTH_MM - RECEIPT_MARGIN_MM * 2;
+
+  function formatReceiptMoney(value: number) {
+    const normalized = Number(value || 0);
+    return Number.isInteger(normalized) ? String(normalized) : normalized.toFixed(2);
+  }
+
+
+  function amountToWords(value: number) {
+    const ones = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen", "Eighteen", "Nineteen"];
+    const tens = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"];
+
+    const cleanNumber = Math.max(0, Math.round(Number(value || 0)));
+
+    if (cleanNumber === 0) return "Zero Rupees";
+
+    const convertBelowThousand = (num: number): string => {
+      let output = "";
+      const hundred = Math.floor(num / 100);
+      const rest = num % 100;
+
+      if (hundred > 0) {
+        output += `${ones[hundred]} Hundred`;
+        if (rest > 0) output += " ";
+      }
+
+      if (rest > 0) {
+        if (rest < 20) {
+          output += ones[rest];
+        } else {
+          output += tens[Math.floor(rest / 10)];
+          if (rest % 10 > 0) output += ` ${ones[rest % 10]}`;
+        }
+      }
+
+      return output;
+    };
+
+    const crore = Math.floor(cleanNumber / 10000000);
+    const lakh = Math.floor((cleanNumber % 10000000) / 100000);
+    const thousand = Math.floor((cleanNumber % 100000) / 1000);
+    const rest = cleanNumber % 1000;
+
+    const parts: string[] = [];
+    if (crore) parts.push(`${convertBelowThousand(crore)} Crore`);
+    if (lakh) parts.push(`${convertBelowThousand(lakh)} Lakh`);
+    if (thousand) parts.push(`${convertBelowThousand(thousand)} Thousand`);
+    if (rest) parts.push(convertBelowThousand(rest));
+
+    return `${parts.join(" ")} Rupees`;
+  }
+
+  function createReceiptTempDoc() {
+    return new jsPDF({
+      orientation: "portrait",
+      unit: "mm",
+      format: [RECEIPT_WIDTH_MM, 260],
+    });
+  }
+
+  function createReceiptDoc(height: number) {
+    return new jsPDF({
+      orientation: "portrait",
+      unit: "mm",
+      format: [RECEIPT_WIDTH_MM, Math.max(height, 95)],
+      compress: true,
+    });
+  }
+
+  function estimateWrappedReceiptHeight(
+    value: string,
+    maxWidth: number,
+    fontSize: number,
+    lineHeight: number
+  ) {
+    const tempDoc = createReceiptTempDoc();
+    tempDoc.setFont("helvetica", "normal");
+    tempDoc.setFontSize(fontSize);
+    const lines = tempDoc.splitTextToSize(value || "", maxWidth) as string[];
+    return Math.max(lines.length, 1) * lineHeight;
+  }
+
+  function formatBillDate(dateStr?: string | null) {
+    if (!dateStr) return "-";
+    return new Date(dateStr).toLocaleString([], {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
+
+  function escapeHtml(value: string) {
+    return value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  function getPrimaryOrderTime(table: BillReceiptTable) {
+    return table.sourceOrders.map((order) => order.created_at).sort()[0] || null;
+  }
+
+
+  function estimatePrintReceiptHeight(table: BillReceiptTable, type: "kot" | "customer") {
+    const restaurantTitle = (restaurantName || "Restaurant").trim() || "Restaurant";
+
+    let estimatedHeight = 8;
+    estimatedHeight += estimateWrappedReceiptHeight(restaurantTitle, RECEIPT_CONTENT_WIDTH_MM, 13, 5.2);
+    estimatedHeight += 5;
+    estimatedHeight += 7;
+    estimatedHeight += 4;
+    estimatedHeight += 3.5;
+    estimatedHeight += type === "customer" ? 16 : 12;
+    estimatedHeight += 3.5;
+    estimatedHeight += 5.5;
+
+    for (const item of table.items) {
+      estimatedHeight += estimateWrappedReceiptHeight(
+        item.item_name,
+        type === "customer" ? RECEIPT_CONTENT_WIDTH_MM - 25 : RECEIPT_CONTENT_WIDTH_MM - 12,
+        10,
+        4.6
+      );
+      estimatedHeight += 1.8;
+    }
+
+    estimatedHeight += 3.5;
+    estimatedHeight += type === "customer" ? 10 : 12;
+
+    if (table.remarks.length > 0) {
+      estimatedHeight += 3.5;
+      estimatedHeight += 4.4;
+      for (const remark of table.remarks) {
+        estimatedHeight += estimateWrappedReceiptHeight(remark, RECEIPT_CONTENT_WIDTH_MM, 9, 4.2);
+      }
+      estimatedHeight += 1.2;
+    }
+
+    if (type === "customer" && paymentQrUrl.trim()) {
+      estimatedHeight += 36;
+    }
+
+    estimatedHeight += 3.5;
+    estimatedHeight += type === "kot" ? 12 : 11;
+    estimatedHeight += 6;
+
+    return Math.max(Math.ceil(estimatedHeight), 95);
+  }
+
+  function getBillDocumentHtml(
+    table: BillReceiptTable,
+    type: "kot" | "customer",
+    pageHeightMm?: number
+  ) {
+    const restaurantTitle = escapeHtml((restaurantName || "Restaurant").trim() || "Restaurant");
+    const rawCreatedAt = getPrimaryOrderTime(table) || new Date().toISOString();
+    const billDate = new Date(rawCreatedAt).toLocaleDateString();
+    const billTime = new Date(rawCreatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const printTime = new Date().toLocaleString();
+    const orderNo = table.order_ids?.join(", ") || "-";
+
+    if (type === "kot") {
+      const totalQty = table.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+      const rows = table.items
+        .map((item) => `
+          <div class="grid kot-row item-row">
+            <div class="item-name">${escapeHtml(item.item_name)}</div>
+            <div class="qty">${escapeHtml(String(item.quantity || 0))}</div>
+          </div>
+        `)
+        .join("");
+
+      return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=320, initial-scale=1.0" />
+  <title>${restaurantTitle} - KOT</title>
+  <style>
+    @page { size: 80mm ${pageHeightMm || 140}mm; margin: 0; }
+    * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    html, body { margin: 0 !important; padding: 0 !important; width: 80mm !important; background: #fff !important; color: #000 !important; font-family: Arial, Helvetica, sans-serif !important; }
+    body * { visibility: hidden; }
+    .receipt-shell, .receipt-shell * { visibility: visible; }
+    .receipt-shell { width: 80mm !important; position: absolute; top: 0; left: 0; }
+    .receipt { width: 71mm; margin: 0 auto; padding: 5mm 2.5mm; }
+    .center { text-align: center; }
+    .title { font-size: 15px; font-weight: 800; text-transform: uppercase; line-height: 1.25; }
+    .bill-title { margin-top: 2mm; font-size: 11px; font-weight: 800; }
+    .divider { border-top: 1px dashed #666; margin: 3mm 0; }
+    .meta-line { font-size: 9px; line-height: 1.45; font-weight: 700; }
+    .grid { display: grid; align-items: start; column-gap: 2mm; }
+    .kot-row { grid-template-columns: minmax(0, 1fr) 12mm; }
+    .header-row { font-size: 9px; font-weight: 800; }
+    .item-row { font-size: 10px; line-height: 1.45; margin-top: 2.2mm; }
+    .qty { text-align: right; }
+    .item-name { word-break: break-word; }
+    .summary-line { display: flex; justify-content: space-between; font-size: 10px; font-weight: 800; line-height: 1.4; }
+    .footer-strong { font-size: 10px; font-weight: 800; line-height: 1.35; }
+  </style>
+</head>
+<body>
+  <div class="receipt-shell"><div class="receipt">
+    <div class="center"><div class="title">${restaurantTitle}</div><div class="bill-title">NEW / REMAINING KOT</div></div>
+    <div class="divider"></div>
+    <div class="meta-line">Table : ${escapeHtml(table.table_number)}</div>
+    <div class="meta-line">Time  : ${escapeHtml(formatBillDate(rawCreatedAt))}</div>
+    <div class="divider"></div>
+    <div class="grid kot-row header-row"><span>ITEM</span><span class="qty">QTY</span></div>
+    <div class="divider"></div>
+    ${rows}
+    <div class="divider"></div>
+    <div class="summary-line"><span>Total Items</span><span>${escapeHtml(String(table.items.length))}</span></div>
+    <div class="summary-line"><span>Total Qty</span><span>${escapeHtml(String(totalQty))}</span></div>
+    <div class="divider"></div>
+    <div class="center footer-strong">--- KITCHEN COPY ---</div>
+    <div class="center footer-strong">--- THANK YOU ---</div>
+  </div></div>
+</body>
+</html>`;
+    }
+
+    const subtotalAmount = Number(table.subtotal ?? table.total ?? 0);
+    const discountAmount = Number(table.discount_amount || 0);
+    const taxAmount = Number(table.tax_amount || 0);
+    const grandTotalAmount = Number(table.grand_total ?? table.total ?? 0);
+    const dueAmount = Number(table.due_amount ?? grandTotalAmount);
+    const paidAmount = Number(table.paid_amount || 0);
+    const isPaidReceipt = Boolean(table.payment_method) || dueAmount <= 0 || paidAmount >= grandTotalAmount;
+    const receiptFooterNote = isPaidReceipt
+      ? "Payment Received Successfully.<br/>Thank you for dining with us."
+      : "Pending Payment<br/>Please complete your payment to receive the final receipt.";
+    const totalInWords = escapeHtml(amountToWords(grandTotalAmount));
+    const paymentQrSrc = escapeHtml(paymentQrUrl.trim());
+
+    const rows = table.items
+      .map((item, index) => {
+        const qty = Number(item.quantity || 0);
+        const amount = Number(item.total || 0);
+        const rate = qty > 0 ? amount / qty : amount;
+        return `
+          <tr>
+            <td class="sn">${index + 1}</td>
+            <td class="particular">${escapeHtml(item.item_name)}</td>
+            <td class="num">${escapeHtml(formatReceiptMoney(qty))}</td>
+            <td class="num">${escapeHtml(formatReceiptMoney(rate))}</td>
+            <td class="num">${escapeHtml(formatReceiptMoney(amount))}</td>
+          </tr>
+        `;
+      })
+      .join("");
+
+    const qrHtml = paymentQrSrc
+      ? `
+        <div class="qr-wrap">
+          <div class="qr-title">Payment QR</div>
+          <img class="qr-img" src="${paymentQrSrc}" alt="Payment QR" />
+        </div>
+      `
+      : "";
+
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=320, initial-scale=1.0" />
+  <title>${restaurantTitle} - Bill Receipt</title>
+  <style>
+    @page { size: 80mm ${pageHeightMm || 170}mm; margin: 0; }
+    * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    html, body { margin: 0 !important; padding: 0 !important; width: 80mm !important; background: #fff !important; color: #111 !important; font-family: Arial, Helvetica, sans-serif !important; }
+    body * { visibility: hidden; }
+    .receipt-shell, .receipt-shell * { visibility: visible; }
+    .receipt-shell { width: 80mm !important; position: absolute; top: 0; left: 0; }
+    .receipt { width: 72mm; margin: 0 auto; padding: 5mm 2mm; }
+    .center { text-align: center; }
+    .shop-name { font-size: 13px; font-weight: 800; line-height: 1.25; text-transform: none; }
+    .shop-sub { margin-top: 1mm; font-size: 9px; line-height: 1.25; }
+    .bill-title { margin-top: 3mm; font-size: 12px; font-weight: 800; }
+    .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5mm 5mm; margin-top: 4mm; font-size: 9px; line-height: 1.35; }
+    .meta-label { font-weight: 700; display: block; }
+    .meta-value { display: block; margin-top: 0.6mm; }
+    table { width: 100%; border-collapse: collapse; margin-top: 4mm; font-size: 8.5px; }
+    th { text-align: left; font-weight: 800; padding: 1.4mm 0.6mm; border-top: 1px solid #333; border-bottom: 1px solid #333; }
+    td { padding: 1.5mm 0.6mm; vertical-align: top; border-bottom: 1px solid #e5e5e5; }
+    .sn { width: 6mm; text-align: left; }
+    .particular { width: auto; word-break: break-word; }
+    .num { text-align: right; white-space: nowrap; }
+    .summary { margin-top: 3.5mm; font-size: 9.4px; line-height: 1.55; }
+    .summary-line { display: flex; justify-content: space-between; gap: 4mm; }
+    .summary-line strong { font-weight: 800; }
+    .grand { margin-top: 1.2mm; padding-top: 1.6mm; border-top: 1px solid #333; font-size: 10.8px; font-weight: 900; }
+    .words { margin-top: 2.5mm; font-size: 9px; line-height: 1.35; }
+    .qr-wrap { margin: 4mm 0 2mm; text-align: center; page-break-inside: avoid; break-inside: avoid; }
+    .qr-title { font-size: 9px; font-weight: 800; margin-bottom: 1.5mm; }
+    .qr-img { width: 32mm; height: 32mm; object-fit: contain; display: block; margin: 0 auto; }
+    .print-meta { margin-top: 3.5mm; display: grid; grid-template-columns: 1fr 1fr; gap: 1mm 4mm; font-size: 8.5px; line-height: 1.3; }
+    .note { margin-top: 3mm; font-size: 8.5px; line-height: 1.35; text-align: center; }
+    .thanks { margin-top: 3mm; text-align: center; font-size: 10px; font-weight: 900; letter-spacing: 0.4px; }
+  </style>
+</head>
+<body>
+  <div class="receipt-shell"><div class="receipt">
+    <div class="center">
+      <div class="shop-name">${restaurantTitle}</div>
+      <div class="bill-title">Bill Receipt</div>
+    </div>
+
+    <div class="meta-grid">
+      <div><span class="meta-label">Date</span><span class="meta-value">${escapeHtml(billDate)}</span><span class="meta-value">${escapeHtml(billTime)}</span></div>
+      <div><span class="meta-label">Order No.</span><span class="meta-value">${escapeHtml(orderNo)}</span></div>
+      <div><span class="meta-label">Table</span><span class="meta-value">${escapeHtml(table.table_number)}</span></div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>SN</th>
+          <th>Particular</th>
+          <th class="num">Qty</th>
+          <th class="num">Rate</th>
+          <th class="num">Amount</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+
+    <div class="summary">
+      <div class="summary-line"><span>Subtotal (Pre-tax):</span><span>Rs. ${escapeHtml(formatReceiptMoney(subtotalAmount))}</span></div>
+      ${discountAmount > 0 ? `<div class="summary-line"><span>Discount${Number(table.discount_percent || 0) > 0 ? ` (${escapeHtml(formatReceiptMoney(Number(table.discount_percent || 0)))}%)` : ""}:</span><span>- Rs. ${escapeHtml(formatReceiptMoney(discountAmount))}</span></div>` : ""}
+      <div class="summary-line"><span>Tax${Number(table.tax_percent || 0) > 0 ? ` (${escapeHtml(formatReceiptMoney(Number(table.tax_percent || 0)))}%)` : ""}:</span><span>Rs. ${escapeHtml(formatReceiptMoney(taxAmount))}</span></div>
+      <div class="summary-line grand"><span>Grand Total:</span><span>Rs. ${escapeHtml(formatReceiptMoney(grandTotalAmount))}</span></div>
+      <div class="summary-line"><span>Paid:</span><span>Rs. ${escapeHtml(formatReceiptMoney(paidAmount))}</span></div>
+      <div class="summary-line"><span>Due:</span><span>Rs. ${escapeHtml(formatReceiptMoney(isPaidReceipt ? 0 : dueAmount))}</span></div>
+      ${table.payment_method ? `<div class="summary-line"><span>Payment Method:</span><span>${escapeHtml(String(table.payment_method).toUpperCase())}</span></div>` : ""}
+    </div>
+
+    <div class="words"><strong>Total in Words:</strong> ${totalInWords}</div>
+
+    ${qrHtml}
+
+    <div class="print-meta">
+      <div><strong>Printed By:</strong><br/>default</div>
+      <div><strong>Print Time:</strong><br/>${escapeHtml(printTime)}</div>
+    </div>
+
+    <div class="note">${receiptFooterNote}</div>
+    <div class="thanks">THANK YOU....</div>
+  </div></div>
+</body>
+</html>`;
+  }
+
+  function openPrintWindow(table: BillReceiptTable, type: "kot" | "customer", autoPrint = false) {
+    const pageHeightMm = estimatePrintReceiptHeight(table, type);
+    const html = getBillDocumentHtml(table, type, pageHeightMm);
+
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("aria-hidden", "true");
+    iframe.style.position = "fixed";
+    iframe.style.right = "0";
+    iframe.style.bottom = "0";
+    iframe.style.width = "1px";
+    iframe.style.height = "1px";
+    iframe.style.opacity = "0";
+    iframe.style.pointerEvents = "none";
+    iframe.style.border = "0";
+    document.body.appendChild(iframe);
+
+    const frameWindow = iframe.contentWindow;
+    const frameDocument = iframe.contentDocument || frameWindow?.document || null;
+
+    if (!frameWindow || !frameDocument) {
+      document.body.removeChild(iframe);
+      return null;
+    }
+
+    const finalHtml = html.replace(
+      "</body>",
+      autoPrint
+        ? `<script>
+            window.addEventListener("load", function () {
+              var doPrint = function () {
+                try {
+                  document.documentElement.scrollTop = 0;
+                  document.body.scrollTop = 0;
+                  window.focus();
+                  window.print();
+                } catch (error) {
+                  console.error(error);
+                }
+              };
+
+              setTimeout(doPrint, 180);
+
+              window.addEventListener("afterprint", function () {
+                setTimeout(function () {
+                  try {
+                    parent.postMessage({ type: "mini-bill-print-done" }, "*");
+                  } catch (error) {
+                    console.error(error);
+                  }
+                }, 80);
+              });
+            });
+          </script></body>`
+        : "</body>"
+    );
+
+    frameDocument.open();
+    frameDocument.write(finalHtml);
+    frameDocument.close();
+
+    const cleanup = () => {
+      if (iframe.parentNode) {
+        iframe.parentNode.removeChild(iframe);
+      }
+      window.removeEventListener("message", handleMessage);
+    };
+
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === "mini-bill-print-done") {
+        cleanup();
+      }
+    };
+
+    window.addEventListener("message", handleMessage);
+
+    setTimeout(() => {
+      cleanup();
+    }, autoPrint ? 120000 : 30000);
+
+    return frameWindow;
+  }
+
+  function printBill(table: BillReceiptTable, type: "kot" | "customer") {
+    const printableTable = getPrintableBillTable(table, type);
+
+    if (type === "kot" && printableTable.items.length === 0) {
+      showToast("New KOT item छैन. Ready items print हुँदैनन्.", "info");
+      return;
+    }
+
+    const printTarget = openPrintWindow(printableTable, type, true);
+    if (!printTarget) {
+      showToast("Bill print garna milena", "error");
+    }
+  }
+  function loadImageForPdf(src: string) {
+    return new Promise<string>((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+
+      img.onload = () => {
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = img.naturalWidth || img.width;
+          canvas.height = img.naturalHeight || img.height;
+
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            reject(new Error("QR image conversion failed"));
+            return;
+          }
+
+          ctx.drawImage(img, 0, 0);
+          resolve(canvas.toDataURL("image/png"));
+        } catch (error) {
+          reject(error);
+        }
+      };
+
+      img.onerror = reject;
+      img.src = src;
+    });
+  }
+
+  async function downloadBill(table: BillReceiptTable, type: "kot" | "customer") {
+    const printableTable = getPrintableBillTable(table, type);
+
+    if (type === "kot" && printableTable.items.length === 0) {
+      showToast("New KOT item छैन. Ready items download हुँदैनन्.", "info");
+      return;
+    }
+
+    table = printableTable;
+
+    const restaurantTitle = (restaurantName || "Restaurant").trim() || "Restaurant";
+    const rawCreatedAt = getPrimaryOrderTime(table) || new Date().toISOString();
+    const createdDate = new Date(rawCreatedAt);
+    const billDate = createdDate.toLocaleDateString();
+    const billTime = createdDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const printTime = new Date().toLocaleString();
+    const orderNo = table.order_ids?.join(", ") || "-";
+    const totalQty = table.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+    const totalAmount = Number(table.total || 0);
+    const subtotalAmount = Number(table.subtotal ?? totalAmount);
+    const discountAmount = Number(table.discount_amount || 0);
+    const taxAmount = Number(table.tax_amount || 0);
+    const grandTotalAmount = Number(table.grand_total ?? totalAmount);
+    const dueAmount = Number(table.due_amount ?? grandTotalAmount);
+    const paidAmount = Number(table.paid_amount || 0);
+    const isPaidReceipt = Boolean(table.payment_method) || dueAmount <= 0 || paidAmount >= grandTotalAmount;
+
+    if (type === "kot") {
+      let estimatedHeight = 95;
+      estimatedHeight += table.items.length * 7;
+      const doc = createReceiptDoc(estimatedHeight);
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const qtyX = pageWidth - RECEIPT_MARGIN_MM;
+      let y = 8;
+
+      const centerText = (value: string, fontSize = 10, style: "normal" | "bold" = "normal", gap = 4.2) => {
+        doc.setFont("helvetica", style);
+        doc.setFontSize(fontSize);
+        const lines = doc.splitTextToSize(value, RECEIPT_CONTENT_WIDTH_MM) as string[];
+        lines.forEach((line) => {
+          doc.text(line, pageWidth / 2, y, { align: "center" });
+          y += gap;
+        });
+      };
+
+      const leftText = (value: string, fontSize = 9, style: "normal" | "bold" = "normal", gap = 4.1) => {
+        doc.setFont("helvetica", style);
+        doc.setFontSize(fontSize);
+        const lines = doc.splitTextToSize(value, RECEIPT_CONTENT_WIDTH_MM) as string[];
+        lines.forEach((line) => {
+          doc.text(line, RECEIPT_MARGIN_MM, y);
+          y += gap;
+        });
+      };
+
+      const divider = () => {
+        doc.setDrawColor(80, 80, 80);
+        doc.setLineWidth(0.2);
+        doc.setLineDashPattern([1.2, 1.2], 0);
+        doc.line(RECEIPT_MARGIN_MM, y, pageWidth - RECEIPT_MARGIN_MM, y);
+        doc.setLineDashPattern([], 0);
+        y += 3.5;
+      };
+
+      centerText(restaurantTitle.toUpperCase(), 13, "bold", 5.2);
+      centerText("NEW / REMAINING KOT", 11.5, "bold", 4.8);
+      divider();
+      leftText(`Table : ${table.table_number}`, 9.3, "bold", 4.4);
+      leftText(`Time  : ${formatBillDate(rawCreatedAt)}`, 8.4, "normal", 4.1);
+      divider();
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9.2);
+      doc.text("ITEM", RECEIPT_MARGIN_MM, y);
+      doc.text("QTY", qtyX, y, { align: "right" });
+      y += 2;
+      divider();
+
+      for (const item of table.items) {
+        const itemLines = doc.splitTextToSize(item.item_name, RECEIPT_CONTENT_WIDTH_MM - 12) as string[];
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(10);
+        itemLines.forEach((line, index) => {
+          doc.text(line, RECEIPT_MARGIN_MM, y);
+          if (index === 0) doc.text(String(item.quantity || 0), qtyX, y, { align: "right" });
+          y += 4.6;
+        });
+        y += 1.8;
+      }
+
+      divider();
+      leftText(`Total Items : ${table.items.length}`, 9, "bold", 4.4);
+      leftText(`Total Qty   : ${totalQty}`, 9, "bold", 4.4);
+      divider();
+      centerText("--- KITCHEN COPY ---", 8.8, "bold", 4.2);
+      centerText("--- THANK YOU ---", 9.6, "bold", 4.4);
+      doc.save(`${restaurantTitle.replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-") || "restaurant"}-kot-table-${table.table_number}.pdf`);
+      return;
+    }
+
+    let estimatedHeight = 105;
+    estimatedHeight += estimateWrappedReceiptHeight(restaurantTitle, RECEIPT_CONTENT_WIDTH_MM, 13, 5.2);
+    estimatedHeight += table.items.length * 7;
+    estimatedHeight += 42;
+    if (paymentQrUrl.trim()) estimatedHeight += 42;
+    estimatedHeight += 26;
+
+    const doc = createReceiptDoc(estimatedHeight);
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const rightX = pageWidth - RECEIPT_MARGIN_MM;
+    let y = 8;
+
+    const centerText = (value: string, fontSize = 10, style: "normal" | "bold" = "normal", gap = 4.2) => {
+      doc.setFont("helvetica", style);
+      doc.setFontSize(fontSize);
+      const lines = doc.splitTextToSize(value, RECEIPT_CONTENT_WIDTH_MM) as string[];
+      lines.forEach((line) => {
+        doc.text(line, pageWidth / 2, y, { align: "center" });
+        y += gap;
+      });
+    };
+
+    const leftText = (value: string, fontSize = 9, style: "normal" | "bold" = "normal", gap = 4.1) => {
+      doc.setFont("helvetica", style);
+      doc.setFontSize(fontSize);
+      const lines = doc.splitTextToSize(value, RECEIPT_CONTENT_WIDTH_MM) as string[];
+      lines.forEach((line) => {
+        doc.text(line, RECEIPT_MARGIN_MM, y);
+        y += gap;
+      });
+    };
+
+    const line = () => {
+      doc.setDrawColor(60, 60, 60);
+      doc.setLineWidth(0.25);
+      doc.line(RECEIPT_MARGIN_MM, y, rightX, y);
+      y += 3;
+    };
+
+    const summaryLine = (label: string, value: string, bold = false) => {
+      doc.setFont("helvetica", bold ? "bold" : "normal");
+      doc.setFontSize(bold ? 10.5 : 9.5);
+      doc.text(label, RECEIPT_MARGIN_MM, y);
+      doc.text(value, rightX, y, { align: "right" });
+      y += bold ? 5 : 4.4;
+    };
+
+    centerText(restaurantTitle, 13, "bold", 5.2);
+    y += 1;
+    centerText("Bill Receipt", 12, "bold", 5);
+    y += 1.5;
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8.8);
+    doc.text("Date", RECEIPT_MARGIN_MM, y);
+    doc.text("Order No.", pageWidth / 2 + 2, y);
+    y += 4;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8.8);
+    doc.text(billDate, RECEIPT_MARGIN_MM, y);
+    doc.text(orderNo, pageWidth / 2 + 2, y);
+    y += 4;
+    doc.text(billTime, RECEIPT_MARGIN_MM, y);
+    y += 4.5;
+    doc.setFont("helvetica", "bold");
+    doc.text("Table", RECEIPT_MARGIN_MM, y);
+    y += 4;
+    doc.setFont("helvetica", "normal");
+    doc.text(String(table.table_number), RECEIPT_MARGIN_MM, y);
+    y += 5;
+
+    line();
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8.2);
+    const snX = RECEIPT_MARGIN_MM;
+    const itemX = RECEIPT_MARGIN_MM + 7;
+    const qtyX = pageWidth - RECEIPT_MARGIN_MM - 30;
+    const rateX = pageWidth - RECEIPT_MARGIN_MM - 16;
+    const amtX = rightX;
+    doc.text("SN", snX, y);
+    doc.text("Particular", itemX, y);
+    doc.text("Qty", qtyX, y, { align: "right" });
+    doc.text("Rate", rateX, y, { align: "right" });
+    doc.text("Amount", amtX, y, { align: "right" });
+    y += 2.2;
+    line();
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8.7);
+    table.items.forEach((item, index) => {
+      const qty = Number(item.quantity || 0);
+      const amount = Number(item.total || 0);
+      const rate = qty > 0 ? amount / qty : amount;
+      const itemLines = doc.splitTextToSize(item.item_name, qtyX - itemX - 2) as string[];
+      itemLines.forEach((itemLine, lineIndex) => {
+        if (lineIndex === 0) doc.text(String(index + 1), snX, y);
+        doc.text(itemLine, itemX, y);
+        if (lineIndex === 0) {
+          doc.text(formatReceiptMoney(qty), qtyX, y, { align: "right" });
+          doc.text(formatReceiptMoney(rate), rateX, y, { align: "right" });
+          doc.text(formatReceiptMoney(amount), amtX, y, { align: "right" });
+        }
+        y += 4.2;
+      });
+      y += 0.8;
+    });
+
+    y += 1;
+    summaryLine("Subtotal (Pre-tax):", `Rs. ${formatReceiptMoney(subtotalAmount)}`);
+
+    if (discountAmount > 0) {
+      const discountLabel =
+        Number(table.discount_percent || 0) > 0
+          ? `Discount (${formatReceiptMoney(Number(table.discount_percent || 0))}%):`
+          : "Discount:";
+
+      summaryLine(discountLabel, `- Rs. ${formatReceiptMoney(discountAmount)}`);
+    }
+
+    const taxLabel =
+      Number(table.tax_percent || 0) > 0
+        ? `Tax (${formatReceiptMoney(Number(table.tax_percent || 0))}%):`
+        : "Tax:";
+
+    summaryLine(taxLabel, `Rs. ${formatReceiptMoney(taxAmount)}`);
+    summaryLine("Grand Total:", `Rs. ${formatReceiptMoney(grandTotalAmount)}`, true);
+    summaryLine("Paid:", `Rs. ${formatReceiptMoney(paidAmount)}`);
+    summaryLine("Due:", `Rs. ${formatReceiptMoney(isPaidReceipt ? 0 : dueAmount)}`);
+
+    if (table.payment_method) {
+      summaryLine("Payment Method:", String(table.payment_method).toUpperCase());
+    }
+
+    leftText(`Total in Words: ${amountToWords(grandTotalAmount)}`, 9, "normal", 4.2);
+
+    if (paymentQrUrl.trim()) {
+      y += 2;
+      try {
+        const qrImageDataUrl = await loadImageForPdf(paymentQrUrl.trim());
+        const qrSize = 32;
+        const qrX = (pageWidth - qrSize) / 2;
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(9);
+        doc.text("Payment QR", pageWidth / 2, y, { align: "center" });
+        y += 4;
+        doc.addImage(qrImageDataUrl, "PNG", qrX, y, qrSize, qrSize);
+        y += qrSize + 4;
+      } catch (error) {
+        console.error("Failed to load payment QR for PDF", error);
+      }
+    }
+
+    y += 1;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8.5);
+    doc.text("Printed By:", RECEIPT_MARGIN_MM, y);
+    doc.text("Print Time:", pageWidth / 2 + 2, y);
+    y += 4;
+    doc.setFont("helvetica", "normal");
+    doc.text("default", RECEIPT_MARGIN_MM, y);
+    const printLines = doc.splitTextToSize(printTime, pageWidth / 2 - RECEIPT_MARGIN_MM - 4) as string[];
+    printLines.forEach((printLine, index) => {
+      doc.text(printLine, pageWidth / 2 + 2, y + index * 3.8);
+    });
+    y += Math.max(5, printLines.length * 3.8 + 2);
+
+    if (isPaidReceipt) {
+      centerText("Payment Received Successfully.", 8.4, "normal", 3.7);
+      centerText("Thank you for dining with us.", 8.4, "normal", 3.7);
+    } else {
+      centerText("Pending Payment", 8.4, "normal", 3.7);
+      centerText("Please complete your payment to receive the final receipt.", 8.4, "normal", 3.7);
+    }
+    y += 1;
+    centerText("THANK YOU....", 10, "bold", 4.4);
+
+    const safeRestaurantName = restaurantTitle
+      .replace(/[^\w\s-]/g, "")
+      .trim()
+      .replace(/\s+/g, "-");
+
+    doc.save(`${safeRestaurantName || "restaurant"}-customer-bill-table-${table.table_number}.pdf`);
+  }
+
+async function fetchRestaurant(showLoader = false) {
+  if (!restaurantId) {
+    setCheckingRestaurant(true);
+    setRestaurantExists(true);
+    return;
+  }
+
+  if (showLoader) {
+    setCheckingRestaurant(true);
+  }
+
+  if (!isOnline) {
+    const localRestaurant = await localRestaurantCacheTable
+      .where("restaurant_id")
+      .equals(restaurantId)
+      .first();
+
+    if (!localRestaurant) {
+      const [localOrders, localMenuItems] = await Promise.all([
+        localOrdersTable.where("restaurant_id").equals(restaurantId).toArray(),
+        localMenuItemsTable.where("restaurant_id").equals(restaurantId).toArray(),
+      ]);
+
+      const hasOfflineData =
+        localOrders.length > 0 || localMenuItems.length > 0;
+
+      if (!hasOfflineData) {
+        setRestaurantExists(false);
+        setCheckingRestaurant(false);
+        return;
+      }
+
+      setRestaurantExists(true);
+      setIsSetupDone(true);
+      setRestaurantName("Restaurant");
+      setRestaurantLogoUrl("");
+      setRestaurantLogoPreview(null);
+      setPaymentQrUrl("");
+      setPaymentQrPreview("");
+      setInventoryEnabled(false);
+      setEnableTax(false);
+      setDefaultTaxPercent(13);
+      setEnableDiscount(false);
+      setProfitPercent(40);
+      setCheckingRestaurant(false);
+      return;
+    }
+
+    setRestaurantExists(true);
+    setIsSetupDone(true);
+    setRestaurantName(localRestaurant.name || "Restaurant");
+    setRestaurantLogoUrl(localRestaurant.restaurant_logo_url || "");
+    setRestaurantLogoPreview(localRestaurant.restaurant_logo_url || null);
+    setPaymentQrUrl(localRestaurant.payment_qr_url || "");
+    setPaymentQrPreview(localRestaurant.payment_qr_url || "");
+    setInventoryEnabled(localRestaurant.inventory_enabled === true);
+    setEnableTax(localRestaurant.enable_tax === true);
+    setDefaultTaxPercent(Number(localRestaurant.default_tax_percent ?? 13));
+    setEnableDiscount(localRestaurant.enable_discount === true);
+    setProfitPercent(Number(localRestaurant.profit_percent ?? 40));
+
+    setCheckingRestaurant(false);
+    return;
+  }
+
+  const { data, error } = await supabase
+    .from("restaurants")
+   .select("*")
+    .eq("id", restaurantId)
+    .single();
+
+  if (error || !data) {
+    setRestaurantExists(false);
+    setCheckingRestaurant(false);
+    return;
+  }
+
+  const restaurantData = data as Record<string, unknown> & {
+    name?: string;
+    restaurant_name?: string;
+    restaurant?: string;
+    title?: string;
+    profit_percent?: number | string | null;
+    payment_qr_url?: string | null;
+    restaurant_logo_url?: string | null;
+    inventory_enabled?: boolean | null;
+    enable_tax?: boolean | null;
+    default_tax_percent?: number | string | null;
+    enable_discount?: boolean | null;
+    is_setup_done?: boolean;
+    setup_completed?: boolean | null;
+  };
+
+  setRestaurantExists(true);
+
+  const fetchedRestaurantName =
+    restaurantData.name ||
+    restaurantData.restaurant_name ||
+    restaurantData.restaurant ||
+    restaurantData.title ||
+    "";
+
+  const fetchedProfitPercent = Number(restaurantData.profit_percent ?? 40);
+  const fetchedInventoryEnabled = restaurantData.inventory_enabled === true;
+  const fetchedEnableTax = restaurantData.enable_tax === true;
+  const fetchedDefaultTaxPercent = Number(restaurantData.default_tax_percent ?? 13);
+  const fetchedEnableDiscount = restaurantData.enable_discount === true;
+  const fetchedPaymentQrUrl = String(restaurantData.payment_qr_url || "");
+  const fetchedRestaurantLogoUrl = String(restaurantData.restaurant_logo_url || "");
+
+  const setupComplete =
+    restaurantData.setup_completed === true || restaurantData.is_setup_done === true;
+
+  await localRestaurantCacheTable.where("restaurant_id").equals(restaurantId).delete();
+
+  await localRestaurantCacheTable.add({
+    restaurant_id: restaurantId,
+    name: fetchedRestaurantName || "Restaurant",
+    profit_percent: Number.isFinite(fetchedProfitPercent) ? fetchedProfitPercent : 40,
+    payment_qr_url: fetchedPaymentQrUrl,
+    restaurant_logo_url: fetchedRestaurantLogoUrl,
+    inventory_enabled: fetchedInventoryEnabled,
+    enable_tax: fetchedEnableTax,
+    default_tax_percent: Number.isFinite(fetchedDefaultTaxPercent) ? fetchedDefaultTaxPercent : 13,
+    enable_discount: fetchedEnableDiscount,
+    is_setup_done: setupComplete,
+    updated_at: new Date().toISOString(),
+  });
+
+  setIsSetupDone(setupComplete);
+  setRestaurantName(fetchedRestaurantName || "Restaurant");
+  setRestaurantLogoUrl(fetchedRestaurantLogoUrl);
+  setRestaurantLogoPreview(fetchedRestaurantLogoUrl || null);
+  setInventoryEnabled(fetchedInventoryEnabled);
+  setEnableTax(fetchedEnableTax);
+  setDefaultTaxPercent(Number.isFinite(fetchedDefaultTaxPercent) ? fetchedDefaultTaxPercent : 13);
+  setEnableDiscount(fetchedEnableDiscount);
+  setProfitPercent(Number.isFinite(fetchedProfitPercent) ? fetchedProfitPercent : 40);
+  setPaymentQrUrl(fetchedPaymentQrUrl);
+  setPaymentQrPreview(fetchedPaymentQrUrl);
+
+  if (!setupComplete) {
+    setSetupRestaurantName(fetchedRestaurantName || "");
+  }
+
+  // Login has already been verified by /launcher. Do not re-check plain passwords here.
+
+  setCheckingRestaurant(false);
+}
+
+async function saveTaxDiscountSettings() {
+  if (!restaurantId) {
+    showToast("Invalid restaurant link", "error");
+    return;
+  }
+
+  if (!isOnline) {
+    showToast("Tax & discount setting change garna internet chaincha", "error");
+    return;
+  }
+
+  const normalizedTaxPercent = Number(defaultTaxPercent || 0);
+
+  if (enableTax && (!Number.isFinite(normalizedTaxPercent) || normalizedTaxPercent < 0 || normalizedTaxPercent > 100)) {
+    showToast("Tax % must be between 0 and 100", "error");
+    return;
+  }
+
+  setSavingTaxDiscount(true);
+
+  try {
+    const { error } = await supabase
+      .from("restaurants")
+      .update({
+        enable_tax: enableTax,
+        default_tax_percent: enableTax ? normalizedTaxPercent : 0,
+        enable_discount: enableDiscount,
+      })
+      .eq("id", restaurantId);
+
+    if (error) throw error;
+
+    const localRestaurant = await localRestaurantCacheTable
+      .where("restaurant_id")
+      .equals(restaurantId)
+      .first();
+
+    if (localRestaurant?.id) {
+      await localRestaurantCacheTable.update(localRestaurant.id, {
+        enable_tax: enableTax,
+        default_tax_percent: enableTax ? normalizedTaxPercent : 0,
+        enable_discount: enableDiscount,
+        updated_at: new Date().toISOString(),
+      });
+    }
+
+    setDefaultTaxPercent(enableTax ? normalizedTaxPercent : 0);
+    showToast("Tax & discount settings saved", "success");
+  } catch (error) {
+    console.error(error);
+    showToast(getReadableError(error) || "Failed to save tax & discount", "error");
+  } finally {
+    setSavingTaxDiscount(false);
+  }
+}
+
+async function toggleInventoryEnabled() {
+  if (!restaurantId) {
+    showToast("Invalid restaurant link", "error");
+    return;
+  }
+
+  if (!isOnline) {
+    showToast("Inventory setting change garna internet chaincha", "error");
+    return;
+  }
+
+  const nextValue = !inventoryEnabled;
+  const previousValue = inventoryEnabled;
+
+  setInventoryEnabled(nextValue);
+
+  if (!nextValue) {
+    setInventoryTab("items");
+    setShowInventoryMoreMenu(false);
+    setShowArchivedInventoryView(false);
+    setCostInsightSearch("");
+    setSelectedCostInsightBill(null);
+    setInventorySummaryModal(null);
+    setInventoryDetailItemId(null);
+    setShowAddInventoryItemForm(false);
+  }
+
+  setSavingInventoryEnabled(true);
+
+  try {
+    const { error } = await supabase
+      .from("restaurants")
+      .update({ inventory_enabled: nextValue })
+      .eq("id", restaurantId);
+
+    if (error) throw error;
+
+    await localRestaurantCacheTable
+      .where("restaurant_id")
+      .equals(restaurantId)
+      .modify({
+        inventory_enabled: nextValue,
+        updated_at: new Date().toISOString(),
+      });
+
+    showToast(
+      nextValue
+        ? "Inventory deduction ON"
+        : "Inventory deduction OFF",
+      "success"
+    );
+  } catch (error) {
+    setInventoryEnabled(previousValue);
+    console.warn("toggleInventoryEnabled failed:", error);
+    showToast(getReadableError(error) || "Failed to update inventory setting", "error");
+  } finally {
+    setSavingInventoryEnabled(false);
+  }
+}
+
+
+function shouldKeepOrderOnFastScreens(order: OrderRow) {
+  const dashboardLikeView = miniView === "dashboard" || miniView === "order" || miniView === "manage";
+  if (!dashboardLikeView) return true;
+
+  if (order.is_paid !== true) return true;
+
+  const twoDaysAgo = addDays(startOfDay(new Date()), -2).getTime();
+  const createdAt = new Date(order.created_at || 0).getTime();
+  return Number.isFinite(createdAt) && createdAt >= twoDaysAgo;
+}
+
+function upsertOrderInState(nextOrder: OrderRow | null) {
+  if (!nextOrder?.id) return;
+
+  setOrders((prev) => {
+    const exists = prev.some((order) => Number(order.id) === Number(nextOrder.id));
+
+    if (!shouldKeepOrderOnFastScreens(nextOrder)) {
+      return prev.filter((order) => Number(order.id) !== Number(nextOrder.id));
+    }
+
+    const nextList = exists
+      ? prev.map((order) => (Number(order.id) === Number(nextOrder.id) ? nextOrder : order))
+      : [nextOrder, ...prev];
+
+    return nextList.sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+  });
+}
+
+function removeOrderFromState(orderId: number) {
+  if (!orderId) return;
+  setOrders((prev) => prev.filter((order) => Number(order.id) !== Number(orderId)));
+}
+
+async function cacheRemoteOrderLocally(order: OrderRow) {
+  if (!restaurantId || !order?.id) return;
+
+  const existingLocalOrders = await localOrdersTable
+    .where("restaurant_id")
+    .equals(restaurantId)
+    .toArray();
+
+  const existing = existingLocalOrders.find(
+    (localOrder) => Number(localOrder.server_id || 0) === Number(order.id)
+  );
+
+  if (existing?.id) {
+    await localOrdersTable.update(existing.id, {
+      table_number: order.table_number,
+      status: order.status,
+      remarks: order.remarks || null,
+      waiter_cleared: order.waiter_cleared ?? false,
+      is_paid: order.is_paid ?? false,
+      payment_method: order.payment_method || null,
+      paid_at: order.paid_at || null,
+      subtotal: order.subtotal ?? null,
+      discount_enabled: order.discount_enabled ?? false,
+      discount_percent: order.discount_percent ?? 0,
+      discount_amount: order.discount_amount ?? 0,
+      tax_enabled: order.tax_enabled ?? false,
+      tax_percent: order.tax_percent ?? 0,
+      tax_amount: order.tax_amount ?? 0,
+      grand_total: order.grand_total ?? null,
+      updated_at: new Date().toISOString(),
+      sync_status: "synced",
+    });
+
+    const oldItems = await localOrderItemsTable
+      .where("local_order_id")
+      .equals(existing.id)
+      .toArray();
+
+    const oldItemIds = oldItems
+      .map((item) => item.id)
+      .filter((id): id is number => typeof id === "number");
+
+    if (oldItemIds.length > 0) {
+      await localOrderItemsTable.bulkDelete(oldItemIds);
+    }
+
+    if (order.order_items?.length) {
+      await localOrderItemsTable.bulkAdd(
+        order.order_items.map((item) => ({
+          local_order_id: existing.id!,
+          server_order_id: order.id,
+          server_id: item.id,
+          item_name: item.item_name,
+          menu_item_id: item.menu_item_id == null ? null : Number(item.menu_item_id),
+          quantity: Number(item.quantity || 0),
+          unit_price: Number(item.unit_price || 0),
+          status: item.status || order.status,
+          menu_item_variant_id: item.menu_item_variant_id == null ? null : Number(item.menu_item_variant_id),
+          created_at: order.created_at,
+          updated_at: new Date().toISOString(),
+          sync_status: "synced" as const,
+        }))
+      );
+    }
+    return;
+  }
+
+  const localOrderId = await localOrdersTable.add({
+    server_id: order.id,
+    restaurant_id: restaurantId,
+    table_number: order.table_number,
+    status: order.status,
+    remarks: order.remarks || null,
+    waiter_cleared: order.waiter_cleared ?? false,
+    is_paid: order.is_paid ?? false,
+    payment_method: order.payment_method || null,
+    paid_at: order.paid_at || null,
+    subtotal: order.subtotal ?? null,
+    discount_enabled: order.discount_enabled ?? false,
+    discount_percent: order.discount_percent ?? 0,
+    discount_amount: order.discount_amount ?? 0,
+    tax_enabled: order.tax_enabled ?? false,
+    tax_percent: order.tax_percent ?? 0,
+    tax_amount: order.tax_amount ?? 0,
+    grand_total: order.grand_total ?? null,
+    created_at: order.created_at,
+    updated_at: new Date().toISOString(),
+    sync_status: "synced",
+  });
+
+  if (order.order_items?.length) {
+    await localOrderItemsTable.bulkAdd(
+      order.order_items.map((item) => ({
+        local_order_id: localOrderId,
+        server_order_id: order.id,
+        server_id: item.id,
+        item_name: item.item_name,
+        menu_item_id: item.menu_item_id == null ? null : Number(item.menu_item_id),
+        quantity: Number(item.quantity || 0),
+        unit_price: Number(item.unit_price || 0),
+        status: item.status || order.status,
+        menu_item_variant_id: item.menu_item_variant_id == null ? null : Number(item.menu_item_variant_id),
+        created_at: order.created_at,
+        updated_at: new Date().toISOString(),
+        sync_status: "synced" as const,
+      }))
+    );
+  }
+}
+
+async function fetchSingleRemoteOrder(orderId: number, delayMs = 0) {
+  if (!restaurantId || !isOnline || !orderId) return;
+
+  if (delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+
+  const { data, error } = await supabase
+    .from("orders")
+    .select(
+      "id, restaurant_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, subtotal, discount_enabled, discount_percent, discount_amount, tax_enabled, tax_percent, tax_amount, grand_total, remarks, inventory_deducted, order_items(id, item_name, menu_item_id, quantity, unit_price, status, menu_item_variant_id)"
+    )
+    .eq("restaurant_id", restaurantId)
+    .eq("id", orderId)
+    .maybeSingle();
+
+  if (error) {
+    console.warn("fetchSingleRemoteOrder failed:", error);
+    return;
+  }
+
+  if (!data) {
+    removeOrderFromState(orderId);
+    return;
+  }
+
+  const nextOrder = { ...(data as OrderRow), sync_status: "synced" as const };
+  upsertOrderInState(nextOrder);
+  cacheRemoteOrderLocally(nextOrder).catch((cacheError) => {
+    console.warn("cacheRemoteOrderLocally failed:", cacheError);
+  });
+}
+
+async function fetchOrders() {
+  if (!restaurantId || !isSetupDone) return;
+
+  if (!isOnline) {
+    const localOrders = await localOrdersTable
+      .where("restaurant_id")
+      .equals(restaurantId)
+      .toArray();
+
+    const localOrderIds = localOrders
+      .map((order) => order.id)
+      .filter((id): id is number => typeof id === "number");
+    const allLocalItems = await localOrderItemsTable.toArray();
+    const localItems = allLocalItems.filter((item) => localOrderIds.includes(item.local_order_id));
+
+    const mappedOrders = localOrders
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .map((order) => ({
+        id: order.server_id || order.id || 0,
+        table_number: order.table_number,
+        status: order.status,
+        created_at: order.created_at,
+        waiter_cleared: order.waiter_cleared ?? false,
+        is_paid: order.is_paid ?? false,
+        payment_method: order.payment_method ?? null,
+        paid_at: order.paid_at ?? null,
+        remarks: order.remarks ?? null,
+        sync_status: order.sync_status || "synced",
+        order_items: localItems
+          .filter((item) => item.local_order_id === order.id)
+          .map((item) => ({
+            id: item.server_id || item.id || 0,
+            item_name: item.item_name,
+            menu_item_id: item.menu_item_id == null ? null : Number(item.menu_item_id),
+            quantity: Number(item.quantity || 0),
+            unit_price: Number(item.unit_price || 0),
+            status: item.status || order.status,
+            menu_item_variant_id: item.menu_item_variant_id == null ? null : Number(item.menu_item_variant_id),
+          })),
+      }));
+
+    orderIdsRef.current = mappedOrders.map((order) => order.id);
+    setOrders(mappedOrders as OrderRow[]);
+    return;
+  }
+
+  const dashboardLikeView = miniView === "dashboard" || miniView === "order" || miniView === "manage";
+  const dashboardCutoff = addDays(startOfDay(new Date()), -2).toISOString();
+
+  let ordersQuery = supabase
+    .from("orders")
+    .select(
+      "id, restaurant_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, subtotal, discount_enabled, discount_percent, discount_amount, tax_enabled, tax_percent, tax_amount, grand_total, remarks, inventory_deducted, order_items(id, item_name, menu_item_id, quantity, unit_price, status, menu_item_variant_id)"
+    )
+    .eq("restaurant_id", restaurantId)
+    .order("created_at", { ascending: false });
+
+  // Fast path for daily dashboard/kitchen/order screens:
+  // fetch all unpaid bills + only recent paid bills instead of pulling the whole restaurant history.
+  if (dashboardLikeView) {
+    ordersQuery = ordersQuery
+      .or(`is_paid.eq.false,is_paid.is.null,created_at.gte.${dashboardCutoff}`)
+      .limit(350);
+  } else {
+    ordersQuery = ordersQuery.limit(1200);
+  }
+
+  const { data, error } = await ordersQuery;
+
+  if (error) {
+    console.error("fetchOrders failed:", error);
+    return;
+  }
+
+  if (!data) return;
+
+  const remoteOrders = data as OrderRow[];
+
+  const existingLocalOrders = await localOrdersTable
+    .where("restaurant_id")
+    .equals(restaurantId)
+    .toArray();
+
+  const pendingLocalOrders = existingLocalOrders.filter((order) => {
+    const syncStatus = order.sync_status || "synced";
+   return syncStatus !== "synced";
+  });
+
+  const pendingLocalOrderIds = pendingLocalOrders
+    .map((order) => order.id)
+    .filter((id): id is number => typeof id === "number");
+
+  const allLocalItems = await localOrderItemsTable.toArray();
+  const pendingLocalItems = allLocalItems.filter((item) =>
+    pendingLocalOrderIds.includes(item.local_order_id)
+  );
+
+  const pendingRemoteOrderIds = new Set(
+    pendingLocalOrders
+      .map((order) => Number(order.server_id || 0))
+      .filter((id) => Number.isFinite(id) && id > 0)
+  );
+
+  const pendingUiOrders: OrderRow[] = pendingLocalOrders
+    .map((order) => ({
+      id: order.server_id || order.id || 0,
+      table_number: order.table_number,
+      status: order.status,
+      created_at: order.created_at,
+      waiter_cleared: order.waiter_cleared ?? false,
+      is_paid: order.is_paid ?? false,
+      payment_method: order.payment_method ?? null,
+      paid_at: order.paid_at ?? null,
+      remarks: order.remarks ?? null,
+      sync_status: order.sync_status || "synced",
+      order_items: pendingLocalItems
+        .filter((item) => item.local_order_id === order.id)
+        .map((item) => ({
+          id: item.server_id || item.id || 0,
+          item_name: item.item_name,
+          menu_item_id: item.menu_item_id == null ? null : Number(item.menu_item_id),
+          quantity: Number(item.quantity || 0),
+          unit_price: Number(item.unit_price || 0),
+          status: item.status || order.status,
+          menu_item_variant_id: item.menu_item_variant_id == null ? null : Number(item.menu_item_variant_id),
+        })),
+    }))
+    .filter((order) => Number(order.id || 0) > 0);
+
+  const visibleRemoteOrders = remoteOrders
+    .filter((order) => !pendingRemoteOrderIds.has(Number(order.id)))
+    .map((order) => ({ ...order, sync_status: "synced" as const }));
+
+  const mergedOrders = [...pendingUiOrders, ...visibleRemoteOrders].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
+
+  orderIdsRef.current = mergedOrders.map((order) => order.id);
+  setOrders(mergedOrders);
+
+  const safeToReplaceLocalOrders = existingLocalOrders.filter((order) => {
+    const syncStatus = order.sync_status || "synced";
+    return syncStatus === "synced";
+  });
+
+  const safeToReplaceLocalOrderIds = safeToReplaceLocalOrders
+    .map((order) => order.id)
+    .filter((id): id is number => typeof id === "number");
+
+  if (safeToReplaceLocalOrderIds.length > 0) {
+    const targetLocalItemIds = allLocalItems
+      .filter((item) => safeToReplaceLocalOrderIds.includes(item.local_order_id))
+      .map((item) => item.id)
+      .filter((id): id is number => typeof id === "number");
+
+    if (targetLocalItemIds.length > 0) {
+      await localOrderItemsTable.bulkDelete(targetLocalItemIds);
+    }
+
+    await localOrdersTable.bulkDelete(safeToReplaceLocalOrderIds);
+  }
+
+  for (const order of remoteOrders) {
+    if (pendingRemoteOrderIds.has(Number(order.id))) continue;
+    const localOrderId = await localOrdersTable.add({
+      server_id: order.id,
+      restaurant_id: restaurantId,
+      table_number: order.table_number,
+      status: order.status,
+      remarks: order.remarks || null,
+      waiter_cleared: order.waiter_cleared ?? false,
+      is_paid: order.is_paid ?? false,
+      payment_method: order.payment_method || null,
+      paid_at: order.paid_at || null,
+      created_at: order.created_at,
+      updated_at: new Date().toISOString(),
+      sync_status: "synced",
+    });
+
+    if (order.order_items?.length) {
+      await localOrderItemsTable.bulkAdd(
+        order.order_items.map((item) => ({
+          local_order_id: localOrderId,
+          server_order_id: order.id,
+          server_id: item.id,
+          item_name: item.item_name,
+          menu_item_id: item.menu_item_id == null ? null : Number(item.menu_item_id),
+          quantity: Number(item.quantity || 0),
+          unit_price: Number(item.unit_price || 0),
+          status: item.status || order.status,
+          menu_item_variant_id: item.menu_item_variant_id == null ? null : Number(item.menu_item_variant_id),
+          created_at: order.created_at,
+          updated_at: new Date().toISOString(),
+          sync_status: "synced",
+        }))
+      );
+    }
+  }
+}
+
+
+async function fetchMenuCategories(currentMenuItems: MenuItem[] = menuItems) {
+  if (!restaurantId || !isOnline) {
+    const derivedCategories = Array.from(
+      new Set(
+        currentMenuItems
+          .map((item) => normalizeMenuCategory(item.category || "Uncategorized"))
+          .filter((category) => category !== "Uncategorized")
+      )
+    ).sort((a, b) => a.localeCompare(b));
+    setTakeOrderCategories(derivedCategories);
+    return;
+  }
+
+  const { data, error } = await supabase
+    .from("menu_categories")
+    .select("name")
+    .eq("restaurant_id", restaurantId)
+    .order("sort_order", { ascending: true })
+    .order("name", { ascending: true });
+
+  const derivedFromItems = Array.from(
+    new Set(
+      currentMenuItems
+        .map((item) => normalizeMenuCategory(item.category || "Uncategorized"))
+        .filter((category) => category !== "Uncategorized")
+    )
+  );
+
+  if (error) {
+    console.error("Failed to fetch menu categories. Run menu_categories SQL if Add Category fails.", error);
+    setTakeOrderCategories(derivedFromItems.sort((a, b) => a.localeCompare(b)));
+    return;
+  }
+
+  const fromCategoryTable = (data || [])
+    .map((row: { name?: string | null }) => normalizeMenuCategory(row.name || ""))
+    .filter((category) => category !== "Uncategorized");
+
+  const merged = Array.from(new Set([...fromCategoryTable, ...derivedFromItems])).sort((a, b) =>
+    a.localeCompare(b)
+  );
+
+  setTakeOrderCategories(merged);
+}
+
+async function fetchMenu() {
+  if (!restaurantId || !isSetupDone) return;
+
+  if (!isOnline) {
+    const localMenu = await localMenuItemsTable
+      .where("restaurant_id")
+      .equals(restaurantId)
+      .toArray();
+
+    setMenuItems(
+      localMenu
+        .filter((item) => item.sync_status !== "pending_delete")
+        .map((item) => ({
+          id: item.server_id || item.id || 0,
+          item_name: item.item_name,
+          price: Number(item.price || 0),
+          category: normalizeMenuCategory(item.category || "Uncategorized"),
+          image_url: item.image_url || null,
+          created_at: item.created_at,
+        }))
+    );
+    return;
+  }
+
+  const { data, error } = await supabase
+    .from("menu_items")
+    .select("*")
+    .eq("restaurant_id", restaurantId)
+    .order("item_name", { ascending: true });
+
+  if (!error && data) {
+    const remoteMenu = (data as MenuItem[]).map((item) => ({
+      ...item,
+      category: normalizeMenuCategory(item.category || "Uncategorized"),
+    }));
+    setMenuItems(remoteMenu);
+    await fetchMenuCategories(remoteMenu);
+
+    await localMenuItemsTable.where("restaurant_id").equals(restaurantId).delete();
+
+    if (remoteMenu.length) {
+      await localMenuItemsTable.bulkAdd(
+        remoteMenu.map((item) => ({
+          server_id: item.id,
+          restaurant_id: restaurantId,
+          item_name: item.item_name,
+          price: Number(item.price || 0),
+          category: normalizeMenuCategory(item.category || "Uncategorized"),
+          image_url: item.image_url || null,
+          created_at: item.created_at,
+          updated_at: new Date().toISOString(),
+          sync_status: "synced",
+        }))
+      );
+    }
+  }
+}
+
+
+async function fetchInventoryData(targetTab: typeof inventoryTab = inventoryTab) {
+  if (!restaurantId || !isSetupDone || !isOnline) {
+    if (!isOnline) {
+      setInventoryItems([]);
+      setArchivedInventoryItems([]);
+      setMenuItemRecipes([]);
+      setMenuItemStockLinks([]);
+      setPurchaseTransactions([]);
+      setSuppliers([]);
+      setSupplierPurchases([]);
+      setSupplierPayments([]);
+      setOrderCostSnapshots([]);
+      setOrderCostSnapshotItems([]);
+    }
+    return;
+  }
+
+  // FAST FIX: inventory data is now loaded by active tab.
+  // Old version fetched items + recipes + stock links + transactions + suppliers + purchases + payments every time.
+  // That makes the app feel slow, especially on mobile. Do not bring that heavy fetch back.
+  if (!inventoryEnabled) {
+    setInventoryItems([]);
+    setArchivedInventoryItems([]);
+    setMenuItemRecipes([]);
+    setMenuItemStockLinks([]);
+    setPurchaseTransactions([]);
+    setSuppliers([]);
+    setSupplierPurchases([]);
+    setSupplierPayments([]);
+    setOrderCostSnapshots([]);
+    setOrderCostSnapshotItems([]);
+    setSelectedCostInsightBill(null);
+    setInventorySummaryModal(null);
+    setInventoryDetailItemId(null);
+    setLoadingInventory(false);
+    setLoadingSuppliers(false);
+    return;
+  }
+
+  const normalizeInventoryRows = (rows: any[] = []): InventoryItem[] =>
+    rows.map((item) => ({
+      id: Number(item.id),
+      restaurant_id: Number(item.restaurant_id),
+      item_name: String(item.item_name || ""),
+      item_type: String(item.item_type || "raw"),
+      unit: String(item.unit || "pcs"),
+      current_stock: Number(item.current_stock || 0),
+      low_stock_threshold: item.low_stock_threshold == null ? null : Number(item.low_stock_threshold),
+      cost_per_unit: item.cost_per_unit == null ? null : Number(item.cost_per_unit),
+      category: String(item.category || "Other").trim() || "Other",
+      is_active: item.is_active == null ? true : Boolean(item.is_active),
+      created_at: item.created_at || undefined,
+      updated_at: item.updated_at || undefined,
+    }));
+
+  const loadInventoryItems = async () => {
+    const { data, error } = await supabase
+      .from("inventory_items")
+      .select("*")
+      .eq("restaurant_id", restaurantId)
+      .order("created_at", { ascending: false });
+
+    if (error) throw error;
+
+    const normalizedInventoryItems = normalizeInventoryRows(data || []);
+    setInventoryItems(normalizedInventoryItems.filter((item) => item.is_active !== false));
+    setArchivedInventoryItems(normalizedInventoryItems.filter((item) => item.is_active === false));
+  };
+
+  const loadRecipeLinks = async () => {
+    const [recipesRes, stockRes] = await Promise.all([
+      supabase
+        .from("menu_item_recipes")
+        .select("*")
+        .eq("restaurant_id", restaurantId)
+        .order("id", { ascending: false }),
+      supabase
+        .from("menu_item_stock_links")
+        .select("*")
+        .eq("restaurant_id", restaurantId)
+        .order("id", { ascending: false }),
+    ]);
+
+    if (recipesRes.error) throw recipesRes.error;
+    if (stockRes.error) throw stockRes.error;
+
+    setMenuItemRecipes((recipesRes.data || []).map((item) => ({
+      id: Number(item.id),
+      menu_item_id: Number(item.menu_item_id),
+      menu_item_variant_id: item.menu_item_variant_id == null ? null : Number(item.menu_item_variant_id),
+      inventory_item_id: Number(item.inventory_item_id),
+      quantity_used: Number(item.quantity_used || 0),
+      created_at: item.created_at || undefined,
+      updated_at: item.updated_at || undefined,
+    })));
+
+    setMenuItemStockLinks((stockRes.data || []).map((item) => ({
+      id: Number(item.id),
+      menu_item_id: Number(item.menu_item_id),
+      menu_item_variant_id: item.menu_item_variant_id == null ? null : Number(item.menu_item_variant_id),
+      inventory_item_id: Number(item.inventory_item_id),
+      quantity_per_sale: Number(item.quantity_per_sale || 0),
+      created_at: item.created_at || undefined,
+      updated_at: item.updated_at || undefined,
+    })));
+  };
+
+  const loadTransactions = async () => {
+    const { data, error } = await supabase
+      .from("inventory_transactions")
+      .select("*")
+      .eq("restaurant_id", restaurantId)
+      .order("created_at", { ascending: false })
+      .limit(60);
+
+    if (error) throw error;
+
+    setPurchaseTransactions((data || []).map((tx) => ({
+      id: Number(tx.id),
+      restaurant_id: tx.restaurant_id == null ? undefined : Number(tx.restaurant_id),
+      inventory_item_id: Number(tx.inventory_item_id),
+      transaction_type: String(tx.transaction_type || ""),
+      quantity: Number(tx.quantity || 0),
+      note: tx.note || null,
+      created_at: tx.created_at || undefined,
+    })));
+  };
+
+  const loadSuppliers = async () => {
+    const [suppliersRes, supplierPurchasesRes, supplierPaymentsRes] = await Promise.all([
+      supabase
+        .from("suppliers")
+        .select("*")
+        .eq("restaurant_id", restaurantId)
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("supplier_purchases")
+        .select("*")
+        .eq("restaurant_id", restaurantId)
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("supplier_payments")
+        .select("*")
+        .eq("restaurant_id", restaurantId)
+        .order("created_at", { ascending: false }),
+    ]);
+
+    if (suppliersRes.error) throw suppliersRes.error;
+    if (supplierPurchasesRes.error) throw supplierPurchasesRes.error;
+    if (supplierPaymentsRes.error) throw supplierPaymentsRes.error;
+
+    setSuppliers((suppliersRes.data || []).map((supplier) => ({
+      id: Number(supplier.id),
+      restaurant_id: supplier.restaurant_id == null ? undefined : Number(supplier.restaurant_id),
+      name: String(supplier.name || ""),
+      phone: supplier.phone || null,
+      note: supplier.note || null,
+      created_at: supplier.created_at || undefined,
+      updated_at: supplier.updated_at || undefined,
+    })));
+
+    setSupplierPurchases((supplierPurchasesRes.data || []).map((purchase) => ({
+      id: Number(purchase.id),
+      restaurant_id: purchase.restaurant_id == null ? undefined : Number(purchase.restaurant_id),
+      supplier_id: Number(purchase.supplier_id),
+      inventory_item_id: Number(purchase.inventory_item_id),
+      quantity: Number(purchase.quantity || 0),
+      unit_cost: Number(purchase.unit_cost || 0),
+      total_amount: Number(purchase.total_amount || 0),
+      paid_amount: Number(purchase.paid_amount || 0),
+      due_amount: Number(purchase.due_amount || 0),
+      note: purchase.note || null,
+      created_at: purchase.created_at || undefined,
+    })));
+
+    setSupplierPayments((supplierPaymentsRes.data || []).map((payment) => ({
+      id: Number(payment.id),
+      restaurant_id: payment.restaurant_id == null ? undefined : Number(payment.restaurant_id),
+      supplier_id: Number(payment.supplier_id),
+      amount: Number(payment.amount || 0),
+      note: payment.note || null,
+      created_at: payment.created_at || undefined,
+    })));
+  };
+
+  const parseLockedMaterials = (value: unknown): CostInsightMaterialRow[] => {
+    if (!Array.isArray(value)) return [];
+
+    return value
+      .map((material, index) => {
+        if (!material || typeof material !== "object") return null;
+        const row = material as Record<string, unknown>;
+        const itemName = String(row.item_name ?? row.name ?? "").trim();
+        if (!itemName) return null;
+
+        return {
+          key: String(row.key ?? `${itemName}-${index}`),
+          item_name: itemName,
+          unit: String(row.unit ?? ""),
+          quantity: Number(row.quantity ?? 0),
+          cost: Number(row.cost ?? 0),
+          type: String(row.type ?? row.item_type ?? "Inventory").toLowerCase() === "raw" ? "Raw" : String(row.type ?? row.item_type ?? "Inventory").toLowerCase() === "direct" ? "Direct" : String(row.type ?? row.item_type ?? "Inventory"),
+        } as CostInsightMaterialRow;
+      })
+      .filter((row): row is CostInsightMaterialRow => Boolean(row));
+  };
+
+  const loadCostSnapshots = async () => {
+    const [snapshotRes, snapshotItemsRes] = await Promise.all([
+      supabase
+        .from("order_cost_snapshots")
+        .select("id, order_id, restaurant_id, total_cost, total_revenue, total_profit, created_at")
+        .eq("restaurant_id", restaurantId)
+        .order("created_at", { ascending: false })
+        .limit(300),
+      supabase
+        .from("order_cost_snapshot_items")
+        .select("id, order_id, restaurant_id, menu_item_id, menu_item_variant_id, item_name, quantity, unit_price, selling, cost, profit, materials, created_at")
+        .eq("restaurant_id", restaurantId)
+        .order("created_at", { ascending: false })
+        .limit(2000),
+    ]);
+
+    if (snapshotRes.error) throw snapshotRes.error;
+    if (snapshotItemsRes.error) throw snapshotItemsRes.error;
+
+    const rawSnapshots = snapshotRes.data || [];
+    const snapshotOrderIds = rawSnapshots
+      .map((row) => Number(row.order_id || 0))
+      .filter((id) => Number.isFinite(id) && id > 0);
+
+    const snapshotOrdersById = new Map<number, Partial<OrderRow>>();
+
+    if (snapshotOrderIds.length > 0) {
+      const { data: snapshotOrders, error: snapshotOrdersError } = await supabase
+        .from("orders")
+        .select("id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, remarks, inventory_deducted")
+        .eq("restaurant_id", restaurantId)
+        .in("id", snapshotOrderIds);
+
+      if (snapshotOrdersError) throw snapshotOrdersError;
+
+      (snapshotOrders || []).forEach((order) => {
+        snapshotOrdersById.set(Number(order.id), order as Partial<OrderRow>);
+      });
+    }
+
+    setOrderCostSnapshots(rawSnapshots.map((row) => {
+      const orderId = Number(row.order_id);
+      const sourceOrder = snapshotOrdersById.get(orderId);
+
+      return {
+        id: Number(row.id),
+        order_id: orderId,
+        restaurant_id: Number(row.restaurant_id),
+        total_cost: Number(row.total_cost || 0),
+        total_revenue: Number(row.total_revenue || 0),
+        total_profit: Number(row.total_profit || 0),
+        created_at: row.created_at || undefined,
+        table_number: sourceOrder?.table_number ?? null,
+        order_created_at: sourceOrder?.created_at ?? null,
+        order_paid_at: sourceOrder?.paid_at ?? null,
+        order_status: sourceOrder?.status ?? null,
+        order_is_paid: sourceOrder?.is_paid ?? null,
+        order_payment_method: sourceOrder?.payment_method ?? null,
+        order_inventory_deducted: sourceOrder?.inventory_deducted ?? null,
+        order_remarks: sourceOrder?.remarks ?? null,
+      };
+    }));
+
+    setOrderCostSnapshotItems((snapshotItemsRes.data || []).map((row) => ({
+      id: Number(row.id),
+      order_id: Number(row.order_id),
+      restaurant_id: Number(row.restaurant_id),
+      menu_item_id: row.menu_item_id == null ? null : Number(row.menu_item_id),
+      menu_item_variant_id: row.menu_item_variant_id == null ? null : Number(row.menu_item_variant_id),
+      item_name: String(row.item_name || ""),
+      quantity: Number(row.quantity || 0),
+      unit_price: Number(row.unit_price || 0),
+      selling: Number(row.selling || 0),
+      cost: Number(row.cost || 0),
+      profit: Number(row.profit || 0),
+      materials: parseLockedMaterials(row.materials),
+      created_at: row.created_at || undefined,
+    })));
+  };
+
+  const isInventoryNetworkError = (error: unknown) => {
+    let stringifiedError = "";
+
+    try {
+      stringifiedError = JSON.stringify(error) || "";
+    } catch {
+      stringifiedError = "";
+    }
+
+    const maybeError = error as { name?: unknown; message?: unknown; details?: unknown; hint?: unknown; code?: unknown };
+    const searchable = [
+      getReadableError(error),
+      typeof maybeError?.name === "string" ? maybeError.name : "",
+      typeof maybeError?.message === "string" ? maybeError.message : "",
+      typeof maybeError?.details === "string" ? maybeError.details : "",
+      typeof maybeError?.hint === "string" ? maybeError.hint : "",
+      typeof maybeError?.code === "string" ? maybeError.code : "",
+      stringifiedError,
+    ]
+      .join(" ")
+      .toLowerCase();
+
+    return (
+      searchable.includes("failed to fetch") ||
+      searchable.includes("err_name_not_resolved") ||
+      searchable.includes("name_not_resolved") ||
+      searchable.includes("network") ||
+      searchable.includes("dns") ||
+      searchable.includes("load failed")
+    );
+  };
+
+  setLoadingInventory(true);
+  setLoadingSuppliers(targetTab === "suppliers" || targetTab === "restock" || targetTab === "csvSetup");
+
+  try {
+    if (targetTab === "items") {
+      await loadInventoryItems();
+    } else if (targetTab === "recipes") {
+      await Promise.all([loadInventoryItems(), loadRecipeLinks()]);
+    } else if (targetTab === "restock") {
+      await Promise.all([loadInventoryItems(), loadSuppliers(), loadTransactions()]);
+    } else if (targetTab === "history") {
+      await Promise.all([loadInventoryItems(), loadTransactions()]);
+    } else if (targetTab === "suppliers") {
+      await Promise.all([loadInventoryItems(), loadSuppliers()]);
+    } else if (targetTab === "csvSetup") {
+      await Promise.all([loadInventoryItems(), loadRecipeLinks(), loadSuppliers()]);
+    } else if (targetTab === "costInsight") {
+      await Promise.all([loadInventoryItems(), loadRecipeLinks(), loadCostSnapshots()]);
+    }
+  } catch (error: any) {
+    if (isInventoryNetworkError(error)) {
+      console.warn("Inventory fetch skipped due to offline/network issue");
+      return;
+    }
+
+    console.error("Failed to fetch inventory", {
+      tab: targetTab,
+      message: error?.message,
+      details: error?.details,
+      hint: error?.hint,
+      code: error?.code,
+      raw: error,
+    });
+    showToast("Failed to load inventory", "error");
+  } finally {
+    setLoadingInventory(false);
+    setLoadingSuppliers(false);
+  }
+}
+
+function resetInventoryForms() {
+  setNewInventoryItemName("");
+  setNewInventoryCategory("Other");
+  setShowNewInventoryCategoryPicker(false);
+  setShowInlineInventoryCategoryForm(false);
+  setInlineInventoryCategoryName("");
+  setNewInventoryItemType("raw");
+  setNewInventoryUnit("kg");
+  setNewInventoryStock("");
+  setNewInventoryLowStock("");
+  setNewInventoryCost("");
+  setSelectedRecipeMenuId("");
+  setSelectedRecipeVariantId("");
+  setSelectedRecipeInventoryId("");
+  setRecipeQuantityUsed("");
+  setSelectedStockMenuId("");
+  setSelectedStockVariantId("");
+  setSelectedStockInventoryId("");
+  setStockQuantityPerSale("");
+  setRecipeViewerVariantId("");
+  cancelDirectStockEdit();
+  setRestockInventoryItemId("");
+  setRestockQuantity("");
+  setRestockCostPerUnit("");
+  setRestockNotes("");
+  setRestockSupplier("");
+  setRestockSupplierId("");
+  setRestockPaidAmount("");
+  setAdjustmentInventoryItemId("");
+  setAdjustmentQuantity("");
+  setAdjustmentMode("minus");
+  setAdjustmentReason("");
+  setRecipeViewerMenuId("");
+  cancelInventoryEdit();
+  cancelRecipeEdit();
+}
+
+function getSupplierTotals(supplierId: number) {
+  return supplierFinancialsById.get(Number(supplierId)) || {
+    totalPurchase: 0,
+    cashPaid: 0,
+    creditLeft: 0,
+    purchaseCount: 0,
+  };
+}
+
+function getSupplierNameById(supplierId?: number | null) {
+  if (!supplierId) return "Unknown supplier";
+  return suppliers.find((supplier) => supplier.id === supplierId)?.name || "Unknown supplier";
+}
+
+async function saveSupplier(e: React.FormEvent) {
+  e.preventDefault();
+
+  if (!restaurantId) {
+    showToast("Invalid restaurant link", "error");
+    return;
+  }
+
+  if (!newSupplierName.trim()) {
+    showToast("Supplier name required", "error");
+    return;
+  }
+
+  setSavingInventory(true);
+
+  try {
+    const { error } = await supabase.from("suppliers").insert([
+      {
+        restaurant_id: restaurantId,
+        name: newSupplierName.trim(),
+        phone: newSupplierPhone.trim() || null,
+        note: newSupplierNote.trim() || null,
+      },
+    ]);
+
+    if (error) throw error;
+
+    showToast("Supplier saved", "success");
+    setNewSupplierName("");
+    setNewSupplierPhone("");
+    setNewSupplierNote("");
+    setShowAddSupplierForm(false);
+    await fetchInventoryData();
+  } catch (error) {
+    console.error("Failed to save supplier", error);
+    showToast("Failed to save supplier", "error");
+  } finally {
+    setSavingInventory(false);
+  }
+}
+
+function startInventoryEdit(item: InventoryItem) {
+  setShowAddInventoryItemForm(false);
+  setEditingInventoryId(item.id);
+  setEditingInventoryItemName(item.item_name || "");
+  setEditingInventoryCategory(item.category || "Other");
+  setEditingInventoryItemType(item.item_type === "direct" ? "direct" : "raw");
+  setEditingInventoryUnit(item.unit || getInventoryDefaultUnitByType(item.item_type === "direct" ? "direct" : "raw"));
+  setEditingInventoryStock(String(item.current_stock ?? ""));
+  setEditingInventoryLowStock(item.low_stock_threshold == null ? "" : String(item.low_stock_threshold));
+  setEditingInventoryCost(item.cost_per_unit == null ? "" : String(item.cost_per_unit));
+}
+
+function cancelInventoryEdit() {
+  setEditingInventoryId(null);
+  setEditingInventoryItemName("");
+  setEditingInventoryCategory("Other");
+  setEditingInventoryItemType("raw");
+  setEditingInventoryUnit("kg");
+  setEditingInventoryStock("");
+  setEditingInventoryLowStock("");
+  setEditingInventoryCost("");
+}
+
+function getInventoryItemNameById(id: number) {
+  return inventoryItemById.get(Number(id))?.item_name || `Item #${id}`;
+}
+
+function getMenuItemNameById(id: number) {
+  return menuItemById.get(Number(id))?.item_name || `Menu #${id}`;
+}
+
+function getVariantNameById(id?: number | null) {
+  if (id == null) return "";
+  return menuItemVariantById.get(Number(id))?.variant_name || "";
+}
+
+function getRecipeSelectionLabel(menuId: number, variantId?: number | null) {
+  const menuName = getMenuItemNameById(menuId);
+  const variantName = getVariantNameById(variantId);
+  return variantName ? `${menuName} (${variantName})` : menuName;
+}
+
+function getInventoryItemUnitById(id: number) {
+  return inventoryItemById.get(Number(id))?.unit || "";
+}
+
+function getRecipeLinksForMenuItem(menuId: number, variantId?: number | null) {
+  return recipeLinksByMenuVariant.get(recipeVariantKey(menuId, variantId)) || [];
+}
+
+function getDirectLinksForMenuItem(menuId: number, variantId?: number | null) {
+  return stockLinksByMenuVariant.get(recipeVariantKey(menuId, variantId)) || [];
+}
+
+function getInventoryItemCostById(id: number) {
+  return Number(inventoryItemById.get(Number(id))?.cost_per_unit || 0);
+}
+
+function getRecipeLineCost(link: MenuItemRecipeLink) {
+  return Number(link.quantity_used || 0) * getInventoryItemCostById(link.inventory_item_id);
+}
+
+function getDirectLineCost(link: MenuItemStockLink) {
+  return Number(link.quantity_per_sale || 0) * getInventoryItemCostById(link.inventory_item_id);
+}
+
+function getRecipeTotalCost(menuId: number, variantId?: number | null) {
+  const rawCost = getRecipeLinksForMenuItem(menuId, variantId).reduce((sum, link) => sum + getRecipeLineCost(link), 0);
+  const directCost = getDirectLinksForMenuItem(menuId, variantId).reduce((sum, link) => sum + getDirectLineCost(link), 0);
+  return rawCost + directCost;
+}
+
+function getMenuItemSellingPrice(menuId: number, variantId?: number | null) {
+  if (variantId != null) {
+    return Number(menuItemVariantById.get(Number(variantId))?.price || 0);
+  }
+  return Number(menuItemById.get(Number(menuId))?.price || 0);
+}
+
+function getRecipeApproxServings(menuId: number, variantId?: number | null) {
+  const rawLinks = getRecipeLinksForMenuItem(menuId, variantId)
+    .filter((link) => Number(link.quantity_used || 0) > 0)
+    .map((link) => ({ inventory_item_id: link.inventory_item_id, qty: Number(link.quantity_used || 0) }));
+  const directLinks = getDirectLinksForMenuItem(menuId, variantId)
+    .filter((link) => Number(link.quantity_per_sale || 0) > 0)
+    .map((link) => ({ inventory_item_id: link.inventory_item_id, qty: Number(link.quantity_per_sale || 0) }));
+
+  const links = [...rawLinks, ...directLinks];
+  if (links.length === 0) return 0;
+
+  const servings = links.map((link) => {
+    const item = inventoryItemById.get(Number(link.inventory_item_id));
+    const stock = Number(item?.current_stock || 0);
+    const qty = Number(link.qty || 0);
+    if (!qty || qty <= 0) return 0;
+    return stock / qty;
+  });
+
+  return Math.max(0, Math.floor(Math.min(...servings)));
+}
+
+function getLowRecipeItems(menuId: number, variantId?: number | null) {
+  const lowRaw = getRecipeLinksForMenuItem(menuId, variantId).filter((link) => {
+    const item = inventoryItemById.get(Number(link.inventory_item_id));
+    if (!item) return false;
+    return Number(item.current_stock || 0) <= Number(item.low_stock_threshold || 0);
+  });
+  const lowDirect = getDirectLinksForMenuItem(menuId, variantId).filter((link) => {
+    const item = inventoryItemById.get(Number(link.inventory_item_id));
+    if (!item) return false;
+    return Number(item.current_stock || 0) <= Number(item.low_stock_threshold || 0);
+  });
+  return [...lowRaw, ...lowDirect];
+}
+
+function getFoodCostPercent(menuId: number, variantId?: number | null) {
+  const sellingPrice = getMenuItemSellingPrice(menuId, variantId);
+  if (!sellingPrice || sellingPrice <= 0) return 0;
+  return (getRecipeTotalCost(menuId, variantId) / sellingPrice) * 100;
+}
+
+function formatMoney(value: number) {
+  const normalized = Number(value || 0);
+  return Number.isInteger(normalized) ? String(normalized) : normalized.toFixed(2);
+}
+
+function startRecipeEdit(link: MenuItemRecipeLink) {
+  setEditingRecipeId(link.id);
+  setEditingRecipeMenuId(String(link.menu_item_id));
+  setEditingRecipeVariantId(link.menu_item_variant_id == null ? "" : String(link.menu_item_variant_id));
+  setEditingRecipeInventoryId(String(link.inventory_item_id));
+  setEditingRecipeQuantityUsed(String(link.quantity_used ?? ""));
+  setSelectedRecipeMenuId(String(link.menu_item_id));
+  setSelectedStockMenuId(String(link.menu_item_id));
+  setSelectedRecipeVariantId(link.menu_item_variant_id == null ? "" : String(link.menu_item_variant_id));
+  setSelectedStockVariantId(link.menu_item_variant_id == null ? "" : String(link.menu_item_variant_id));
+  setRecipeViewerMenuId(String(link.menu_item_id));
+  setRecipeViewerVariantId(link.menu_item_variant_id == null ? "" : String(link.menu_item_variant_id));
+  setRawBuilderRows([
+    {
+      rowId: createBuilderRow("raw").rowId,
+      inventoryId: String(link.inventory_item_id),
+      quantity: String(link.quantity_used ?? ""),
+      category: "all",
+    },
+  ]);
+  setInventoryTab("recipes");
+}
+
+function cancelRecipeEdit() {
+  setEditingRecipeId(null);
+  setEditingRecipeMenuId("");
+  setEditingRecipeVariantId("");
+  setEditingRecipeInventoryId("");
+  setEditingRecipeQuantityUsed("");
+  resetRawBuilderRows();
+}
+
+function startDirectStockEdit(link: MenuItemStockLink) {
+  setEditingStockLinkId(link.id);
+  setEditingStockMenuId(String(link.menu_item_id));
+  setEditingStockVariantId(link.menu_item_variant_id == null ? "" : String(link.menu_item_variant_id));
+  setEditingStockInventoryId(String(link.inventory_item_id));
+  setEditingStockQuantityPerSale(String(link.quantity_per_sale ?? ""));
+  setSelectedStockMenuId(String(link.menu_item_id));
+  setSelectedRecipeMenuId(String(link.menu_item_id));
+  setSelectedStockVariantId(link.menu_item_variant_id == null ? "" : String(link.menu_item_variant_id));
+  setSelectedRecipeVariantId(link.menu_item_variant_id == null ? "" : String(link.menu_item_variant_id));
+  setRecipeViewerMenuId(String(link.menu_item_id));
+  setRecipeViewerVariantId(link.menu_item_variant_id == null ? "" : String(link.menu_item_variant_id));
+  setDirectBuilderRows([
+    {
+      rowId: createBuilderRow("direct").rowId,
+      inventoryId: String(link.inventory_item_id),
+      quantity: String(link.quantity_per_sale ?? ""),
+      category: "all",
+    },
+  ]);
+  setInventoryTab("recipes");
+}
+
+function cancelDirectStockEdit() {
+  setEditingStockLinkId(null);
+  setEditingStockMenuId("");
+  setEditingStockVariantId("");
+  setEditingStockInventoryId("");
+  setEditingStockQuantityPerSale("");
+  resetDirectBuilderRows();
+}
+
+function applyRecipeViewerMenu(menuId: number, variantId?: number | null) {
+  setRecipeViewerMenuId(String(menuId));
+  setRecipeViewerVariantId(variantId == null ? "" : String(variantId));
+  setSelectedRecipeMenuId(String(menuId));
+  setSelectedStockMenuId(String(menuId));
+  setSelectedRecipeVariantId(variantId == null ? "" : String(variantId));
+  setSelectedStockVariantId(variantId == null ? "" : String(variantId));
+  setInventoryTab("recipes");
+}
+
+function formatInventoryHistoryDate(value?: string) {
+  if (!value) return "-";
+  return new Date(value).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function getInventoryDefaultUnitByType(type: "raw" | "direct") {
+  return type === "direct" ? "pcs" : "kg";
+}
+
+function createBuilderRow(prefix: "raw" | "direct"): RecipeBuilderRow {
+  return {
+    rowId: `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    inventoryId: "",
+    quantity: "",
+    category: "all",
+  };
+}
+
+function resetRawBuilderRows() {
+  setRawBuilderRows([createBuilderRow("raw")]);
+}
+
+function resetDirectBuilderRows() {
+  setDirectBuilderRows([createBuilderRow("direct")]);
+}
+
+function addRawBuilderRow() {
+  setRawBuilderRows((prev) => [...prev, createBuilderRow("raw")]);
+}
+
+function addDirectBuilderRow() {
+  setDirectBuilderRows((prev) => [...prev, createBuilderRow("direct")]);
+}
+
+function updateRawBuilderRow(rowId: string, patch: Partial<RecipeBuilderRow>) {
+  setRawBuilderRows((prev) => prev.map((row) => (row.rowId === rowId ? { ...row, ...patch } : row)));
+}
+
+function updateDirectBuilderRow(rowId: string, patch: Partial<RecipeBuilderRow>) {
+  setDirectBuilderRows((prev) => prev.map((row) => (row.rowId === rowId ? { ...row, ...patch } : row)));
+}
+
+function removeRawBuilderRow(rowId: string) {
+  setRawBuilderRows((prev) => {
+    const next = prev.filter((row) => row.rowId !== rowId);
+    return next.length > 0 ? next : [createBuilderRow("raw")];
+  });
+}
+
+function removeDirectBuilderRow(rowId: string) {
+  setDirectBuilderRows((prev) => {
+    const next = prev.filter((row) => row.rowId !== rowId);
+    return next.length > 0 ? next : [createBuilderRow("direct")];
+  });
+}
+
+// Direct inventory deduction removed. Payment must use mark_order_paid_fast only.
+
+
+async function saveInventoryItemOrAdjustment(e: React.FormEvent) {
+  e.preventDefault();
+
+  if (!restaurantId) {
+    showToast("Invalid restaurant link", "error");
+    return;
+  }
+
+  if (!isOnline) {
+    showToast("Inventory add garna internet chaincha", "error");
+    return;
+  }
+
+  const cleanName = newInventoryItemName.trim();
+  const cleanUnit = String(newInventoryUnit || "").trim() || getInventoryDefaultUnitByType(newInventoryItemType);
+  const currentStockValue = Number(newInventoryStock || 0);
+  const lowStockValue = newInventoryLowStock === "" ? null : Number(newInventoryLowStock);
+  const costValue = newInventoryCost === "" ? null : Number(newInventoryCost);
+
+  if (!cleanName) {
+    showToast("Inventory item name required", "error");
+    return;
+  }
+
+  if (!INVENTORY_UNIT_OPTIONS.includes(cleanUnit as (typeof INVENTORY_UNIT_OPTIONS)[number])) {
+    showToast("Valid unit select gara", "error");
+    return;
+  }
+
+  if (!Number.isFinite(currentStockValue) || currentStockValue < 0) {
+    showToast("Current stock valid number hala", "error");
+    return;
+  }
+
+  if (lowStockValue !== null && (!Number.isFinite(lowStockValue) || lowStockValue < 0)) {
+    showToast("Low stock valid number hala", "error");
+    return;
+  }
+
+  if (costValue !== null && (!Number.isFinite(costValue) || costValue < 0)) {
+    showToast("Cost per unit valid number hala", "error");
+    return;
+  }
+
+  setSavingInventory(true);
+
+  try {
+    const payload = {
+      restaurant_id: restaurantId,
+      item_name: cleanName,
+      item_type: newInventoryItemType,
+      category: newInventoryCategory || "Other",
+      unit: cleanUnit,
+      current_stock: currentStockValue,
+      low_stock_threshold: lowStockValue,
+      cost_per_unit: costValue,
+      is_active: true,
+    };
+
+    const { data, error } = await supabase
+      .from("inventory_items")
+      .insert([payload])
+      .select("id, restaurant_id, item_name, item_type, category, unit, current_stock, low_stock_threshold, cost_per_unit, is_active, created_at, updated_at")
+      .single();
+
+    if (error) throw error;
+    if (!data) throw new Error("Inventory insert succeeded but returned no row");
+
+    const insertedItem: InventoryItem = {
+      id: Number(data.id),
+      restaurant_id: data.restaurant_id == null ? undefined : Number(data.restaurant_id),
+      item_name: String(data.item_name || cleanName),
+      item_type: String(data.item_type || newInventoryItemType),
+      category: String(data.category || newInventoryCategory || "Other").trim() || "Other",
+      unit: String(data.unit || cleanUnit),
+      current_stock: Number(data.current_stock || 0),
+      low_stock_threshold: data.low_stock_threshold == null ? null : Number(data.low_stock_threshold),
+      cost_per_unit: data.cost_per_unit == null ? null : Number(data.cost_per_unit),
+      is_active: data.is_active ?? true,
+      created_at: data.created_at || undefined,
+      updated_at: data.updated_at || undefined,
+    };
+
+    setInventoryItems((prev) => [insertedItem, ...prev.filter((item) => Number(item.id) !== Number(insertedItem.id))]);
+    showToast("Inventory item saved", "success");
+    setNewInventoryItemName("");
+    setNewInventoryCategory("Other");
+    setNewInventoryItemType("raw");
+    setNewInventoryUnit("kg");
+    setNewInventoryStock("");
+    setNewInventoryLowStock("");
+    setNewInventoryCost("");
+    setShowAddInventoryItemForm(false);
+
+    await fetchInventoryData();
+  } catch (error: any) {
+    console.error("Failed to save inventory", {
+      message: error?.message,
+      details: error?.details,
+      hint: error?.hint,
+      code: error?.code,
+      raw: error,
+    });
+    showToast(getReadableError(error) || "Failed to save inventory", "error");
+  } finally {
+    setSavingInventory(false);
+  }
+}
+
+
+function downloadInventoryItemsCsvTemplate() {
+  const csv = [
+    "item_name,category,item_type,unit,current_stock,low_stock_threshold,cost_per_unit",
+    "Maida,Dry Goods,raw,kg,20,5,80",
+    "Chicken,Meat,raw,kg,10,2,450",
+    "Coke 250ml,Beverages,direct,pcs,48,12,45",
+  ].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "inventory-items-template.csv";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function downloadInventoryLinksCsvTemplate() {
+  const csv = [
+    "link_type,menu_item,variant_name,inventory_item,quantity",
+    "raw,Momo,Full,Maida,0.15",
+    "raw,Momo,Full,Chicken,0.12",
+    "direct,Coke 250ml,,Coke 250ml,1",
+  ].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "inventory-recipe-links-template.csv";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function downloadInventoryPurchaseCsvTemplate() {
+  const csv = [
+    "inventory_item,quantity,unit_cost,supplier,paid_amount,note",
+    "Maida,10,80,Ram Supplier,800,Opening stock",
+    "Coke 250ml,24,45,Coke Dealer,1080,Initial purchase",
+  ].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "inventory-purchase-template.csv";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function getCsvColumn(header: string[], names: string[]) {
+  for (const name of names) {
+    const index = header.indexOf(name);
+    if (index >= 0) return index;
+  }
+  return -1;
+}
+
+function readCsvFile(event: React.ChangeEvent<HTMLInputElement>, onText: (text: string) => void) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith(".csv")) {
+    showToast("Please upload CSV file only", "error");
+    event.target.value = "";
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    onText(String(reader.result || ""));
+    event.target.value = "";
+  };
+  reader.onerror = () => {
+    showToast("CSV read garna sakiena", "error");
+    event.target.value = "";
+  };
+  reader.readAsText(file);
+}
+
+function getCsvLines(text: string) {
+  return text.replace(/^\uFEFF/, "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+async function handleInventoryItemsCsvUpload(event: React.ChangeEvent<HTMLInputElement>) {
+  readCsvFile(event, async (text) => {
+    if (!restaurantId) return showToast("Invalid restaurant link", "error");
+
+    const lines = getCsvLines(text);
+    if (lines.length <= 1) return showToast("Inventory CSV empty chha", "error");
+
+    const header = parseCsvLine(lines[0]).map((item) => item.trim().toLowerCase());
+    const nameIndex = getCsvColumn(header, ["item_name", "inventory_item", "name"]);
+    const categoryIndex = getCsvColumn(header, ["category", "item_category", "group"]);
+    const typeIndex = getCsvColumn(header, ["item_type", "type"]);
+    const unitIndex = getCsvColumn(header, ["unit"]);
+    const stockIndex = getCsvColumn(header, ["current_stock", "stock", "opening_stock"]);
+    const lowIndex = getCsvColumn(header, ["low_stock_threshold", "low_stock", "threshold"]);
+    const costIndex = getCsvColumn(header, ["cost_per_unit", "unit_cost", "cost"]);
+
+    if (nameIndex < 0) return showToast("CSV header must include item_name", "error");
+
+    const parsed = lines
+      .slice(1)
+      .map((line) => parseCsvLine(line))
+      .map((cols) => {
+        const itemName = String(cols[nameIndex] || "").trim();
+        const category = String(categoryIndex >= 0 ? cols[categoryIndex] || "Other" : "Other").trim() || "Other";
+        const rawType = String(typeIndex >= 0 ? cols[typeIndex] || "raw" : "raw").trim().toLowerCase();
+        const itemType: "raw" | "direct" =
+          rawType === "direct" || rawType === "fixed" || rawType === "stock" ? "direct" : "raw";
+        const unit =
+          String(unitIndex >= 0 ? cols[unitIndex] || getInventoryDefaultUnitByType(itemType) : getInventoryDefaultUnitByType(itemType)).trim() ||
+          getInventoryDefaultUnitByType(itemType);
+        const currentStock = Number(stockIndex >= 0 ? cols[stockIndex] || 0 : 0);
+        const lowStock = lowIndex >= 0 && String(cols[lowIndex] || "").trim() !== "" ? Number(cols[lowIndex]) : null;
+        const cost = costIndex >= 0 && String(cols[costIndex] || "").trim() !== "" ? Number(cols[costIndex]) : null;
+        return { itemName, category, itemType, unit, currentStock, lowStock, cost };
+      })
+      .filter((row) => row.itemName);
+
+    if (parsed.length === 0) return showToast("Valid inventory rows bhetena", "error");
+
+    const badRow = parsed.find(
+      (row) =>
+        !Number.isFinite(row.currentStock) ||
+        (row.lowStock !== null && !Number.isFinite(row.lowStock)) ||
+        (row.cost !== null && !Number.isFinite(row.cost))
+    );
+    if (badRow) return showToast(`Invalid number in ${badRow.itemName}`, "error");
+
+    // CSV bhitra same item repeat bhayo bhane last row use gar. Import reject nagara.
+    const uniqueRows = Array.from(
+      parsed.reduce((map, row) => map.set(row.itemName.trim().toLowerCase(), row), new Map<string, typeof parsed[number]>()).values()
+    );
+
+    setSavingInventory(true);
+    try {
+      const { data: existingRows, error: existingError } = await supabase
+        .from("inventory_items")
+        .select("id,item_name,is_active")
+        .eq("restaurant_id", restaurantId);
+
+      if (existingError) throw existingError;
+
+      const existingMap = new Map(
+        (existingRows || []).map((item: any) => [String(item.item_name || "").trim().toLowerCase(), item])
+      );
+
+      let created = 0;
+      let updated = 0;
+
+      for (const row of uniqueRows) {
+        const key = row.itemName.trim().toLowerCase();
+        const existing = existingMap.get(key);
+        const payload = {
+          item_name: row.itemName,
+          category: row.category || "Other",
+          item_type: row.itemType,
+          unit: row.unit,
+          current_stock: row.currentStock,
+          low_stock_threshold: row.lowStock,
+          cost_per_unit: row.cost,
+          is_active: true,
+          updated_at: new Date().toISOString(),
+        };
+
+        if (existing?.id) {
+          const { error } = await supabase
+            .from("inventory_items")
+            .update(payload)
+            .eq("id", existing.id)
+            .eq("restaurant_id", restaurantId);
+
+          if (error) throw error;
+          updated += 1;
+          continue;
+        }
+
+        const { data: inserted, error } = await supabase
+          .from("inventory_items")
+          .insert([{ restaurant_id: restaurantId, ...payload }])
+          .select("id,item_name,is_active")
+          .single();
+
+        if (error && isDuplicateConstraintError(error)) {
+          const { data: duplicateRows, error: dupFindError } = await supabase
+            .from("inventory_items")
+            .select("id,item_name,is_active")
+            .eq("restaurant_id", restaurantId)
+            .ilike("item_name", row.itemName);
+
+          if (dupFindError) throw dupFindError;
+          const duplicate = (duplicateRows || [])[0];
+          if (!duplicate?.id) throw error;
+
+          const { error: updateDuplicateError } = await supabase
+            .from("inventory_items")
+            .update(payload)
+            .eq("id", duplicate.id)
+            .eq("restaurant_id", restaurantId);
+
+          if (updateDuplicateError) throw updateDuplicateError;
+          existingMap.set(key, duplicate);
+          updated += 1;
+          continue;
+        }
+
+        if (error) throw error;
+        if (inserted) existingMap.set(key, inserted);
+        created += 1;
+      }
+
+      await fetchInventoryData();
+      showToast(`Inventory import done: ${created} new, ${updated} updated`, "success");
+    } catch (error) {
+      console.error("Inventory CSV import failed", {
+        message: getReadableError(error),
+        code: (error as any)?.code,
+        details: (error as any)?.details,
+        hint: (error as any)?.hint,
+        raw: error,
+      });
+      showToast(getReadableError(error) || "Inventory CSV import failed", "error");
+    } finally {
+      setSavingInventory(false);
+    }
+  });
+}
+
+async function handleInventoryLinksCsvUpload(event: React.ChangeEvent<HTMLInputElement>) {
+  readCsvFile(event, async (text) => {
+    if (!restaurantId) return showToast("Invalid restaurant link", "error");
+
+    const lines = getCsvLines(text);
+    if (lines.length <= 1) return showToast("Recipe CSV empty chha", "error");
+
+    const header = parseCsvLine(lines[0]).map((h) => h.trim().toLowerCase());
+
+    const linkTypeIndex = getCsvColumn(header, ["link_type", "type"]);
+    const menuNameIndex = getCsvColumn(header, ["menu_item", "menu_item_name", "item_name", "menu"]);
+    const variantNameIndex = getCsvColumn(header, ["variant_name", "variant", "menu_variant"]);
+    const inventoryNameIndex = getCsvColumn(header, ["inventory_item", "inventory_item_name", "stock_item", "raw_material", "material"]);
+    const qtyIndex = getCsvColumn(header, ["quantity", "qty", "quantity_used", "quantity_per_sale"]);
+
+    // Old ID-based CSV पनि support गर, तर default अब name-based हो।
+    const menuIdIndex = getCsvColumn(header, ["menu_item_id"]);
+    const variantIdIndex = getCsvColumn(header, ["menu_item_variant_id", "variant_id"]);
+    const inventoryIdIndex = getCsvColumn(header, ["inventory_item_id"]);
+
+    const hasNameBasedHeader = menuNameIndex >= 0 && inventoryNameIndex >= 0 && qtyIndex >= 0;
+    const hasIdBasedHeader = menuIdIndex >= 0 && inventoryIdIndex >= 0 && qtyIndex >= 0;
+
+    if (!hasNameBasedHeader && !hasIdBasedHeader) {
+      return showToast("CSV header: link_type,menu_item,variant_name,inventory_item,quantity", "error");
+    }
+
+    setSavingInventory(true);
+
+    try {
+      const [{ data: freshMenus, error: menuError }, { data: freshVariants, error: variantError }, { data: freshInventory, error: inventoryError }] = await Promise.all([
+        supabase.from("menu_items").select("id,item_name").eq("restaurant_id", restaurantId),
+        supabase.from("menu_item_variants").select("id,menu_item_id,variant_name"),
+        supabase.from("inventory_items").select("id,item_name,is_active").eq("restaurant_id", restaurantId),
+      ]);
+
+      if (menuError) throw menuError;
+      if (variantError) throw variantError;
+      if (inventoryError) throw inventoryError;
+
+      const normalizeKey = (value: unknown) => String(value || "").trim().toLowerCase();
+      const menuMap = new Map((freshMenus || []).map((item: any) => [normalizeKey(item.item_name), item]));
+      const inventoryMap = new Map(
+        (freshInventory || [])
+          .filter((item: any) => item.is_active !== false)
+          .map((item: any) => [normalizeKey(item.item_name), item])
+      );
+      const variantMap = new Map(
+        (freshVariants || []).map((variant: any) => [
+          `${Number(variant.menu_item_id)}::${normalizeKey(variant.variant_name)}`,
+          variant,
+        ])
+      );
+
+      let rawSaved = 0;
+      let directSaved = 0;
+      let skipped = 0;
+      const skippedReasons: string[] = [];
+
+      for (let i = 1; i < lines.length; i += 1) {
+        const cols = parseCsvLine(lines[i]);
+        const rowNumber = i + 1;
+        const linkTypeRaw = linkTypeIndex >= 0 ? String(cols[linkTypeIndex] || "raw") : "raw";
+        const linkType = linkTypeRaw.trim().toLowerCase() === "direct" ? "direct" : "raw";
+        const quantity = Number(cols[qtyIndex]);
+
+        let menuId: number | null = null;
+        let variantId: number | null = null;
+        let inventoryId: number | null = null;
+
+        if (hasNameBasedHeader) {
+          const menuName = String(cols[menuNameIndex] || "").trim();
+          const variantName = variantNameIndex >= 0 ? String(cols[variantNameIndex] || "").trim() : "";
+          const inventoryName = String(cols[inventoryNameIndex] || "").trim();
+
+          const menu = menuMap.get(normalizeKey(menuName));
+          const inventory = inventoryMap.get(normalizeKey(inventoryName));
+
+          if (!menu?.id) {
+            skipped += 1;
+            skippedReasons.push(`Row ${rowNumber}: menu not found (${menuName || "blank"})`);
+            continue;
+          }
+
+          if (!inventory?.id) {
+            skipped += 1;
+            skippedReasons.push(`Row ${rowNumber}: inventory not found (${inventoryName || "blank"})`);
+            continue;
+          }
+
+          menuId = Number(menu.id);
+          inventoryId = Number(inventory.id);
+
+          if (variantName) {
+            const variant = variantMap.get(`${menuId}::${normalizeKey(variantName)}`);
+            if (!variant?.id) {
+              skipped += 1;
+              skippedReasons.push(`Row ${rowNumber}: variant not found (${menuName} / ${variantName})`);
+              continue;
+            }
+            variantId = Number(variant.id);
+          }
+        } else {
+          menuId = Number(cols[menuIdIndex]);
+          const variantIdRaw = variantIdIndex >= 0 ? cols[variantIdIndex] : "";
+          variantId = variantIdRaw ? Number(variantIdRaw) : null;
+          inventoryId = Number(cols[inventoryIdIndex]);
+        }
+
+        if (!menuId || !inventoryId || Number.isNaN(quantity) || quantity <= 0) {
+          skipped += 1;
+          skippedReasons.push(`Row ${rowNumber}: invalid menu/inventory/quantity`);
+          continue;
+        }
+
+        if (linkType === "direct") {
+          const { error } = await supabase
+            .from("menu_item_stock_links")
+            .upsert(
+              {
+                restaurant_id: restaurantId,
+                menu_item_id: menuId,
+                menu_item_variant_id: variantId,
+                inventory_item_id: inventoryId,
+                quantity_per_sale: quantity,
+                updated_at: new Date().toISOString(),
+              },
+              { onConflict: "restaurant_id,menu_item_id,menu_item_variant_id,inventory_item_id" }
+            );
+
+          if (error) throw error;
+          directSaved += 1;
+        } else {
+          const { error } = await supabase
+            .from("menu_item_recipes")
+            .upsert(
+              {
+                restaurant_id: restaurantId,
+                menu_item_id: menuId,
+                menu_item_variant_id: variantId,
+                inventory_item_id: inventoryId,
+                quantity_used: quantity,
+                updated_at: new Date().toISOString(),
+              },
+              { onConflict: "restaurant_id,menu_item_id,menu_item_variant_id,inventory_item_id" }
+            );
+
+          if (error) throw error;
+          rawSaved += 1;
+        }
+      }
+
+      await fetchInventoryData();
+
+      if (skippedReasons.length > 0) {
+        console.warn("Recipe CSV skipped rows", skippedReasons);
+      }
+
+      showToast(
+        `Done: raw ${rawSaved}, direct ${directSaved}, skipped ${skipped}`,
+        skipped ? "info" : "success"
+      );
+    } catch (error: any) {
+      console.error("Inventory recipe CSV import failed", error);
+      showToast(getReadableError(error) || "Recipe CSV import failed", "error");
+    } finally {
+      setSavingInventory(false);
+    }
+  });
+}
+
+async function handleInventoryPurchaseCsvUpload(event: React.ChangeEvent<HTMLInputElement>) {
+  readCsvFile(event, async (text) => {
+    if (!restaurantId) return showToast("Invalid restaurant link", "error");
+    const lines = getCsvLines(text);
+    if (lines.length <= 1) return showToast("Purchase CSV empty chha", "error");
+    const header = parseCsvLine(lines[0]).map((item) => item.trim().toLowerCase());
+    const inventoryIndex = getCsvColumn(header, ["inventory_item", "item_name"]);
+    const qtyIndex = getCsvColumn(header, ["quantity", "qty"]);
+    const costIndex = getCsvColumn(header, ["unit_cost", "cost_per_unit", "cost"]);
+    const supplierIndex = getCsvColumn(header, ["supplier", "supplier_name"]);
+    const paidIndex = getCsvColumn(header, ["paid_amount", "paid"]);
+    const noteIndex = getCsvColumn(header, ["note", "remarks"]);
+    if (inventoryIndex < 0 || qtyIndex < 0) return showToast("Header: inventory_item, quantity चाहिन्छ", "error");
+
+    const parsed = lines.slice(1).map((line) => parseCsvLine(line)).map((cols) => ({
+      inventoryName: String(cols[inventoryIndex] || "").trim(),
+      quantity: Number(cols[qtyIndex] || 0),
+      unitCost: costIndex >= 0 && String(cols[costIndex] || "").trim() !== "" ? Number(cols[costIndex]) : null,
+      supplierName: supplierIndex >= 0 ? String(cols[supplierIndex] || "").trim() : "",
+      paidAmount: paidIndex >= 0 && String(cols[paidIndex] || "").trim() !== "" ? Number(cols[paidIndex]) : 0,
+      note: noteIndex >= 0 ? String(cols[noteIndex] || "").trim() : "",
+    })).filter((row) => row.inventoryName);
+
+    if (parsed.length === 0) return showToast("Valid purchase rows bhetena", "error");
+    const badRow = parsed.find((row) => Number.isNaN(row.quantity) || row.quantity <= 0 || (row.unitCost !== null && Number.isNaN(row.unitCost)) || Number.isNaN(row.paidAmount) || row.paidAmount < 0);
+    if (badRow) return showToast(`Invalid purchase row: ${badRow.inventoryName}`, "error");
+
+    setSavingInventory(true);
+    try {
+      const [{ data: freshInventory, error: invError }, { data: freshSuppliers, error: supplierError }] = await Promise.all([
+        supabase.from("inventory_items").select("id,item_name,current_stock,cost_per_unit").eq("restaurant_id", restaurantId),
+        supabase.from("suppliers").select("id,name").eq("restaurant_id", restaurantId),
+      ]);
+      if (invError) throw invError;
+      if (supplierError) throw supplierError;
+
+      const inventoryMap = new Map((freshInventory || []).map((item: any) => [String(item.item_name || "").trim().toLowerCase(), item]));
+      const supplierMap = new Map((freshSuppliers || []).map((supplier: any) => [String(supplier.name || "").trim().toLowerCase(), supplier]));
+
+      let saved = 0;
+      let skipped = 0;
+
+      for (const row of parsed) {
+        const inventory = inventoryMap.get(row.inventoryName.toLowerCase());
+        if (!inventory?.id) {
+          skipped += 1;
+          continue;
+        }
+
+        let supplierId: number | null = null;
+        if (row.supplierName) {
+          const existingSupplier = supplierMap.get(row.supplierName.toLowerCase());
+          if (existingSupplier?.id) {
+            supplierId = Number(existingSupplier.id);
+          } else {
+            const { data: insertedSupplier, error: supplierInsertError } = await supabase.from("suppliers").insert([{ restaurant_id: restaurantId, name: row.supplierName }]).select("id,name").single();
+            if (supplierInsertError) throw supplierInsertError;
+            supplierId = Number(insertedSupplier.id);
+            supplierMap.set(row.supplierName.toLowerCase(), insertedSupplier);
+          }
+        }
+
+        const effectiveCost = row.unitCost == null ? Number(inventory.cost_per_unit || 0) : Number(row.unitCost);
+        const nextStock = Number(inventory.current_stock || 0) + row.quantity;
+        const totalAmount = row.quantity * effectiveCost;
+        const paidAmount = Math.min(Number(row.paidAmount || 0), totalAmount);
+        const dueAmount = Math.max(0, totalAmount - paidAmount);
+
+        const { error: updateError } = await supabase.from("inventory_items").update({ current_stock: nextStock, cost_per_unit: effectiveCost, updated_at: new Date().toISOString() }).eq("id", inventory.id).eq("restaurant_id", restaurantId);
+        if (updateError) throw updateError;
+
+        const note = row.note || (row.supplierName ? `Supplier: ${row.supplierName}` : `CSV purchase for ${row.inventoryName}`);
+        const { error: txError } = await supabase.from("inventory_transactions").insert([{ restaurant_id: restaurantId, inventory_item_id: Number(inventory.id), transaction_type: "purchase", quantity: row.quantity, note }]);
+        if (txError) throw txError;
+
+        if (supplierId) {
+          const { error: purchaseError } = await supabase.from("supplier_purchases").insert([{ restaurant_id: restaurantId, supplier_id: supplierId, inventory_item_id: Number(inventory.id), quantity: row.quantity, unit_cost: effectiveCost, total_amount: totalAmount, paid_amount: paidAmount, due_amount: dueAmount, note: row.note || null }]);
+          if (purchaseError) throw purchaseError;
+        }
+
+        inventory.current_stock = nextStock;
+        inventory.cost_per_unit = effectiveCost;
+        saved += 1;
+      }
+
+      await fetchInventoryData();
+      showToast(`Purchase import done: ${saved} saved, ${skipped} skipped`, skipped ? "info" : "success");
+    } catch (error) {
+      console.error("Inventory purchase CSV import failed", error);
+      showToast(getReadableError(error) || "Purchase CSV import failed", "error");
+    } finally {
+      setSavingInventory(false);
+    }
+  });
+}
+
+async function saveRecipeLink() {
+  const activeMenuId = Number(selectedRecipeMenuId || recipeViewerMenuId || 0);
+  const activeVariantId = Number(selectedRecipeVariantId || recipeViewerVariantId || 0) || null;
+  const activeVariants = activeMenuId ? getVariantsForMenuItem(activeMenuId) : [];
+
+  if (!restaurantId || !activeMenuId) {
+    showToast("Paila menu select gara", "error");
+    return;
+  }
+
+  if (activeVariants.length > 0 && !activeVariantId) {
+    showToast("Yo item ko variant select gara", "error");
+    return;
+  }
+
+  const filledRows = rawBuilderRows.filter((row) => row.inventoryId || row.quantity);
+
+  if (filledRows.length === 0) {
+    showToast("Kam se kam euta raw material add gara", "error");
+    return;
+  }
+
+  const normalizedRows = filledRows.map((row) => ({
+    rowId: row.rowId,
+    inventoryId: Number(row.inventoryId),
+    quantity: Number(row.quantity),
+  }));
+
+  if (normalizedRows.some((row) => !row.inventoryId || Number.isNaN(row.quantity) || row.quantity <= 0)) {
+    showToast("Raw material ko valid quantity hala", "error");
+    return;
+  }
+
+  const inventoryIds = normalizedRows.map((row) => row.inventoryId);
+  if (new Set(inventoryIds).size !== inventoryIds.length) {
+    showToast("Same raw material dui choti rakhna mildaina", "error");
+    return;
+  }
+
+  setSavingInventory(true);
+
+  try {
+    if (editingRecipeId) {
+      if (normalizedRows.length !== 1) {
+        showToast("Edit mode maa euta matra raw material save gara", "error");
+        return;
+      }
+
+      const target = normalizedRows[0];
+      let duplicateQuery = supabase
+        .from("menu_item_recipes")
+        .select("id")
+        .eq("restaurant_id", restaurantId)
+        .eq("menu_item_id", activeMenuId)
+        .eq("inventory_item_id", target.inventoryId)
+        .neq("id", editingRecipeId);
+
+      duplicateQuery =
+        activeVariantId == null
+          ? duplicateQuery.is("menu_item_variant_id", null)
+          : duplicateQuery.eq("menu_item_variant_id", activeVariantId);
+
+      const { data: duplicateRows, error: duplicateError } = await duplicateQuery;
+      if (duplicateError) throw duplicateError;
+
+      if (Array.isArray(duplicateRows) && duplicateRows.length > 0) {
+        showToast("Yo raw material already linked cha", "error");
+        return;
+      }
+
+      const { error } = await supabase
+        .from("menu_item_recipes")
+        .update({
+          menu_item_id: activeMenuId,
+          menu_item_variant_id: activeVariantId,
+          inventory_item_id: target.inventoryId,
+          quantity_used: target.quantity,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", editingRecipeId)
+        .eq("restaurant_id", restaurantId);
+
+      if (error) throw error;
+      showToast("Raw material updated", "success");
+    } else {
+      for (const row of normalizedRows) {
+        const { error } = await supabase
+          .from("menu_item_recipes")
+          .upsert(
+            {
+              restaurant_id: restaurantId,
+              menu_item_id: activeMenuId,
+              menu_item_variant_id: activeVariantId,
+              inventory_item_id: row.inventoryId,
+              quantity_used: row.quantity,
+              updated_at: new Date().toISOString(),
+            },
+            {
+              onConflict: "restaurant_id,menu_item_id,menu_item_variant_id,inventory_item_id",
+            }
+          );
+
+        if (error) throw error;
+      }
+
+      showToast("Raw materials saved", "success");
+    }
+
+    setSelectedRecipeMenuId(String(activeMenuId));
+    setSelectedRecipeVariantId(activeVariantId == null ? "" : String(activeVariantId));
+    setRecipeViewerMenuId(String(activeMenuId));
+    setRecipeViewerVariantId(activeVariantId == null ? "" : String(activeVariantId));
+    cancelRecipeEdit();
+    resetRawBuilderRows();
+    await fetchInventoryData();
+
+    if (quickRecipeReturnToMenu && !editingRecipeId) {
+      setInventoryRecipePanel("menuRecipe");
+      setQuickRecipeReturnToMenu(false);
+      setSelectedRecipeMenuId("");
+      setSelectedStockMenuId("");
+      setRecipeViewerMenuId("");
+      setSelectedRecipeVariantId("");
+      setSelectedStockVariantId("");
+      setRecipeViewerVariantId("");
+      setShowRecipeMaterialForm(false);
+      setAddRecipeMenuPickerOpen(false);
+      setAddRecipeStockPickerRowId(null);
+    }
+  } catch (error) {
+    console.error("Failed to save recipe link", error, getReadableError(error));
+    showToast(getReadableError(error) || "Failed to save recipe link", "error");
+  } finally {
+    setSavingInventory(false);
+  }
+}
+
+async function saveDirectStockLink() {
+  const activeMenuId = Number(selectedStockMenuId || selectedRecipeMenuId || recipeViewerMenuId || 0);
+  const activeVariantId = Number(selectedStockVariantId || selectedRecipeVariantId || recipeViewerVariantId || 0) || null;
+  const activeVariants = activeMenuId ? getVariantsForMenuItem(activeMenuId) : [];
+
+  if (!restaurantId || !activeMenuId) {
+    showToast("Paila menu select gara", "error");
+    return;
+  }
+
+  if (activeVariants.length > 0 && !activeVariantId) {
+    showToast("Yo item ko variant select gara", "error");
+    return;
+  }
+
+  const filledRows = directBuilderRows.filter((row) => row.inventoryId || row.quantity);
+
+  if (filledRows.length === 0) {
+    showToast("Kam se kam euta direct material add gara", "error");
+    return;
+  }
+
+  const normalizedRows = filledRows.map((row) => ({
+    rowId: row.rowId,
+    inventoryId: Number(row.inventoryId),
+    quantity: Number(row.quantity),
+  }));
+
+  if (normalizedRows.some((row) => !row.inventoryId || Number.isNaN(row.quantity) || row.quantity <= 0)) {
+    showToast("Direct material ko valid quantity hala", "error");
+    return;
+  }
+
+  const inventoryIds = normalizedRows.map((row) => row.inventoryId);
+  if (new Set(inventoryIds).size !== inventoryIds.length) {
+    showToast("Same direct material dui choti rakhna mildaina", "error");
+    return;
+  }
+
+  setSavingInventory(true);
+
+  try {
+    if (editingStockLinkId) {
+      if (normalizedRows.length !== 1) {
+        showToast("Edit mode maa euta matra direct material save gara", "error");
+        return;
+      }
+
+      const target = normalizedRows[0];
+      let duplicateQuery = supabase
+        .from("menu_item_stock_links")
+        .select("id")
+        .eq("restaurant_id", restaurantId)
+        .eq("menu_item_id", activeMenuId)
+        .eq("inventory_item_id", target.inventoryId)
+        .neq("id", editingStockLinkId);
+
+      duplicateQuery =
+        activeVariantId == null
+          ? duplicateQuery.is("menu_item_variant_id", null)
+          : duplicateQuery.eq("menu_item_variant_id", activeVariantId);
+
+      const { data: duplicateRows, error: duplicateError } = await duplicateQuery;
+      if (duplicateError) throw duplicateError;
+
+      if (Array.isArray(duplicateRows) && duplicateRows.length > 0) {
+        showToast("Yo direct material already linked cha", "error");
+        return;
+      }
+
+      const { error } = await supabase
+        .from("menu_item_stock_links")
+        .update({
+          menu_item_id: activeMenuId,
+          menu_item_variant_id: activeVariantId,
+          inventory_item_id: target.inventoryId,
+          quantity_per_sale: target.quantity,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", editingStockLinkId)
+        .eq("restaurant_id", restaurantId);
+
+      if (error) throw error;
+      showToast("Direct material updated", "success");
+    } else {
+      for (const row of normalizedRows) {
+        const { error } = await supabase
+          .from("menu_item_stock_links")
+          .upsert(
+            {
+              restaurant_id: restaurantId,
+              menu_item_id: activeMenuId,
+              menu_item_variant_id: activeVariantId,
+              inventory_item_id: row.inventoryId,
+              quantity_per_sale: row.quantity,
+              updated_at: new Date().toISOString(),
+            },
+            {
+              onConflict: "restaurant_id,menu_item_id,menu_item_variant_id,inventory_item_id",
+            }
+          );
+
+        if (error) throw error;
+      }
+
+      showToast("Direct materials saved", "success");
+    }
+
+    setSelectedStockMenuId(String(activeMenuId));
+    setSelectedStockVariantId(activeVariantId == null ? "" : String(activeVariantId));
+    setRecipeViewerMenuId(String(activeMenuId));
+    setRecipeViewerVariantId(activeVariantId == null ? "" : String(activeVariantId));
+    cancelDirectStockEdit();
+    resetDirectBuilderRows();
+    await fetchInventoryData();
+
+    if (quickRecipeReturnToMenu && !editingStockLinkId) {
+      setInventoryRecipePanel("menuRecipe");
+      setQuickRecipeReturnToMenu(false);
+      setSelectedRecipeMenuId("");
+      setSelectedStockMenuId("");
+      setRecipeViewerMenuId("");
+      setSelectedRecipeVariantId("");
+      setSelectedStockVariantId("");
+      setRecipeViewerVariantId("");
+      setShowRecipeMaterialForm(false);
+      setAddRecipeMenuPickerOpen(false);
+      setAddRecipeStockPickerRowId(null);
+    }
+  } catch (error) {
+    console.error("Failed to save stock link", error, getReadableError(error));
+    showToast(getReadableError(error) || "Failed to save stock link", "error");
+  } finally {
+    setSavingInventory(false);
+  }
+}
+
+async function restockInventoryItem(e: React.FormEvent) {
+  e.preventDefault();
+
+  if (!restaurantId || !restockInventoryItemId || !restockQuantity) {
+    showToast("Restock ko sabai required field fill gara", "error");
+    return;
+  }
+
+  const inventoryId = Number(restockInventoryItemId);
+  const quantityToAdd = Number(restockQuantity);
+
+  if (!inventoryId || Number.isNaN(quantityToAdd) || quantityToAdd <= 0) {
+    showToast("Valid stock quantity hala", "error");
+    return;
+  }
+
+  setSavingInventory(true);
+
+  try {
+    const targetItem = inventoryItemById.get(inventoryId);
+    if (!targetItem) {
+      throw new Error("Inventory item not found");
+    }
+
+    const nextStock = Number(targetItem.current_stock || 0) + quantityToAdd;
+    const nextCost =
+      restockCostPerUnit === ""
+        ? targetItem.cost_per_unit ?? null
+        : Number(restockCostPerUnit);
+
+    const { error: updateError } = await supabase
+      .from("inventory_items")
+      .update({
+        current_stock: nextStock,
+        cost_per_unit: nextCost,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", inventoryId)
+      .eq("restaurant_id", restaurantId);
+
+    if (updateError) throw updateError;
+
+    const selectedSupplierId = restockSupplierId ? Number(restockSupplierId) : null;
+    const selectedSupplierName = selectedSupplierId ? getSupplierNameById(selectedSupplierId) : restockSupplier.trim();
+    const cleanNote = restockNotes.trim();
+    const effectiveUnitCost = Number(nextCost || 0);
+    const totalAmount = Number(quantityToAdd) * effectiveUnitCost;
+    const paidAmount = restockPaidAmount === "" ? 0 : Number(restockPaidAmount);
+
+    if (Number.isNaN(paidAmount) || paidAmount < 0) {
+      throw new Error("Valid paid amount hala");
+    }
+
+    if (paidAmount > totalAmount) {
+      throw new Error("Paid amount total amount bhanda dherai huna mildaina");
+    }
+
+    const dueAmount = totalAmount - paidAmount;
+
+    const transactionPayload = {
+      restaurant_id: restaurantId,
+      inventory_item_id: inventoryId,
+      transaction_type: "purchase",
+      quantity: quantityToAdd,
+      note:
+        selectedSupplierName || cleanNote
+          ? `${selectedSupplierName ? `Supplier: ${selectedSupplierName}` : ""}${
+              selectedSupplierName && cleanNote ? " | " : ""
+            }${cleanNote || `Stock added for ${targetItem.item_name}`}`
+          : `Stock added for ${targetItem.item_name}`,
+    };
+
+    const { error: txError } = await supabase
+      .from("inventory_transactions")
+      .insert([transactionPayload]);
+
+    if (txError) throw txError;
+
+    if (selectedSupplierId) {
+      const { error: purchaseError } = await supabase.from("supplier_purchases").insert([
+        {
+          restaurant_id: restaurantId,
+          supplier_id: selectedSupplierId,
+          inventory_item_id: inventoryId,
+          quantity: quantityToAdd,
+          unit_cost: effectiveUnitCost,
+          total_amount: totalAmount,
+          paid_amount: paidAmount,
+          due_amount: dueAmount,
+          note: cleanNote || null,
+        },
+      ]);
+
+      if (purchaseError) throw purchaseError;
+    }
+
+    showToast("Stock added", "success");
+    setRestockInventoryItemId("");
+    setRestockQuantity("");
+    setRestockCostPerUnit("");
+    setRestockNotes("");
+    setRestockSupplier("");
+    setRestockSupplierId("");
+    setRestockPaidAmount("");
+    await fetchInventoryData();
+  } catch (error: any) {
+    console.error("Failed to restock inventory", {
+      message: error?.message,
+      details: error?.details,
+      hint: error?.hint,
+      code: error?.code,
+      raw: error,
+    });
+    showToast("Failed to add stock", "error");
+  } finally {
+    setSavingInventory(false);
+  }
+}
+
+async function adjustInventoryStock(e: React.FormEvent) {
+  e.preventDefault();
+
+  if (!restaurantId || !adjustmentInventoryItemId || !adjustmentQuantity) {
+    showToast("Adjustment ko required field fill gara", "error");
+    return;
+  }
+
+  const inventoryId = Number(adjustmentInventoryItemId);
+  const qty = Number(adjustmentQuantity);
+
+  if (!inventoryId || Number.isNaN(qty) || qty <= 0) {
+    showToast("Valid adjustment quantity hala", "error");
+    return;
+  }
+
+  setSavingInventory(true);
+
+  try {
+    const targetItem = inventoryItemById.get(inventoryId);
+    if (!targetItem) throw new Error("Inventory item not found");
+
+    const signedQty = adjustmentMode === "minus" ? -qty : qty;
+    const nextStock = Number(targetItem.current_stock || 0) + signedQty;
+
+    if (nextStock < 0) {
+      showToast("Yo adjustment le stock negative huncha", "error");
+      return;
+    }
+
+    const { error: updateError } = await supabase
+      .from("inventory_items")
+      .update({
+        current_stock: nextStock,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", inventoryId)
+      .eq("restaurant_id", restaurantId);
+
+    if (updateError) throw updateError;
+
+    const { error: txError } = await supabase
+      .from("inventory_transactions")
+      .insert([
+        {
+          restaurant_id: restaurantId,
+          inventory_item_id: inventoryId,
+          transaction_type: adjustmentMode === "minus" ? "adjustment_minus" : "adjustment_add",
+          quantity: qty,
+          note: adjustmentReason.trim() || `Manual ${adjustmentMode === "minus" ? "minus" : "plus"} adjustment for ${targetItem.item_name}`,
+        },
+      ]);
+
+    if (txError) throw txError;
+
+    showToast("Manual adjustment saved", "success");
+    setAdjustmentInventoryItemId("");
+    setAdjustmentQuantity("");
+    setAdjustmentMode("minus");
+    setAdjustmentReason("");
+    await fetchInventoryData();
+  } catch (error: any) {
+    console.error("Failed to adjust inventory", {
+      message: error?.message,
+      details: error?.details,
+      hint: error?.hint,
+      code: error?.code,
+      raw: error,
+    });
+    showToast("Failed to save adjustment", "error");
+  } finally {
+    setSavingInventory(false);
+  }
+}
+
+async function updateInventoryItem(e: React.FormEvent) {
+  e.preventDefault();
+
+  if (!restaurantId || !editingInventoryId) {
+    showToast("Edit garna item select gara", "error");
+    return;
+  }
+
+  if (!editingInventoryItemName.trim()) {
+    showToast("Inventory item name required", "error");
+    return;
+  }
+
+  setSavingInventory(true);
+
+  try {
+    const { error } = await supabase
+      .from("inventory_items")
+      .update({
+        item_name: editingInventoryItemName.trim(),
+        category: editingInventoryCategory || "Other",
+        item_type: editingInventoryItemType,
+        unit: editingInventoryUnit.trim() || getInventoryDefaultUnitByType(editingInventoryItemType),
+        current_stock: Number(editingInventoryStock || 0),
+        low_stock_threshold: editingInventoryLowStock === "" ? null : Number(editingInventoryLowStock),
+        cost_per_unit: editingInventoryCost === "" ? null : Number(editingInventoryCost),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", editingInventoryId)
+      .eq("restaurant_id", restaurantId);
+
+    if (error) throw error;
+
+    showToast("Inventory item updated", "success");
+    cancelInventoryEdit();
+    await fetchInventoryData();
+  } catch (error) {
+    console.error("Failed to update inventory item", error);
+    showToast("Failed to update inventory item", "error");
+  } finally {
+    setSavingInventory(false);
+  }
+}
+
+function getInventoryDeleteInfo(itemId: number) {
+  const usage = inventoryUsageByItemId.get(Number(itemId));
+  const recipeLinks = usage?.recipeLinks || [];
+  const stockLinks = usage?.stockLinks || [];
+
+  const linkedMenuNames = Array.from(
+    new Set([
+      ...recipeLinks.map((link) => getMenuItemNameById(link.menu_item_id)),
+      ...stockLinks.map((link) => getMenuItemNameById(link.menu_item_id)),
+    ])
+  ).filter(Boolean);
+
+  return { recipeLinks, stockLinks, linkedMenuNames };
+}
+
+async function deleteInventoryItem(itemId: number) {
+  const item = inventoryItemById.get(Number(itemId));
+
+  if (!item) {
+    showToast("Inventory item not found", "error");
+    return;
+  }
+
+  const { recipeLinks, stockLinks, linkedMenuNames } = getInventoryDeleteInfo(itemId);
+
+  setInventoryDeleteDialog({
+    item,
+    recipeCount: recipeLinks.length,
+    stockLinkCount: stockLinks.length,
+    linkedMenuNames,
+  });
+}
+
+async function confirmInventoryDelete(unlinkFirst: boolean) {
+  if (!restaurantId || !inventoryDeleteDialog) return;
+
+  const item = inventoryDeleteDialog.item;
+  const isLinked =
+    inventoryDeleteDialog.recipeCount > 0 || inventoryDeleteDialog.stockLinkCount > 0;
+
+  if (isLinked && !unlinkFirst) {
+    showToast("Linked item delete garna unlink chaincha", "error");
+    return;
+  }
+
+  setDeletingInventoryItemId(item.id);
+
+  try {
+    if (editingInventoryId === item.id) {
+      cancelInventoryEdit();
+    }
+
+    if (isLinked && unlinkFirst) {
+      const { error: recipeUnlinkError } = await supabase
+        .from("menu_item_recipes")
+        .delete()
+        .eq("inventory_item_id", item.id)
+        .eq("restaurant_id", restaurantId);
+
+      if (recipeUnlinkError) throw recipeUnlinkError;
+
+      const { error: stockUnlinkError } = await supabase
+        .from("menu_item_stock_links")
+        .delete()
+        .eq("inventory_item_id", item.id)
+        .eq("restaurant_id", restaurantId);
+
+      if (stockUnlinkError) throw stockUnlinkError;
+    }
+
+    const { error } = await supabase
+      .from("inventory_items")
+      .update({
+        is_active: false,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", item.id)
+      .eq("restaurant_id", restaurantId);
+
+    if (error) throw error;
+
+    setInventoryDeleteDialog(null);
+    setInventoryDetailItemId(null);
+    setInventorySummaryModal(null);
+    showToast(isLinked ? "Item unlinked and archived" : "Inventory item archived", "success");
+    await fetchInventoryData();
+  } catch (error) {
+    console.error("Failed to delete inventory item", error);
+    showToast(getReadableError(error) || "Failed to delete inventory item", "error");
+  } finally {
+    setDeletingInventoryItemId(null);
+  }
+}
+
+async function restoreInventoryItem(itemId: number) {
+  if (!restaurantId) return;
+
+  const item = archivedInventoryItems.find((entry) => Number(entry.id) === Number(itemId));
+
+  if (!item) {
+    showToast("Archived item not found", "error");
+    return;
+  }
+
+  const confirmed = await askConfirm(
+    `Restore ${item.item_name}? It will appear again in Stock Items.`,
+    "Restore",
+    "Cancel"
+  );
+
+  if (!confirmed) return;
+
+  setRestoringInventoryItemId(item.id);
+
+  try {
+    const { error } = await supabase
+      .from("inventory_items")
+      .update({
+        is_active: true,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", item.id)
+      .eq("restaurant_id", restaurantId);
+
+    if (error) throw error;
+
+    showToast("Inventory item restored", "success");
+    await fetchInventoryData();
+  } catch (error) {
+    console.error("Failed to restore inventory item", error);
+    showToast(getReadableError(error) || "Failed to restore inventory item", "error");
+  } finally {
+    setRestoringInventoryItemId(null);
+  }
+}
+
+async function deleteRecipeLink(id: number) {
+  const confirmed = await askConfirm("Delete this recipe link?", "Delete", "Cancel");
+  if (!confirmed) return;
+
+  try {
+    if (editingRecipeId === id) {
+      cancelRecipeEdit();
+      setSelectedRecipeMenuId("");
+      setSelectedRecipeInventoryId("");
+      setRecipeQuantityUsed("");
+    }
+    const { error } = await supabase
+      .from("menu_item_recipes")
+      .delete()
+      .eq("id", id)
+      .eq("restaurant_id", restaurantId);
+    if (error) throw error;
+    showToast("Recipe link deleted", "success");
+    await fetchInventoryData();
+  } catch (error) {
+    console.error("Failed to delete recipe link", error);
+    showToast("Failed to delete recipe link", "error");
+  }
+}
+
+async function deleteStockLink(id: number) {
+  const confirmed = await askConfirm("Delete this direct stock link?", "Delete", "Cancel");
+  if (!confirmed) return;
+
+  try {
+    if (editingStockLinkId === id) {
+      cancelDirectStockEdit();
+      setSelectedStockInventoryId("");
+      setStockQuantityPerSale("");
+    }
+    const { error } = await supabase
+      .from("menu_item_stock_links")
+      .delete()
+      .eq("id", id)
+      .eq("restaurant_id", restaurantId);
+    if (error) throw error;
+    showToast("Direct stock link deleted", "success");
+    await fetchInventoryData();
+  } catch (error) {
+    console.error("Failed to delete stock link", error);
+    showToast("Failed to delete stock link", "error");
+  }
+}
+
+async function fetchDashboardCostSnapshots() {
+  if (!restaurantId || !isSetupDone || !isOnline || !inventoryEnabled) {
+    setOrderCostSnapshots([]);
+    setOrderCostSnapshotItems([]);
+    return;
+  }
+
+  try {
+    const [snapshotRes, snapshotItemsRes] = await Promise.all([
+      supabase
+        .from("order_cost_snapshots")
+        .select("id, order_id, restaurant_id, total_cost, total_revenue, total_profit, created_at")
+        .eq("restaurant_id", restaurantId)
+        .order("created_at", { ascending: false })
+        .limit(300),
+      supabase
+        .from("order_cost_snapshot_items")
+        .select("id, order_id, restaurant_id, menu_item_id, menu_item_variant_id, item_name, quantity, unit_price, selling, cost, profit, materials, created_at")
+        .eq("restaurant_id", restaurantId)
+        .order("created_at", { ascending: false })
+        .limit(2000),
+    ]);
+
+    if (snapshotRes.error) throw snapshotRes.error;
+    if (snapshotItemsRes.error) throw snapshotItemsRes.error;
+
+    const parseDashboardMaterials = (value: unknown): CostInsightMaterialRow[] => {
+      if (!Array.isArray(value)) return [];
+      return value
+        .map((material, index) => {
+          if (!material || typeof material !== "object") return null;
+          const row = material as Record<string, unknown>;
+          const itemName = String(row.item_name ?? row.name ?? "").trim();
+          if (!itemName) return null;
+          return {
+            key: String(row.key ?? `${itemName}-${index}`),
+            item_name: itemName,
+            unit: String(row.unit ?? ""),
+            quantity: Number(row.quantity ?? 0),
+            cost: Number(row.cost ?? 0),
+            type: String(row.type ?? row.item_type ?? "Inventory"),
+          };
+        })
+        .filter((row): row is CostInsightMaterialRow => Boolean(row));
+    };
+
+    const rawSnapshots = snapshotRes.data || [];
+    const snapshotOrderIds = rawSnapshots
+      .map((row) => Number(row.order_id || 0))
+      .filter((id) => Number.isFinite(id) && id > 0);
+
+    const snapshotOrdersById = new Map<number, Partial<OrderRow>>();
+
+    if (snapshotOrderIds.length > 0) {
+      const { data: snapshotOrders, error: snapshotOrdersError } = await supabase
+        .from("orders")
+        .select("id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, remarks, inventory_deducted")
+        .eq("restaurant_id", restaurantId)
+        .in("id", snapshotOrderIds);
+
+      if (snapshotOrdersError) throw snapshotOrdersError;
+
+      (snapshotOrders || []).forEach((order) => {
+        snapshotOrdersById.set(Number(order.id), order as Partial<OrderRow>);
+      });
+    }
+
+    setOrderCostSnapshots(rawSnapshots.map((row) => {
+      const orderId = Number(row.order_id);
+      const sourceOrder = snapshotOrdersById.get(orderId);
+
+      return {
+        id: Number(row.id),
+        order_id: orderId,
+        restaurant_id: Number(row.restaurant_id),
+        total_cost: Number(row.total_cost || 0),
+        total_revenue: Number(row.total_revenue || 0),
+        total_profit: Number(row.total_profit || 0),
+        created_at: row.created_at || undefined,
+        table_number: sourceOrder?.table_number ?? null,
+        order_created_at: sourceOrder?.created_at ?? null,
+        order_paid_at: sourceOrder?.paid_at ?? null,
+        order_status: sourceOrder?.status ?? null,
+        order_is_paid: sourceOrder?.is_paid ?? null,
+        order_payment_method: sourceOrder?.payment_method ?? null,
+        order_inventory_deducted: sourceOrder?.inventory_deducted ?? null,
+        order_remarks: sourceOrder?.remarks ?? null,
+      };
+    }));
+
+    setOrderCostSnapshotItems((snapshotItemsRes.data || []).map((row) => ({
+      id: Number(row.id),
+      order_id: Number(row.order_id),
+      restaurant_id: Number(row.restaurant_id),
+      menu_item_id: row.menu_item_id == null ? null : Number(row.menu_item_id),
+      menu_item_variant_id: row.menu_item_variant_id == null ? null : Number(row.menu_item_variant_id),
+      item_name: String(row.item_name || ""),
+      quantity: Number(row.quantity || 0),
+      unit_price: Number(row.unit_price || 0),
+      selling: Number(row.selling || 0),
+      cost: Number(row.cost || 0),
+      profit: Number(row.profit || 0),
+      materials: parseDashboardMaterials(row.materials),
+      created_at: row.created_at || undefined,
+    })));
+  } catch (error) {
+    console.warn("Failed to fetch dashboard cost snapshots", error);
+  }
+}
+
+async function fetchMenuVariants() {
+  if (!restaurantId) return;
+
+  // Offline ma Supabase call nagara. Purano cached/in-memory variants राख्नु पर्छ;
+  // नत्र offline order लिँदा variants हराउँछन् र console error आउँछ।
+  if (!isOnline) return;
+
+  try {
+    const { data, error } = await supabase
+      .from("menu_item_variants")
+      .select("id, menu_item_id, variant_name, price, created_at")
+      .order("id", { ascending: true });
+
+    if (error) {
+      console.warn("Failed to fetch menu variants", {
+        message: error.message,
+        details: error.details,
+        hint: error.hint,
+        code: error.code,
+      });
+      return;
+    }
+
+    setMenuItemVariants(
+      (data || []).map((variant) => ({
+        id: Number(variant.id),
+        menu_item_id: Number(variant.menu_item_id),
+        variant_name: String(variant.variant_name || ""),
+        price: Number(variant.price || 0),
+        created_at: variant.created_at || undefined,
+      }))
+    );
+  } catch (error) {
+    if (typeof navigator !== "undefined" && !navigator.onLine) return;
+    console.warn("Unexpected menu variant error", getReadableError(error), error);
+  }
+}
+
+  useEffect(() => {
+    fetchRestaurant(true);
+  }, [restaurantId, isOnline]);
+
+  useEffect(() => {
+    if (!restaurantId || !isSetupDone || !isOnline) return;
+
+    syncLocalChanges()
+      .then(() => {
+        fetchOrders();
+        fetchMenu();
+        fetchMenuVariants();
+        refreshPendingPaymentQueue();
+      })
+      .catch((error) => {
+        console.error(error);
+      });
+  }, [restaurantId, isSetupDone, isOnline]);
+
+  useEffect(() => {
+    if (!restaurantId || !isSetupDone) return;
+    refreshPendingPaymentQueue();
+  }, [restaurantId, isSetupDone, isOnline, orders.length]);
+
+  useEffect(() => {
+    if (popupView !== "inventory" && !desktopInventoryContentOpen) return;
+    fetchInventoryData(inventoryTab);
+  }, [popupView, desktopInventoryContentOpen, restaurantId, isSetupDone, isOnline, inventoryEnabled, inventoryTab]);
+
+  useEffect(() => {
+    if (!restaurantId || !isSetupDone) return;
+
+    if (!inventoryEnabled) {
+      setOrderCostSnapshots([]);
+      setOrderCostSnapshotItems([]);
+      return;
+    }
+
+    fetchDashboardCostSnapshots();
+  }, [restaurantId, isSetupDone, isOnline, inventoryEnabled, orders.length]);
+
+  useEffect(() => {
+    if (!restaurantId || !isSetupDone || !isOnline) return;
+    if (!inventoryEnabled) return;
+    if (popupView === "inventory" || desktopInventoryContentOpen) return;
+
+    // Dashboard needs only stock items for the low-stock alert.
+    // Do not load recipes/history/suppliers here; that would slow the main screen.
+    fetchInventoryData("items");
+  }, [restaurantId, isSetupDone, isOnline, inventoryEnabled, orders.length, popupView, desktopInventoryContentOpen]);
+
+  useEffect(() => {
+    if (!restaurantId || !isSetupDone) return;
+
+    fetchOrders();
+    fetchMenu();
+    fetchMenuVariants();
+
+    const ordersChannel = supabase
+      .channel(`mini-orders-${restaurantId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "orders",
+          filter: `restaurant_id=eq.${restaurantId}`,
+        },
+        (payload) => {
+          const eventType = payload.eventType;
+          const changedOrderId = Number(
+            (payload.new as { id?: number } | null)?.id ||
+              (payload.old as { id?: number } | null)?.id ||
+              0
+          );
+
+          if (!changedOrderId) return;
+
+          if (eventType === "DELETE") {
+            removeOrderFromState(changedOrderId);
+            return;
+          }
+
+          // INSERT needs a short delay because order_items are usually inserted right after orders.
+          // This fetches one order only, not the whole dashboard/kitchen list.
+          fetchSingleRemoteOrder(changedOrderId, eventType === "INSERT" ? 650 : 0);
+        }
+      )
+      .subscribe();
+
+    const menuItemsChannel = supabase
+      .channel(`mini-menu-${restaurantId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "menu_items",
+          filter: `restaurant_id=eq.${restaurantId}`,
+        },
+        () => {
+          scheduleMenuRefresh(80);
+        }
+      )
+      .subscribe();
+
+    const menuVariantsChannel = supabase
+      .channel(`mini-menu-variants-${restaurantId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "menu_item_variants",
+        },
+        () => {
+          fetchMenuVariants();
+        }
+      )
+      .subscribe();
+
+    const orderItemsChannel = supabase
+      .channel(`mini-order-items-${restaurantId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "order_items" },
+        (payload) => {
+          const newRecord = payload.new as { order_id?: number } | null;
+          const oldRecord = payload.old as { order_id?: number } | null;
+          const changedOrderId = newRecord?.order_id ?? oldRecord?.order_id;
+
+          if (!changedOrderId) return;
+
+          const belongsToRestaurant = orderIdsRef.current.includes(changedOrderId);
+          if (!belongsToRestaurant) return;
+
+          scheduleOrdersRefresh(500);
+        }
+      )
+      .subscribe();
+
+    const inventoryChannel = supabase
+      .channel(`mini-inventory-${restaurantId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "inventory_items",
+          filter: `restaurant_id=eq.${restaurantId}`,
+        },
+        () => {
+          fetchInventoryData();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(ordersChannel);
+      supabase.removeChannel(menuItemsChannel);
+      supabase.removeChannel(menuVariantsChannel);
+      supabase.removeChannel(orderItemsChannel);
+      supabase.removeChannel(inventoryChannel);
+
+      if (ordersRefreshTimeoutRef.current) {
+        clearTimeout(ordersRefreshTimeoutRef.current);
+        ordersRefreshTimeoutRef.current = null;
+      }
+
+      if (menuRefreshTimeoutRef.current) {
+        clearTimeout(menuRefreshTimeoutRef.current);
+        menuRefreshTimeoutRef.current = null;
+      }
+    };
+  }, [restaurantId, isSetupDone, isOnline]);
+
+
+function logoutOwner() {
+  if (typeof window === "undefined") return;
+
+  const currentRestaurantId = restaurantId ? String(restaurantId) : "";
+
+  localStorage.removeItem("activeRestaurantId");
+  localStorage.removeItem("activePanel");
+  localStorage.removeItem("lastPanel");
+
+  setShowHeaderMenu(false);
+
+  router.replace(currentRestaurantId ? `/launcher?id=${currentRestaurantId}` : "/launcher");
+}
+
+async function removeTrustedDevice() {
+  if (typeof window === "undefined") return;
+
+  const currentRestaurantId = restaurantId ? String(restaurantId) : "";
+  const panel = isStaffMode ? "staff" : "owner";
+  const deviceId = localStorage.getItem("restrofy_device_id") || "";
+
+  const confirmed = await askConfirm(
+    "Remove this device from trusted devices? Password will be required next time.",
+    "Remove",
+    "Cancel"
+  );
+
+  if (!confirmed) return;
+
+  try {
+    if (currentRestaurantId && deviceId) {
+      const { error } = await supabase.rpc("revoke_trusted_device_by_device_id", {
+        p_restaurant_id: Number(currentRestaurantId),
+        p_panel: panel,
+        p_device_id: deviceId,
+      });
+
+      if (error) throw error;
+    }
+
+    localStorage.removeItem("activeRestaurantId");
+    localStorage.removeItem("activePanel");
+    localStorage.removeItem("lastPanel");
+    localStorage.removeItem("lastRestaurantId");
+    localStorage.removeItem("mini:lastRestaurantId");
+
+    if (currentRestaurantId) {
+      localStorage.removeItem(`trustedDeviceToken:${currentRestaurantId}:${panel}`);
+    }
+
+    setShowHeaderMenu(false);
+    router.replace(currentRestaurantId ? `/launcher?id=${currentRestaurantId}` : "/launcher");
+  } catch (error) {
+    console.error("Failed to remove trusted device", error);
+    showToast(getReadableError(error) || "Failed to remove device", "error");
+  }
+}
+
+async function fetchTrustedDevicesForSettings() {
+  if (!restaurantId) {
+    setSettingsDevices([]);
+    return;
+  }
+
+  setLoadingSettingsDevices(true);
+
+  try {
+    const { data, error } = await supabase
+      .from("trusted_devices")
+      .select("id, restaurant_id, panel, device_id, device_name, is_active, created_at, last_used_at")
+      .eq("restaurant_id", restaurantId)
+      .eq("is_active", true)
+      .order("last_used_at", { ascending: false });
+
+    if (error) throw error;
+
+    setSettingsDevices((data || []) as TrustedDeviceRow[]);
+  } catch (error) {
+    console.error("Failed to load trusted devices", error);
+    setSettingsDevices([]);
+    showToast("Could not load trusted devices", "error");
+  } finally {
+    setLoadingSettingsDevices(false);
+  }
+}
+
+function formatTrustedDeviceName(device: TrustedDeviceRow) {
+  const rawName = String(device.device_name || "").trim();
+
+  if (!rawName) return "Unknown device";
+  if (rawName.startsWith("Mozilla/5.0")) {
+    const lowerName = rawName.toLowerCase();
+    if (lowerName.includes("iphone")) return "iPhone Safari";
+    if (lowerName.includes("android")) return "Android Chrome";
+    if (lowerName.includes("windows")) return "Windows Chrome";
+    if (lowerName.includes("mac")) return "Mac Browser";
+    return "Browser device";
+  }
+
+  return rawName.length > 44 ? `${rawName.slice(0, 44)}...` : rawName;
+}
+
+function formatTrustedDeviceLastUsed(value?: string | null) {
+  if (!value) return "Last used unknown";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Last used unknown";
+
+  const diffMs = Date.now() - date.getTime();
+  const diffMinutes = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMinutes / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffMinutes < 1) return "Last used just now";
+  if (diffMinutes < 60) return `Last used ${diffMinutes} min ago`;
+  if (diffHours < 24) return `Last used ${diffHours} hr ago`;
+  if (diffDays === 1) return "Last used yesterday";
+  if (diffDays < 7) return `Last used ${diffDays} days ago`;
+
+  return `Last used ${date.toLocaleDateString()}`;
+}
+
+async function removeTrustedDeviceFromList(device: TrustedDeviceRow) {
+  if (!restaurantId) return;
+
+  if (!device.device_id) {
+    showToast("Old trusted device cannot be removed from list. Use Remove This Device on that phone.", "error");
+    return;
+  }
+
+  const currentDeviceId = typeof window !== "undefined" ? localStorage.getItem("restrofy_device_id") : null;
+  const isCurrentDevice = Boolean(currentDeviceId && currentDeviceId === device.device_id);
+  const confirmed = await askConfirm(
+    isCurrentDevice
+      ? "Remove this current device? Password will be required next time."
+      : "Remove this trusted device? That device will need password next time.",
+    "Remove",
+    "Cancel"
+  );
+
+  if (!confirmed) return;
+
+  setRemovingTrustedDeviceId(device.id);
+
+  try {
+    const { error } = await supabase.rpc("revoke_trusted_device_by_device_id", {
+      p_restaurant_id: Number(restaurantId),
+      p_panel: device.panel,
+      p_device_id: device.device_id,
+    });
+
+    if (error) throw error;
+
+    if (isCurrentDevice) {
+      localStorage.removeItem("activeRestaurantId");
+      localStorage.removeItem("activePanel");
+      localStorage.removeItem("lastPanel");
+      localStorage.removeItem("lastRestaurantId");
+      localStorage.removeItem("mini:lastRestaurantId");
+      localStorage.removeItem(`trustedDeviceToken:${restaurantId}:${isStaffMode ? "staff" : "owner"}`);
+      router.replace(`/launcher?id=${restaurantId}`);
+      return;
+    }
+
+    showToast("Trusted device removed", "success");
+    await fetchTrustedDevicesForSettings();
+  } catch (error) {
+    console.error("Failed to remove trusted device", error);
+    showToast(getReadableError(error) || "Failed to remove device", "error");
+  } finally {
+    setRemovingTrustedDeviceId(null);
+  }
+}
+
+  function resetNewMenuItemForm() {
+    setNewItemName("");
+    setNewItemPrice("");
+    setNewItemCategory("Uncategorized");
+    setSelectedImage(null);
+    setSelectedImagePreview(null);
+    setNewItemHasVariants(false);
+    setNewItemVariants([{ variant_name: "", price: "" }]);
+  }
+
+  function addMenuItemToDraft() {
+    const itemName = newItemName.trim();
+    const price = Number(newItemPrice);
+    const category = normalizeMenuCategory(newItemCategory);
+
+    if (!itemName) {
+      showToast("Please enter item name", "error");
+      return false;
+    }
+
+    if (!Number.isFinite(price) || price <= 0) {
+      showToast("Please enter valid price", "error");
+      return false;
+    }
+
+    const duplicateInSaved = menuItems.some(
+      (item) => item.item_name.trim().toLowerCase() === itemName.toLowerCase()
+    );
+    const duplicateInDraft = draftMenuItems.some(
+      (item) => item.item_name.trim().toLowerCase() === itemName.toLowerCase()
+    );
+
+    if (duplicateInSaved || duplicateInDraft) {
+      showToast("Item already exists", "error");
+      return false;
+    }
+
+    setDraftMenuItems((prev) => [
+      {
+        id: Date.now(),
+        item_name: itemName,
+        price,
+        category,
+      },
+      ...prev,
+    ]);
+
+    setNewItemName("");
+    setNewItemPrice("");
+    showToast("Added to draft list", "success");
+    return true;
+  }
+
+  function removeDraftMenuItem(id: number) {
+    setDraftMenuItems((prev) => prev.filter((item) => item.id !== id));
+  }
+
+  function parseCsvLine(line: string) {
+    const result: string[] = [];
+    let current = "";
+    let insideQuotes = false;
+
+    for (let index = 0; index < line.length; index += 1) {
+      const char = line[index];
+      const nextChar = line[index + 1];
+
+      if (char === '"' && insideQuotes && nextChar === '"') {
+        current += '"';
+        index += 1;
+        continue;
+      }
+
+      if (char === '"') {
+        insideQuotes = !insideQuotes;
+        continue;
+      }
+
+      if (char === "," && !insideQuotes) {
+        result.push(current.trim());
+        current = "";
+        continue;
+      }
+
+      current += char;
+    }
+
+    result.push(current.trim());
+    return result;
+  }
+
+  function downloadMenuCsvTemplate() {
+    const csv = [
+      "item_name,price,category,variant_name,variant_price",
+      "Buff Momo,,Momo,Half,120",
+      "Buff Momo,,Momo,Full,200",
+      "Veg Chowmein,120,Snacks,,",
+      "Milk Tea,40,Drinks,,",
+    ].join("\n");
+
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "menu-import-template-with-variants.csv";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
+  function handleMenuCsvUpload(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const normalizedName = file.name.toLowerCase();
+    if (!normalizedName.endsWith(".csv")) {
+      showToast("Please upload CSV file only", "error");
+      event.target.value = "";
+      return;
+    }
+
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      const text = String(reader.result || "");
+      const lines = text
+        .replace(/^\uFEFF/, "")
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+
+      if (lines.length <= 1) {
+        showToast("CSV empty chha", "error");
+        event.target.value = "";
+        return;
+      }
+
+      const header = parseCsvLine(lines[0]).map((item) => item.trim().toLowerCase());
+      const itemNameIndex = header.indexOf("item_name");
+      const priceIndex = header.indexOf("price");
+      const categoryIndex = header.indexOf("category");
+      const variantNameIndex = header.indexOf("variant_name");
+      const variantPriceIndex = header.indexOf("variant_price");
+
+      if (itemNameIndex === -1) {
+        showToast("CSV header must include item_name", "error");
+        event.target.value = "";
+        return;
+      }
+
+      if (priceIndex === -1 && variantPriceIndex === -1) {
+        showToast("CSV header must include price or variant_price", "error");
+        event.target.value = "";
+        return;
+      }
+
+      const savedItemMap = new Map(
+        menuItems.map((item) => [item.item_name.trim().toLowerCase(), item])
+      );
+      const draftNames = new Set(draftMenuItems.map((item) => item.item_name.trim().toLowerCase()));
+      const groupedItems = new Map<
+        string,
+        {
+          item_name: string;
+          category: string;
+          price?: number;
+          variants: DraftMenuVariant[];
+          variantNames: Set<string>;
+          existing_menu_item_id?: number | null;
+          existing_price?: number;
+        }
+      >();
+
+      let skippedRows = 0;
+      let existingItemVariantRows = 0;
+
+      lines.slice(1).forEach((line) => {
+        const columns = parseCsvLine(line);
+        const itemName = String(columns[itemNameIndex] || "").trim();
+        const category = normalizeMenuCategory(
+          categoryIndex >= 0 ? String(columns[categoryIndex] || "Uncategorized") : "Uncategorized"
+        );
+        const variantName =
+          variantNameIndex >= 0 ? String(columns[variantNameIndex] || "").trim() : "";
+        const rawPrice = priceIndex >= 0 ? String(columns[priceIndex] || "") : "";
+        const rawVariantPrice =
+          variantPriceIndex >= 0 ? String(columns[variantPriceIndex] || "") : "";
+        const price = Number(rawPrice.replace(/[^0-9.]/g, ""));
+        const variantPrice = Number(rawVariantPrice.replace(/[^0-9.]/g, ""));
+        const itemKey = itemName.toLowerCase();
+        const savedItem = savedItemMap.get(itemKey);
+
+        if (!itemName || draftNames.has(itemKey)) {
+          skippedRows += 1;
+          return;
+        }
+
+        if (savedItem && !variantName) {
+          skippedRows += 1;
+          return;
+        }
+
+        const existingGroup = groupedItems.get(itemKey) || {
+          item_name: itemName,
+          category: savedItem?.category || category,
+          price: savedItem ? Number(savedItem.price || 0) : undefined,
+          variants: [],
+          variantNames: new Set<string>(),
+          existing_menu_item_id: savedItem?.id || null,
+          existing_price: savedItem ? Number(savedItem.price || 0) : undefined,
+        };
+
+        if (variantName) {
+          const variantKey = variantName.toLowerCase();
+          if (!Number.isFinite(variantPrice) || variantPrice <= 0 || existingGroup.variantNames.has(variantKey)) {
+            skippedRows += 1;
+            groupedItems.set(itemKey, existingGroup);
+            return;
+          }
+
+          existingGroup.variants.push({ variant_name: variantName, price: variantPrice });
+          existingGroup.variantNames.add(variantKey);
+          if (savedItem) existingItemVariantRows += 1;
+          const variantPrices = existingGroup.variants
+            .map((variant) => Number(variant.price || 0))
+            .filter((value) => value > 0);
+          existingGroup.price = savedItem
+            ? Number(savedItem.price || variantPrices[0] || 0)
+            : Math.min(...variantPrices);
+          groupedItems.set(itemKey, existingGroup);
+          return;
+        }
+
+        if (!Number.isFinite(price) || price <= 0) {
+          skippedRows += 1;
+          return;
+        }
+
+        existingGroup.price = price;
+        groupedItems.set(itemKey, existingGroup);
+      });
+
+      const importedItems: DraftMenuItem[] = [];
+      let index = 0;
+
+      groupedItems.forEach((item) => {
+        const validVariants = item.variants.filter(
+          (variant) => variant.variant_name.trim() && Number(variant.price || 0) > 0
+        );
+        const finalPrice = validVariants.length > 0
+          ? (item.existing_menu_item_id
+              ? Number(item.existing_price || validVariants[0].price || 0)
+              : Math.min(...validVariants.map((variant) => Number(variant.price || 0))))
+          : Number(item.price || item.existing_price || 0);
+
+        if (!Number.isFinite(finalPrice) || finalPrice <= 0) {
+          skippedRows += 1;
+          return;
+        }
+
+        if (item.existing_menu_item_id && validVariants.length === 0) {
+          skippedRows += 1;
+          return;
+        }
+
+        importedItems.push({
+          id: Date.now() + index,
+          item_name: item.item_name,
+          price: finalPrice,
+          category: item.category,
+          variants: validVariants.length > 0 ? validVariants : undefined,
+          existing_menu_item_id: item.existing_menu_item_id || null,
+        });
+        draftNames.add(item.item_name.trim().toLowerCase());
+        index += 1;
+      });
+
+      if (importedItems.length === 0) {
+        showToast("No valid new menu items found", "error");
+        event.target.value = "";
+        return;
+      }
+
+      setNewItemHasVariants(false);
+      setDraftMenuItems((prev) => [...importedItems, ...prev]);
+      const variantCount = importedItems.filter((item) => item.variants && item.variants.length > 0).length;
+      showToast(
+        `${importedItems.length} items imported${variantCount ? `, ${variantCount} with variants` : ""}${existingItemVariantRows ? `, existing items supported` : ""}${skippedRows ? `, ${skippedRows} skipped` : ""}`,
+        "success"
+      );
+      event.target.value = "";
+    };
+
+    reader.onerror = () => {
+      showToast("Failed to read CSV file", "error");
+      event.target.value = "";
+    };
+
+    reader.readAsText(file);
+  }
+
+  async function saveAllDraftMenuItems() {
+    if (!restaurantId) {
+      showToast("Invalid restaurant link", "error");
+      return;
+    }
+
+    if (!isOnline) {
+      showToast("Bulk menu save online ma matra supported chha", "error");
+      return;
+    }
+
+    if (draftMenuItems.length === 0) {
+      showToast("Draft list empty chha", "error");
+      return;
+    }
+
+    const previousMenuItems = menuItems;
+    const previousVariants = menuItemVariants;
+    const now = new Date().toISOString();
+    const newDraftItems = draftMenuItems.filter((item) => !item.existing_menu_item_id);
+    const existingDraftItems = draftMenuItems.filter((item) => item.existing_menu_item_id);
+    const optimisticItems: MenuItem[] = newDraftItems.map((item) => ({
+      id: item.id,
+      item_name: item.item_name,
+      price: item.price,
+      category: item.category,
+      created_at: now,
+    }));
+
+    const optimisticVariants: MenuItemVariant[] = draftMenuItems.flatMap((item) =>
+      (item.variants || []).map((variant, index) => ({
+        id: item.id + index + 1,
+        menu_item_id: item.existing_menu_item_id || item.id,
+        variant_name: variant.variant_name,
+        price: variant.price,
+        created_at: now,
+      }))
+    );
+
+    setSavingDraftMenuItems(true);
+    if (optimisticItems.length > 0) {
+      setMenuItems((prev) => [...optimisticItems, ...prev]);
+    }
+    if (optimisticVariants.length > 0) {
+      setMenuItemVariants((prev) => [...optimisticVariants, ...prev]);
+    }
+
+    try {
+      const savedItems: MenuItem[] = [];
+      const savedVariants: MenuItemVariant[] = [];
+      let skippedVariants = 0;
+
+      // Speed fix: save all new menu items in one DB call.
+      // Old code inserted variant menu items one-by-one, causing slow saves when many items/variants existed.
+      if (newDraftItems.length > 0) {
+        const defaultImageRows = await fetchDefaultMenuImageRows();
+
+        const { data, error } = await supabase
+          .from("menu_items")
+          .insert(
+            newDraftItems.map((item) => ({
+              restaurant_id: restaurantId,
+              item_name: item.item_name,
+              price: item.price,
+              category: item.category,
+              image_url: findDefaultImageUrlForItemName(item.item_name, defaultImageRows),
+            }))
+          )
+          .select("id, item_name, price, category, image_url, created_at");
+
+        if (error) throw error;
+        savedItems.push(...((data || []) as MenuItem[]));
+      }
+
+      const savedItemByName = new Map(
+        savedItems.map((item) => [item.item_name.trim().toLowerCase(), item])
+      );
+
+      const newVariantPayload = newDraftItems.flatMap((draftItem) => {
+        const savedMenuItem = savedItemByName.get(draftItem.item_name.trim().toLowerCase());
+        if (!savedMenuItem) return [];
+
+        const cleanVariants = (draftItem.variants || []).filter(
+          (variant) => variant.variant_name.trim() && Number(variant.price || 0) > 0
+        );
+
+        return cleanVariants.map((variant) => ({
+          menu_item_id: savedMenuItem.id,
+          variant_name: variant.variant_name,
+          price: variant.price,
+        }));
+      });
+
+      if (newVariantPayload.length > 0) {
+        const { data: insertedVariants, error: variantError } = await supabase
+          .from("menu_item_variants")
+          .insert(newVariantPayload)
+          .select("id, menu_item_id, variant_name, price, created_at");
+
+        if (variantError) throw variantError;
+        savedVariants.push(...((insertedVariants || []) as MenuItemVariant[]));
+      }
+
+      const existingVariantPayload = existingDraftItems.flatMap((draftItem) => {
+        const menuItemId = Number(draftItem.existing_menu_item_id || 0);
+        if (!menuItemId) {
+          skippedVariants += draftItem.variants?.length || 0;
+          return [];
+        }
+
+        const existingVariantNames = new Set(
+          menuItemVariants
+            .filter((variant) => Number(variant.menu_item_id) === menuItemId)
+            .map((variant) => variant.variant_name.trim().toLowerCase())
+        );
+
+        return (draftItem.variants || [])
+          .filter((variant) => {
+            const key = variant.variant_name.trim().toLowerCase();
+            if (!key || !Number.isFinite(Number(variant.price || 0)) || Number(variant.price || 0) <= 0) return false;
+            if (existingVariantNames.has(key)) {
+              skippedVariants += 1;
+              return false;
+            }
+            existingVariantNames.add(key);
+            return true;
+          })
+          .map((variant) => ({
+            menu_item_id: menuItemId,
+            variant_name: variant.variant_name,
+            price: variant.price,
+          }));
+      });
+
+      if (existingVariantPayload.length > 0) {
+        const { data: insertedVariants, error: variantError } = await supabase
+          .from("menu_item_variants")
+          .insert(existingVariantPayload)
+          .select("id, menu_item_id, variant_name, price, created_at");
+
+        if (variantError) throw variantError;
+        savedVariants.push(...((insertedVariants || []) as MenuItemVariant[]));
+      }
+
+      const draftIds = new Set(draftMenuItems.map((item) => item.id));
+      const optimisticVariantIds = new Set(optimisticVariants.map((variant) => variant.id));
+
+      setMenuItems((prev) => [
+        ...savedItems,
+        ...prev.filter((item) => !draftIds.has(item.id)),
+      ]);
+      setMenuItemVariants((prev) => [
+        ...savedVariants,
+        ...prev.filter(
+          (variant) =>
+            !draftIds.has(variant.menu_item_id) && !optimisticVariantIds.has(variant.id)
+        ),
+      ]);
+      setDraftMenuItems([]);
+      showToast(
+        `${savedItems.length} new items saved${savedVariants.length ? `, ${savedVariants.length} variants saved` : ""}${skippedVariants ? `, ${skippedVariants} duplicate variants skipped` : ""}`,
+        "success"
+      );
+    } catch (error) {
+      setMenuItems(previousMenuItems);
+      setMenuItemVariants(previousVariants);
+      const duplicateMessage = getMenuDuplicateMessage(error);
+      if (!duplicateMessage) {
+        console.error("Failed to save draft menu items:", error);
+      }
+      showToast(duplicateMessage || getReadableError(error) || "Failed to save menu items", "error");
+    } finally {
+      setSavingDraftMenuItems(false);
+    }
+  }
+
+  function addNewVariantRow() {
+    setNewItemVariants((prev) => [...prev, { variant_name: "", price: "" }]);
+  }
+
+  function removeNewVariantRow(index: number) {
+    setNewItemVariants((prev) => {
+      if (prev.length === 1) return [{ variant_name: "", price: "" }];
+      return prev.filter((_, i) => i !== index);
+    });
+  }
+
+  function updateNewVariantRow(index: number, field: "variant_name" | "price", value: string) {
+    setNewItemVariants((prev) =>
+      prev.map((item, i) => (i === index ? { ...item, [field]: value } : item))
+    );
+  }
+
+  function addEditingVariantRow() {
+    setEditingItemVariants((prev) => [...prev, { variant_name: "", price: "" }]);
+  }
+
+  function removeEditingVariantRow(index: number) {
+    setEditingItemVariants((prev) => {
+      if (prev.length === 1) return [{ variant_name: "", price: "" }];
+      return prev.filter((_, i) => i !== index);
+    });
+  }
+
+  function updateEditingVariantRow(index: number, field: "variant_name" | "price", value: string) {
+    setEditingItemVariants((prev) =>
+      prev.map((item, i) => (i === index ? { ...item, [field]: value } : item))
+    );
+  }
+
+  function normalizeVariantInputs(inputs: EditableVariantInput[]) {
+    return inputs
+      .map((item) => ({
+        id: item.id,
+        variant_name: item.variant_name.trim(),
+        price: Number(item.price),
+      }))
+      .filter((item) => item.variant_name && Number.isFinite(item.price) && item.price > 0);
+  }
+
+  function getMenuItemPriceRange(menuId: number) {
+    const variants = getVariantsForMenuItem(menuId);
+    if (variants.length === 0) {
+      const menu = menuItemById.get(Number(menuId));
+      return menu ? `Rs. ${menu.price}` : "Rs. 0";
+    }
+
+    const prices = variants.map((item) => Number(item.price || 0)).filter((item) => item > 0);
+    if (prices.length === 0) return "Rs. 0";
+
+    const minPrice = Math.min(...prices);
+    const maxPrice = Math.max(...prices);
+    return minPrice === maxPrice ? `Rs. ${minPrice}` : `Rs. ${minPrice}-${maxPrice}`;
+  }
+
+  function getMenuVariantCount(menuId: number) {
+    return getVariantsForMenuItem(menuId).length;
+  }
+
+  async function handleAddMenuItem(e: React.FormEvent) {
+    e.preventDefault();
+
+    if (!restaurantId) {
+      showToast("Invalid restaurant link", "error");
+      return;
+    }
+
+    const itemName = newItemName.trim();
+
+    if (!itemName) {
+      showToast("Please enter item name", "error");
+      return;
+    }
+
+    if (!isOnline) {
+      showToast("Menu item save online ma matra supported chha", "error");
+      return;
+    }
+
+    const duplicateInSaved = menuItems.some(
+      (item) => item.item_name.trim().toLowerCase() === itemName.toLowerCase()
+    );
+    const duplicateInDraft = draftMenuItems.some(
+      (item) => item.item_name.trim().toLowerCase() === itemName.toLowerCase()
+    );
+
+    if (duplicateInSaved || duplicateInDraft) {
+      showToast("Item already exists", "error");
+      return;
+    }
+
+    const normalizedVariants = normalizeVariantInputs(newItemVariants);
+    const normalizedVariantNames = normalizedVariants.map((item) =>
+      item.variant_name.trim().toLowerCase()
+    );
+    const hasDuplicateVariantName =
+      new Set(normalizedVariantNames).size !== normalizedVariantNames.length;
+
+    if (hasDuplicateVariantName) {
+      showToast("Duplicate variant name not allowed", "error");
+      return;
+    }
+
+    if (newItemHasVariants) {
+      if (normalizedVariants.length === 0) {
+        showToast("Please add at least one valid variant", "error");
+        return;
+      }
+    } else if (!newItemPrice.trim() || Number(newItemPrice) <= 0) {
+      showToast("Please enter valid price", "error");
+      return;
+    }
+
+    const category = normalizeMenuCategory(newItemCategory);
+    const basePrice = newItemHasVariants
+      ? Math.min(...normalizedVariants.map((item) => item.price))
+      : Number(newItemPrice);
+
+    setSavingNewMenuItem(true);
+
+    try {
+      const imageUrl = await resolveMenuImageUrlForItemName(itemName, selectedImage);
+
+      const { data, error } = await supabase.rpc("add_menu_item_with_variants", {
+        p_restaurant_id: restaurantId,
+        p_item_name: itemName,
+        p_category: category,
+        p_price: basePrice,
+        p_variants: newItemHasVariants
+          ? normalizedVariants.map((variant) => ({
+              variant_name: variant.variant_name,
+              price: variant.price,
+            }))
+          : [],
+      });
+
+      if (error) throw error;
+
+const result = data as {
+  success?: boolean;
+  message?: string;
+  menu_item_id?: number;
+} | null;
+
+if (!result?.success) {
+  throw new Error(result?.message || "Failed to add menu item");
+}
+
+if (imageUrl && result.menu_item_id) {
+  const { error: imageUpdateError } = await supabase
+    .from("menu_items")
+    .update({ image_url: imageUrl })
+    .eq("id", result.menu_item_id)
+    .eq("restaurant_id", restaurantId);
+
+  if (imageUpdateError) throw imageUpdateError;
+}
+
+await fetchMenu();
+
+setTakeOrderCategories((prev) =>
+  Array.from(new Set([...prev, category, "Uncategorized"]))
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b))
+);
+
+resetNewMenuItemForm();
+setMenuItemWorkMode("list");
+setManageMenuSelectedCategory("all");
+showToast("Menu item added", "success");
+} catch (error) {
+  const duplicateMessage = getMenuDuplicateMessage(error);
+  if (!duplicateMessage) {
+    console.error("Failed to add menu item:", error);
+  }
+
+  showToast(duplicateMessage || getReadableError(error) || "Failed to add menu item", "error");
+} finally {
+  setSavingNewMenuItem(false);
+}
+}
+
+  async function startEditMenuItem(menu: MenuItem) {
+    const existingVariants = getVariantsForMenuItem(menu.id);
+
+    setEditingMenuId(menu.id);
+    setEditingItemName(menu.item_name);
+    setEditingItemPrice(String(menu.price));
+    setEditingItemCategory(normalizeMenuCategory(menu.category || "Uncategorized"));
+    setEditingImage(null);
+    setEditingImageUrl(menu.image_url || null);
+    setEditingImagePreview(null);
+    setEditingItemHasVariants(existingVariants.length > 0);
+    setEditingItemVariants(
+      existingVariants.length > 0
+        ? existingVariants.map((variant) => ({
+            id: variant.id,
+            variant_name: variant.variant_name,
+            price: String(variant.price),
+          }))
+        : [{ variant_name: "", price: "" }]
+    );
+  }
+
+  function cancelEditMenuItem() {
+    setEditingMenuId(null);
+    setEditingItemName("");
+    setEditingItemPrice("");
+    setEditingItemCategory("Uncategorized");
+    setEditingImage(null);
+    setEditingImageUrl(null);
+    setEditingImagePreview(null);
+    setEditingItemHasVariants(false);
+    setEditingItemVariants([{ variant_name: "", price: "" }]);
+  }
+
+  async function saveEditMenuItem(id: number) {
+    if (!restaurantId) {
+      showToast("Invalid restaurant link", "error");
+      return;
+    }
+
+    if (!editingItemName.trim()) {
+      showToast("Please enter item name", "error");
+      return;
+    }
+
+    const normalizedVariants = normalizeVariantInputs(editingItemVariants);
+    const normalizedVariantNames = normalizedVariants.map((item) => item.variant_name.trim().toLowerCase());
+    const hasDuplicateVariantName = new Set(normalizedVariantNames).size !== normalizedVariantNames.length;
+
+    if (hasDuplicateVariantName) {
+      showToast("Duplicate variant name not allowed", "error");
+      return;
+    }
+
+    if (editingItemHasVariants) {
+      if (normalizedVariants.length === 0) {
+        showToast("Please add at least one valid variant", "error");
+        return;
+      }
+
+      if (!isOnline) {
+        showToast("Variant item edit online ma matra supported chha", "error");
+        return;
+      }
+    } else if (!editingItemPrice.trim() || Number(editingItemPrice) <= 0) {
+      showToast("Please enter valid price", "error");
+      return;
+    }
+
+    const previousMenuItems = menuItems;
+    const previousVariants = menuItemVariants;
+    const category = normalizeMenuCategory(editingItemCategory);
+    const updatedPrice = editingItemHasVariants
+      ? Math.min(...normalizedVariants.map((item) => item.price))
+      : Number(editingItemPrice);
+
+    let finalImageUrl = editingImageUrl;
+
+    try {
+      if (editingImage) {
+        finalImageUrl = await uploadMenuImage(editingImage);
+      } else if (!finalImageUrl) {
+        finalImageUrl = await resolveMenuImageUrlForItemName(editingItemName.trim(), null);
+      }
+    } catch (error) {
+      showToast(getReadableError(error) || "Failed to upload image", "error");
+      return;
+    }
+
+    const optimisticMenu: MenuItem = {
+      ...(menuItemById.get(Number(id)) || {
+        id,
+        item_name: editingItemName.trim(),
+        price: updatedPrice,
+        category,
+      }),
+      item_name: editingItemName.trim(),
+      price: updatedPrice,
+      category,
+      image_url: finalImageUrl || null,
+    };
+
+    const optimisticVariants: MenuItemVariant[] = editingItemHasVariants
+      ? normalizedVariants.map((variant, index) => ({
+          id: variant.id || Date.now() + index,
+          menu_item_id: id,
+          variant_name: variant.variant_name,
+          price: variant.price,
+        }))
+      : [];
+
+    setMenuItems((prev) => prev.map((item) => Number(item.id) === Number(id) ? optimisticMenu : item));
+    setMenuItemVariants((prev) => [
+      ...prev.filter((variant) => Number(variant.menu_item_id) !== Number(id)),
+      ...optimisticVariants,
+    ]);
+
+    cancelEditMenuItem();
+    setMenuItemWorkMode("list");
+    showToast("Menu item updated", "success");
+
+    try {
+      const localMenuItems = await localMenuItemsTable
+        .where("restaurant_id")
+        .equals(restaurantId)
+        .toArray();
+
+      const targetLocalMenu =
+        localMenuItems.find((item) => item.server_id === id) ||
+        localMenuItems.find((item) => item.id === id);
+
+      const remoteId = targetLocalMenu?.server_id || id;
+
+      const { data: updatedMenu, error: updateError } = await supabase
+        .from("menu_items")
+        .update({
+          item_name: optimisticMenu.item_name,
+          price: optimisticMenu.price,
+          category,
+          image_url: finalImageUrl || null,
+        })
+        .eq("id", remoteId)
+        .eq("restaurant_id", restaurantId)
+        .select("id, item_name, price, category, image_url, created_at")
+        .single();
+
+      if (updateError) throw updateError;
+
+      const existingVariants = getVariantsForMenuItem(id);
+      if (editingItemHasVariants || existingVariants.length > 0) {
+        const { error: deleteVariantError } = await supabase
+          .from("menu_item_variants")
+          .delete()
+          .eq("menu_item_id", remoteId);
+
+        if (deleteVariantError) throw deleteVariantError;
+      }
+
+      let savedVariants: MenuItemVariant[] = [];
+      if (editingItemHasVariants) {
+        const { data: insertedVariants, error: insertVariantError } = await supabase
+          .from("menu_item_variants")
+          .insert(
+            normalizedVariants.map((variant) => ({
+              menu_item_id: remoteId,
+              variant_name: variant.variant_name,
+              price: variant.price,
+            }))
+          )
+          .select("id, menu_item_id, variant_name, price, created_at");
+
+        if (insertVariantError) throw insertVariantError;
+        savedVariants = (insertedVariants || []) as MenuItemVariant[];
+      }
+
+      setMenuItems((prev) =>
+        prev.map((item) => Number(item.id) === Number(id) ? (updatedMenu as MenuItem) : item)
+      );
+      setMenuItemVariants((prev) => [
+        ...prev.filter((variant) => Number(variant.menu_item_id) !== Number(id) && Number(variant.menu_item_id) !== Number(remoteId)),
+        ...savedVariants,
+      ]);
+    } catch (error) {
+      console.error(error);
+      setMenuItems(previousMenuItems);
+      setMenuItemVariants(previousVariants);
+      const duplicateMessage = getMenuDuplicateMessage(error);
+      showToast(duplicateMessage || getReadableError(error) || "Failed to update menu item", "error");
+    }
+  }
+
+  async function deleteMenuItem(id: number) {
+    if (!restaurantId) {
+      showToast("Invalid restaurant link", "error");
+      return;
+    }
+
+    const confirmDelete = await askConfirm("Delete this menu item?", "Delete", "Keep");
+    if (!confirmDelete) return;
+
+    if (!isOnline) {
+      showToast("Menu item delete online ma matra supported chha", "error");
+      return;
+    }
+
+    const previousMenuItems = menuItems;
+    const previousVariants = menuItemVariants;
+
+    setMenuItems((prev) => prev.filter((item) => Number(item.id) !== Number(id)));
+    setMenuItemVariants((prev) => prev.filter((variant) => Number(variant.menu_item_id) !== Number(id)));
+    showToast("Menu item deleted", "success");
+
+    try {
+      const localMenuItems = await localMenuItemsTable
+        .where("restaurant_id")
+        .equals(restaurantId)
+        .toArray();
+
+      const targetLocalMenu =
+        localMenuItems.find((item) => item.server_id === id) ||
+        localMenuItems.find((item) => item.id === id);
+
+      const remoteId = targetLocalMenu?.server_id || id;
+      const { error } = await supabase
+        .from("menu_items")
+        .delete()
+        .eq("id", remoteId)
+        .eq("restaurant_id", restaurantId);
+
+      if (error) throw error;
+    } catch (error) {
+      console.error(error);
+      setMenuItems(previousMenuItems);
+      setMenuItemVariants(previousVariants);
+      showToast("Failed to delete menu item", "error");
+    }
+  }
+
+  function getLocalDateString(dateValue: string) {
+    const date = new Date(dateValue);
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  function getDateWithOffset(offsetDays: number) {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() + offsetDays);
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  function formatHourLabel(hour: number) {
+    const normalized = ((hour % 24) + 24) % 24;
+    const suffix = normalized >= 12 ? "PM" : "AM";
+    const displayHour = normalized % 12 === 0 ? 12 : normalized % 12;
+    return `${displayHour} ${suffix}`;
+  }
+
+  function formatHourShort(hour: number) {
+    const normalized = ((hour % 24) + 24) % 24;
+    const suffix = normalized >= 12 ? "PM" : "AM";
+    const displayHour = normalized % 12 === 0 ? 12 : normalized % 12;
+    return `${displayHour}${suffix}`;
+  }
+
+  function getNiceCeiling(value: number) {
+    if (value <= 0) return 1000;
+    if (value <= 100) return 100;
+    if (value <= 500) return Math.ceil(value / 100) * 100;
+    if (value <= 2000) return Math.ceil(value / 250) * 250;
+    if (value <= 10000) return Math.ceil(value / 500) * 500;
+    return Math.ceil(value / 1000) * 1000;
+  }
+
+  function startOfDay(dateValue = new Date()) {
+    const d = new Date(dateValue);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
+
+  function addDays(dateValue: Date, days: number) {
+    const d = new Date(dateValue);
+    d.setDate(d.getDate() + days);
+    return d;
+  }
+
+  const todayLocalDate = getTodayLocalDate();
+  const yesterdayLocalDate = getDateWithOffset(-1);
+
+  const todayOrders = useMemo(() => {
+    return orders.filter((order) => getLocalDateString(order.created_at) === todayLocalDate);
+  }, [orders, todayLocalDate]);
+
+  const yesterdayOrders = useMemo(() => {
+    return orders.filter(
+      (order) => getLocalDateString(order.created_at) === yesterdayLocalDate
+    );
+  }, [orders, yesterdayLocalDate]);
+
+  const todaySalesOrders = useMemo(() => {
+    return orders.filter((order) => {
+      if (order.is_paid !== true || !order.paid_at) return false;
+      return getLocalDateString(order.paid_at) === todayLocalDate;
+    });
+  }, [orders, todayLocalDate]);
+
+  const yesterdaySalesOrders = useMemo(() => {
+    return orders.filter((order) => {
+      if (order.is_paid !== true || !order.paid_at) return false;
+      return getLocalDateString(order.paid_at) === yesterdayLocalDate;
+    });
+  }, [orders, yesterdayLocalDate]);
+
+  const totalOrdersToday = todayOrders.length;
+
+  const totalItemsSoldToday = useMemo(() => {
+    return todaySalesOrders.reduce((sum, order) => {
+      const qty =
+        order.order_items?.reduce(
+          (itemSum, item) => itemSum + Number(item.quantity || 0),
+          0
+        ) || 0;
+      return sum + qty;
+    }, 0);
+  }, [todaySalesOrders]);
+
+  const dashboardLowStockItems = useMemo(() => {
+    if (!inventoryEnabled) return [];
+
+    return inventoryItems
+      .filter((item) => {
+        if (item.low_stock_threshold == null) return false;
+        return Number(item.current_stock || 0) <= Number(item.low_stock_threshold || 0);
+      })
+      .sort((a, b) => {
+        const aThreshold = Math.max(Number(a.low_stock_threshold || 0), 1);
+        const bThreshold = Math.max(Number(b.low_stock_threshold || 0), 1);
+        const aRatio = Number(a.current_stock || 0) / aThreshold;
+        const bRatio = Number(b.current_stock || 0) / bThreshold;
+        return aRatio - bRatio;
+      });
+  }, [inventoryEnabled, inventoryItems]);
+
+  const dashboardCriticalLowStockCount = useMemo(() => {
+    return dashboardLowStockItems.filter((item) => {
+      const threshold = Number(item.low_stock_threshold || 0);
+      const current = Number(item.current_stock || 0);
+      return current <= 0 || (threshold > 0 && current <= threshold * 0.25);
+    }).length;
+  }, [dashboardLowStockItems]);
+
+  const totalRevenueToday = useMemo(() => {
+    return todaySalesOrders.reduce((sum, order) => {
+      const revenue =
+        order.order_items?.reduce(
+          (itemSum, item) =>
+            itemSum + Number(item.quantity || 0) * Number(item.unit_price || 0),
+          0
+        ) || 0;
+      return sum + revenue;
+    }, 0);
+  }, [todaySalesOrders]);
+
+
+  useEffect(() => {
+    if (!restaurantId || !isSetupDone) return;
+    fetchMenuCategories(menuItems);
+  }, [restaurantId, isSetupDone, isOnline]);
+
+  function normalizeMenuCategory(value: string) {
+    const cleaned = String(value || "").trim();
+    return cleaned || "Uncategorized";
+  }
+
+  async function addTakeOrderCategory() {
+    if (!restaurantId) {
+      showToast("Invalid restaurant link", "error");
+      return;
+    }
+
+    const normalized = normalizeMenuCategory(takeOrderCategoryInput);
+    if (normalized === "Uncategorized") {
+      showToast("Real category name enter gara", "error");
+      return;
+    }
+
+    const duplicate = takeOrderCategories.some(
+      (category) => category.toLowerCase() === normalized.toLowerCase()
+    );
+
+    if (duplicate) {
+      setTakeOrderCategoryInput("");
+      showToast("Category already exists", "info");
+      return;
+    }
+
+    if (!isOnline) {
+      showToast("Category add online ma matra supported chha", "error");
+      return;
+    }
+
+    const previousCategories = takeOrderCategories;
+
+    // Optimistic local add so dropdown updates instantly.
+    setTakeOrderCategories((prev) =>
+      Array.from(new Set([...prev, normalized])).sort((a, b) => a.localeCompare(b))
+    );
+    setTakeOrderCategoryInput("");
+
+    try {
+      const { error } = await supabase.from("menu_categories").insert([
+        {
+          restaurant_id: restaurantId,
+          name: normalized,
+          sort_order: takeOrderCategories.length + 1,
+        },
+      ]);
+
+      if (error) {
+        // If user double-clicks or category already exists in DB but local state was stale,
+        // do not show false failure. Just refresh and keep it.
+        if (isDuplicateConstraintError(error)) {
+          await fetchMenuCategories(menuItems);
+          showToast("Category already exists", "info");
+          return;
+        }
+
+        throw error;
+      }
+
+      await fetchMenuCategories(menuItems);
+      showToast("Category added", "success");
+    } catch (error) {
+      setTakeOrderCategories(previousCategories);
+
+      const duplicateMessage = getMenuDuplicateMessage(error);
+
+      if (!duplicateMessage) {
+        console.error("Failed to add category:", error);
+      }
+
+      showToast(duplicateMessage || getReadableError(error) || "Failed to add category", "error");
+    }
+  }
+
+  async function deleteTakeOrderCategory(categoryName: string) {
+    if (!restaurantId) return;
+
+    const normalized = normalizeMenuCategory(categoryName);
+    if (normalized === "Uncategorized") return;
+
+    const usedCount = menuItems.filter((item) => getTakeOrderItemCategory(item.id) === normalized).length;
+    const message =
+      usedCount > 0
+        ? `${normalized} category delete garda ${usedCount} menu item Uncategorized ma jancha. Delete garne?`
+        : `${normalized} category delete garne?`;
+
+    const confirmed = await askConfirm(message, "Delete", "Keep");
+    if (!confirmed) return;
+
+    if (!isOnline) {
+      showToast("Category delete online ma matra supported chha", "error");
+      return;
+    }
+
+    try {
+      if (usedCount > 0) {
+        const { error: updateError } = await supabase
+          .from("menu_items")
+          .update({ category: "Uncategorized" })
+          .eq("restaurant_id", restaurantId)
+          .eq("category", normalized);
+
+        if (updateError) throw updateError;
+      }
+
+      const { error: deleteError } = await supabase
+        .from("menu_categories")
+        .delete()
+        .eq("restaurant_id", restaurantId)
+        .eq("name", normalized);
+
+      if (deleteError) throw deleteError;
+
+      if (takeOrderSelectedCategory.toLowerCase() === normalized.toLowerCase()) {
+        setTakeOrderSelectedCategory("all");
+      }
+
+      if (newItemCategory.toLowerCase() === normalized.toLowerCase()) {
+        setNewItemCategory("Uncategorized");
+      }
+
+      if (editingItemCategory.toLowerCase() === normalized.toLowerCase()) {
+        setEditingItemCategory("Uncategorized");
+      }
+
+      await fetchMenu();
+      await fetchMenuCategories();
+      showToast("Category deleted", "success");
+    } catch (error) {
+      console.error("Failed to delete category", error);
+      showToast("Failed to delete category", "error");
+    }
+  }
+
+  function assignTakeOrderItemToSelectedCategory(itemId: number) {
+    return;
+  }
+
+  function getTakeOrderItemCategory(itemId: number) {
+    const item = menuItems.find((entry) => Number(entry.id) === Number(itemId));
+    return normalizeMenuCategory(item?.category || "Uncategorized");
+  }
+
+  useEffect(() => {
+    if (!restaurantId || menuItems.length === 0) {
+      setMenuItemVariants([]);
+      return;
+    }
+
+    fetchMenuVariants();
+  }, [restaurantId, menuItems]);
+
+  const menuItemSalesCountMap = useMemo(() => {
+    const countMap: Record<number, number> = {};
+    const menuNameToId = new Map(menuItems.map((menu) => [menu.item_name.toLowerCase(), menu.id]));
+
+    orders.forEach((order) => {
+      order.order_items?.forEach((orderItem) => {
+        const cleanOrderItemName = String(orderItem.item_name || "").toLowerCase();
+        const directMenuId = menuNameToId.get(cleanOrderItemName);
+        const variantParent = menuItems.find((menu) => cleanOrderItemName.startsWith(`${menu.item_name.toLowerCase()} (`));
+        const matchedId = directMenuId || variantParent?.id;
+
+        if (!matchedId) return;
+        countMap[matchedId] = (countMap[matchedId] || 0) + Number(orderItem.quantity || 0);
+      });
+    });
+
+    return countMap;
+  }, [orders, menuItems]);
+
+  const categoryItemCountMap = useMemo(() => {
+    const countMap: Record<string, number> = {};
+    menuItems.forEach((item) => {
+      const category = getTakeOrderItemCategory(item.id);
+      if (!category) return;
+      countMap[category] = (countMap[category] || 0) + 1;
+    });
+    return countMap;
+  }, [menuItems]);
+
+  const categorySalesCountMap = useMemo(() => {
+    const countMap: Record<string, number> = {};
+
+    menuItems.forEach((item) => {
+      const category = getTakeOrderItemCategory(item.id);
+      if (!category) return;
+      countMap[category] = (countMap[category] || 0) + (menuItemSalesCountMap[item.id] || 0);
+    });
+
+    return countMap;
+  }, [menuItems, menuItemSalesCountMap]);
+
+  const visibleTakeOrderCategories = useMemo(() => {
+    return takeOrderCategories
+      .filter((category) => (categoryItemCountMap[category] || 0) > 0)
+      .sort((a, b) => {
+        const aPopular = categorySalesCountMap[a] || 0;
+        const bPopular = categorySalesCountMap[b] || 0;
+        if (bPopular !== aPopular) return bPopular - aPopular;
+        return a.localeCompare(b);
+      });
+  }, [takeOrderCategories, categoryItemCountMap, categorySalesCountMap]);
+
+  const menuCategoryOptions = useMemo(() => {
+    const merged = Array.from(
+      new Set([
+        ...takeOrderCategories,
+        ...menuItems
+          .map((item) => normalizeMenuCategory(item.category || "Uncategorized"))
+          .filter((category) => category !== "Uncategorized"),
+      ])
+    );
+
+    return merged.sort((a, b) => a.localeCompare(b));
+  }, [takeOrderCategories, menuItems]);
+
+  const manageCategoryPills = useMemo(() => {
+    return ["all", ...menuCategoryOptions];
+  }, [menuCategoryOptions]);
+
+  const visibleManageMenuItems = useMemo(() => {
+    return menuItems
+      .filter((item) => {
+        if (manageMenuSelectedCategory === "all") return true;
+        return normalizeMenuCategory(item.category || "Uncategorized") === manageMenuSelectedCategory;
+      })
+      .sort((a, b) => {
+        const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+        if (bTime !== aTime) return bTime - aTime;
+        return a.item_name.localeCompare(b.item_name);
+      });
+  }, [menuItems, manageMenuSelectedCategory]);
+
+  const searchedVisibleManageMenuItems = useMemo(() => {
+    const query = plusMenuSearch.trim().toLowerCase();
+
+    return visibleManageMenuItems.filter((menu) => {
+      if (!query) return true;
+      return `${menu.item_name} ${menu.category || ""}`.toLowerCase().includes(query);
+    });
+  }, [visibleManageMenuItems, plusMenuSearch]);
+
+  const filteredTakeOrderMenuItems = useMemo(() => {
+    const keyword = takeOrderSearch.trim().toLowerCase();
+
+    return menuItems
+      .filter((item) => {
+        const matchesSearch = !keyword || item.item_name.toLowerCase().includes(keyword);
+        if (!matchesSearch) return false;
+        if (takeOrderSelectedCategory === "all") return true;
+        return getTakeOrderItemCategory(item.id) === takeOrderSelectedCategory;
+      })
+      .sort((a, b) => {
+        const aSold = menuItemSalesCountMap[a.id] || 0;
+        const bSold = menuItemSalesCountMap[b.id] || 0;
+        if (bSold !== aSold) return bSold - aSold;
+        const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+        if (bTime !== aTime) return bTime - aTime;
+        return a.item_name.localeCompare(b.item_name);
+      });
+  }, [menuItems, takeOrderSearch, takeOrderSelectedCategory, menuItemSalesCountMap]);
+
+  const popularTakeOrderItems = useMemo(() => {
+    return [...menuItems]
+      .filter((item) => (menuItemSalesCountMap[item.id] || 0) > 0)
+      .sort((a, b) => {
+        const aSold = menuItemSalesCountMap[a.id] || 0;
+        const bSold = menuItemSalesCountMap[b.id] || 0;
+        if (bSold !== aSold) return bSold - aSold;
+        return a.item_name.localeCompare(b.item_name);
+      })
+      .slice(0, 8);
+  }, [menuItems, menuItemSalesCountMap]);
+
+  const takeOrderCartCount = useMemo(() => {
+    return takeOrderItems.reduce((sum, item) => sum + item.quantity, 0);
+  }, [takeOrderItems]);
+
+  const takeOrderCartTotal = useMemo(() => {
+    return takeOrderItems.reduce((sum, item) => sum + item.quantity * item.price, 0);
+  }, [takeOrderItems]);
+
+  const takeOrderQuantityByMenuId = useMemo(() => {
+    return takeOrderItems.reduce<Record<number, number>>((map, item) => {
+      map[item.menu_id] = (map[item.menu_id] || 0) + item.quantity;
+      return map;
+    }, {});
+  }, [takeOrderItems]);
+
+  const simpleTakeOrderCartItemByMenuId = useMemo(() => {
+    return takeOrderItems.reduce<Partial<Record<number, TakeOrderCartItem>>>((map, item) => {
+      if (!item.variant_id && !map[item.menu_id]) {
+        map[item.menu_id] = item;
+      }
+
+      return map;
+    }, {});
+  }, [takeOrderItems]);
+
+  function getSimpleTakeOrderCartItem(menuId: number) {
+    return simpleTakeOrderCartItemByMenuId[menuId];
+  }
+
+
+  const occupiedTableNumbers = useMemo(() => {
+    return new Set(
+      orders
+        .filter((order) => order.is_paid !== true)
+        .map((order) => String(order.table_number || "").trim())
+        .filter(Boolean)
+    );
+  }, [orders]);
+
+  const takeOrderVisibleTables = useMemo(() => {
+    return Array.from({ length: takeOrderVisibleTableCount }, (_, index) => String(index + 1));
+  }, [takeOrderVisibleTableCount]);
+
+  const takeOrderVisibleCabins = useMemo(() => {
+    return Array.from({ length: takeOrderVisibleCabinCount }, (_, index) => `C${index + 1}`);
+  }, [takeOrderVisibleCabinCount]);
+
+  const takeOrderTableOccupancy = useMemo(() => {
+    const freeTables = takeOrderVisibleTables.reduce(
+      (sum, tableNumber) => sum + (occupiedTableNumbers.has(tableNumber) ? 0 : 1),
+      0
+    );
+    const freeCabins = takeOrderVisibleCabins.reduce(
+      (sum, cabinNumber) => sum + (occupiedTableNumbers.has(cabinNumber) ? 0 : 1),
+      0
+    );
+
+    return {
+      freeTables,
+      occupiedTables: takeOrderVisibleTables.length - freeTables,
+      freeCabins,
+      occupiedCabins: takeOrderVisibleCabins.length - freeCabins,
+    };
+  }, [takeOrderVisibleTables, takeOrderVisibleCabins, occupiedTableNumbers]);
+
+  const canShowMoreTables = takeOrderVisibleTableCount < 99;
+  const canShowMoreCabins = takeOrderVisibleCabinCount < 30;
+
+  function getTakeOrderPlaceType(placeNumber: string) {
+    return String(placeNumber || "").trim().toUpperCase().startsWith("C") ? "Cabin" : "Table";
+  }
+
+  function handleSelectTakeOrderTable(tableNumber: string) {
+    setTakeOrderTableNumber(tableNumber);
+    setTakeOrderSearch("");
+    setShowTakeOrderSearch(false);
+    setTakeOrderSelectedCategory("all");
+    setTakeOrderStep("items");
+  }
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+
+    if (showTakeOrderModal || showChangeTableModal || reportOrder || selectedPaidOrder || showQR) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [showTakeOrderModal, showChangeTableModal, reportOrder, selectedPaidOrder, showQR]);
+
+const todayPaidOrders = useMemo(() => {
+  return orders
+    .filter((order) => {
+      if (order.is_paid !== true || !order.paid_at) return false;
+      return getLocalDateString(order.paid_at) === todayLocalDate;
+    })
+    .sort((a, b) => new Date(b.paid_at || 0).getTime() - new Date(a.paid_at || 0).getTime());
+}, [orders, todayLocalDate]);
+
+const todayPaidOrderIds = useMemo(() => {
+  return new Set(todayPaidOrders.map((order) => Number(order.id)).filter((id) => Number.isFinite(id) && id > 0));
+}, [todayPaidOrders]);
+
+const todaySnapshotOrderIds = useMemo(() => {
+  if (!inventoryEnabled) return new Set<number>();
+
+  return new Set(
+    orderCostSnapshots
+      .filter((snapshot) => {
+        const dateSource = snapshot.order_paid_at || snapshot.created_at;
+        return Boolean(dateSource) && getLocalDateString(String(dateSource)) === todayLocalDate;
+      })
+      .map((snapshot) => Number(snapshot.order_id))
+      .filter((id) => Number.isFinite(id) && id > 0)
+  );
+}, [inventoryEnabled, orderCostSnapshots, todayLocalDate]);
+
+const todayLockedSnapshots = useMemo(() => {
+  if (!inventoryEnabled) return [];
+  return orderCostSnapshots.filter((snapshot) => todaySnapshotOrderIds.has(Number(snapshot.order_id)));
+}, [inventoryEnabled, orderCostSnapshots, todaySnapshotOrderIds]);
+
+const todayLockedCost = useMemo(() => {
+  if (!inventoryEnabled) return 0;
+  return Math.round(todayLockedSnapshots.reduce((sum, snapshot) => sum + Number(snapshot.total_cost || 0), 0));
+}, [inventoryEnabled, todayLockedSnapshots]);
+
+const todayLockedProfit = useMemo(() => {
+  if (!inventoryEnabled) return 0;
+  return Math.round(todayLockedSnapshots.reduce((sum, snapshot) => sum + Number(snapshot.total_profit || 0), 0));
+}, [inventoryEnabled, todayLockedSnapshots]);
+
+const todaySnapshotProcessingCount = useMemo(() => {
+  if (!inventoryEnabled) return 0;
+  return todayPaidOrders.filter(
+    (order) => !orderCostSnapshots.some((snapshot) => Number(snapshot.order_id) === Number(order.id))
+  ).length;
+}, [inventoryEnabled, todayPaidOrders, orderCostSnapshots]);
+
+const todayProfitItems = useMemo(() => {
+  if (!inventoryEnabled) return [];
+  const grouped = new Map<string, { item_name: string; selling: number; cost: number; profit: number; quantity: number }>();
+
+  orderCostSnapshotItems
+    .filter((item) => todaySnapshotOrderIds.has(Number(item.order_id)))
+    .forEach((item) => {
+      const key = String(item.item_name || "Unknown item");
+      const existing = grouped.get(key) || { item_name: key, selling: 0, cost: 0, profit: 0, quantity: 0 };
+      existing.selling += Number(item.selling || 0);
+      existing.cost += Number(item.cost || 0);
+      existing.profit += Number(item.profit || 0);
+      existing.quantity += Number(item.quantity || 0);
+      grouped.set(key, existing);
+    });
+
+  return Array.from(grouped.values());
+}, [inventoryEnabled, orderCostSnapshotItems, todayPaidOrderIds]);
+
+const topProfitItem = useMemo(() => {
+  if (!inventoryEnabled || todayProfitItems.length === 0) return null;
+  return [...todayProfitItems].sort((a, b) => b.profit - a.profit)[0];
+}, [inventoryEnabled, todayProfitItems]);
+
+const worstProfitItem = useMemo(() => {
+  if (!inventoryEnabled || todayProfitItems.length === 0) return null;
+  return [...todayProfitItems].sort((a, b) => a.profit - b.profit)[0];
+}, [inventoryEnabled, todayProfitItems]);
+
+const todayPaymentBreakdown = useMemo(() => {
+  const totals = {
+    cash: 0,
+    qr: 0,
+    card: 0,
+  };
+
+  todayPaidOrders.forEach((order) => {
+    const orderTotal =
+      order.order_items?.reduce(
+        (sum, item) =>
+          sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
+        0
+      ) || 0;
+
+    const method =
+      order.payment_method === "qr" || order.payment_method === "card"
+        ? order.payment_method
+        : "cash";
+
+    totals[method] += orderTotal;
+  });
+
+  const total = totals.cash + totals.qr + totals.card;
+
+  return {
+    ...totals,
+    cashPercent: total > 0 ? ((totals.cash / total) * 100).toFixed(1) : "0.0",
+    qrPercent: total > 0 ? ((totals.qr / total) * 100).toFixed(1) : "0.0",
+    cardPercent: total > 0 ? ((totals.card / total) * 100).toFixed(1) : "0.0",
+  };
+}, [todayPaidOrders]);
+
+  const totalRevenueYesterday = useMemo(() => {
+    return yesterdaySalesOrders.reduce((sum, order) => {
+      const revenue =
+        order.order_items?.reduce(
+          (itemSum, item) =>
+            itemSum + Number(item.quantity || 0) * Number(item.unit_price || 0),
+          0
+        ) || 0;
+      return sum + revenue;
+    }, 0);
+  }, [yesterdaySalesOrders]);
+
+  const todayProfit = useMemo(() => {
+    if (inventoryEnabled) return todayLockedProfit;
+    return Math.round(totalRevenueToday * (Number(profitPercent || 0) / 100));
+  }, [inventoryEnabled, todayLockedProfit, totalRevenueToday, profitPercent]);
+
+  const yesterdayProfit = useMemo(() => {
+    if (inventoryEnabled) {
+      const yesterdayPaidOrderIds = new Set(
+        yesterdayOrders
+          .filter((order) => order.is_paid === true)
+          .map((order) => Number(order.id))
+          .filter((id) => Number.isFinite(id) && id > 0)
+      );
+
+      return Math.round(
+        orderCostSnapshots
+          .filter((snapshot) => yesterdayPaidOrderIds.has(Number(snapshot.order_id)))
+          .reduce((sum, snapshot) => sum + Number(snapshot.total_profit || 0), 0)
+      );
+    }
+
+    return Math.round(totalRevenueYesterday * (Number(profitPercent || 0) / 100));
+  }, [inventoryEnabled, orderCostSnapshots, yesterdayOrders, totalRevenueYesterday, profitPercent]);
+
+  const profitVsYesterday = useMemo(() => {
+    const diff = todayProfit - yesterdayProfit;
+
+    if (yesterdayProfit <= 0) {
+      if (todayProfit > 0) {
+        return {
+          text: `+Rs. ${diff} vs yesterday`,
+          className: "text-emerald-600",
+        };
+      }
+
+      return {
+        text: "Rs. 0 vs yesterday",
+        className: "text-slate-500",
+      };
+    }
+
+    if (diff > 0) {
+      return {
+        text: `+Rs. ${diff} vs yesterday`,
+        className: "text-emerald-600",
+      };
+    }
+
+    if (diff < 0) {
+      return {
+        text: `-Rs. ${Math.abs(diff)} vs yesterday`,
+        className: "text-rose-600",
+      };
+    }
+
+    return {
+      text: "Rs. 0 vs yesterday",
+      className: "text-slate-500",
+    };
+  }, [todayProfit, yesterdayProfit]);
+
+  const salesVsYesterday = useMemo(() => {
+    const diff = totalRevenueToday - totalRevenueYesterday;
+
+    if (totalRevenueYesterday <= 0) {
+      if (totalRevenueToday > 0) {
+        return {
+          text: `+Rs. ${diff} vs yesterday`,
+          className: "text-emerald-600",
+        };
+      }
+
+      return {
+        text: "Rs. 0 vs yesterday",
+        className: "text-slate-500",
+      };
+    }
+
+    const percentage = Math.abs((diff / totalRevenueYesterday) * 100).toFixed(1);
+
+    if (diff > 0) {
+      return {
+        text: `+${percentage}% vs yesterday`,
+        className: "text-emerald-600",
+      };
+    }
+
+    if (diff < 0) {
+      return {
+        text: `-${percentage}% vs yesterday`,
+        className: "text-rose-600",
+      };
+    }
+
+    return {
+      text: "0% vs yesterday",
+      className: "text-slate-500",
+    };
+  }, [totalRevenueToday, totalRevenueYesterday]);
+
+  function getComparisonCardClass(comparisonClass: string) {
+    if (comparisonClass.includes("emerald")) {
+      return "border-emerald-200 bg-emerald-50";
+    }
+
+    if (comparisonClass.includes("rose")) {
+      return "border-rose-200 bg-rose-50";
+    }
+
+    return "border-slate-300 bg-slate-100";
+  }
+
+  const salesByItem: SalesItem[] = useMemo(() => {
+    const map: Record<string, SalesItem> = {};
+
+    todaySalesOrders.forEach((order) => {
+      order.order_items?.forEach((item) => {
+        if (!map[item.item_name]) {
+          map[item.item_name] = {
+            item_name: item.item_name,
+            total_quantity: 0,
+            total_revenue: 0,
+          };
+        }
+
+        map[item.item_name].total_quantity += Number(item.quantity || 0);
+        map[item.item_name].total_revenue +=
+          Number(item.quantity || 0) * Number(item.unit_price || 0);
+      });
+    });
+
+    return Object.values(map).sort((a, b) => b.total_quantity - a.total_quantity);
+  }, [todaySalesOrders]);
+
+  const bestSellingItem = salesByItem.length > 0 ? salesByItem[0] : null;
+
+  useEffect(() => {
+    orderIdsRef.current = orders.map((order) => order.id);
+  }, [orders]);
+
+  const paidOrders = useMemo(() => {
+    return orders
+      .filter((order) => order.is_paid === true && Boolean(order.paid_at))
+      .sort((a, b) => new Date(b.paid_at || 0).getTime() - new Date(a.paid_at || 0).getTime());
+  }, [orders]);
+
+  const reportPaidOrders = useMemo(() => {
+    return paidOrders.filter(
+      (order) =>
+        order.paid_at && getLocalDateString(order.paid_at) === selectedReportDate
+    );
+  }, [paidOrders, selectedReportDate]);
+
+  const rangePaidOrders = useMemo(() => {
+    if (!reportFromDate || !reportToDate) return [];
+
+    return paidOrders.filter((order) => {
+      if (!order.paid_at) return false;
+      const orderDate = getLocalDateString(order.paid_at);
+      return orderDate >= reportFromDate && orderDate <= reportToDate;
+    });
+  }, [paidOrders, reportFromDate, reportToDate]);
+
+  function buildReportData(sourceOrders: OrderRow[]) {
+    const itemMap: Record<string, SalesItem> = {};
+    const paymentTotals = {
+      cash: 0,
+      qr: 0,
+      card: 0,
+    };
+
+    let totalSales = 0;
+    let totalItemsSold = 0;
+
+    sourceOrders.forEach((order) => {
+      const orderTotal =
+        order.order_items?.reduce(
+          (sum, item) =>
+            sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
+          0
+        ) || 0;
+
+      totalSales += orderTotal;
+
+      const method =
+        order.payment_method === "qr" || order.payment_method === "card"
+          ? order.payment_method
+          : "cash";
+
+      paymentTotals[method] += orderTotal;
+
+      order.order_items?.forEach((item) => {
+        const quantity = Number(item.quantity || 0);
+        const revenue = quantity * Number(item.unit_price || 0);
+
+        totalItemsSold += quantity;
+
+        if (!itemMap[item.item_name]) {
+          itemMap[item.item_name] = {
+            item_name: item.item_name,
+            total_quantity: 0,
+            total_revenue: 0,
+          };
+        }
+
+        itemMap[item.item_name].total_quantity += quantity;
+        itemMap[item.item_name].total_revenue += revenue;
+      });
+    });
+
+    const itemWiseReport = Object.values(itemMap).sort((a, b) => {
+      if (b.total_quantity !== a.total_quantity) {
+        return b.total_quantity - a.total_quantity;
+      }
+      return b.total_revenue - a.total_revenue;
+    });
+
+    return {
+      totalSales,
+      paidOrdersCount: sourceOrders.length,
+      totalItemsSold,
+      averageOrderValue:
+        sourceOrders.length > 0 ? Math.round(totalSales / sourceOrders.length) : 0,
+      itemWiseReport,
+      topItem: itemWiseReport[0] || null,
+      lowestItem:
+        itemWiseReport.length > 0
+          ? itemWiseReport[itemWiseReport.length - 1]
+          : null,
+      paymentTotals,
+    };
+  }
+
+  const reportData = useMemo(() => {
+    return buildReportData(reportPaidOrders);
+  }, [reportPaidOrders]);
+
+  const rangeReportData = useMemo(() => {
+    return buildReportData(rangePaidOrders);
+  }, [rangePaidOrders]);
+
+  const hourlySalesTrend = useMemo(() => {
+    const salesByHour: Record<number, number> = {};
+
+    todayOrders.forEach((order) => {
+      const hour = new Date(order.created_at).getHours();
+      const total =
+        order.order_items?.reduce(
+          (sum, item) =>
+            sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
+          0
+        ) || 0;
+
+      salesByHour[hour] = (salesByHour[hour] || 0) + total;
+    });
+
+    const orderHours = todayOrders.map((order) => new Date(order.created_at).getHours());
+
+    let startHour = 10;
+    let endHour = 22;
+
+    if (orderHours.length > 0) {
+      startHour = Math.max(0, Math.min(...orderHours) - 1);
+      endHour = Math.min(23, Math.max(...orderHours) + 1);
+    }
+
+    if (endHour - startHour < 5) {
+      startHour = Math.max(0, startHour - 2);
+      endHour = Math.min(23, endHour + 2);
+    }
+
+    const points: HourlyTrendPoint[] = [];
+
+    for (let hour = startHour; hour <= endHour; hour++) {
+      points.push({
+        hour,
+        label: formatHourLabel(hour),
+        shortLabel: formatHourShort(hour),
+        sales: salesByHour[hour] || 0,
+      });
+    }
+
+    return points;
+  }, [todayOrders]);
+
+  const groupedTableOrders = useMemo(() => {
+    const normalizeKitchenStatus = (value?: string | null): KitchenStatusKey => {
+      if (value === "ready") return "ready";
+      if (value === "preparing") return "preparing";
+      return "pending";
+    };
+
+    const tableStatusPriority: Record<KitchenStatusKey, number> = {
+      pending: 3,
+      preparing: 2,
+      ready: 1,
+    };
+
+    const unpaidOnly = orders.filter(
+      // Pending-payment bills must stay visible in Live Bills until server sync succeeds.
+      (order) => order.is_paid !== true || order.sync_status === "pending_payment"
+    );
+    const map: Record<string, GroupedTableOrder> = {};
+
+    unpaidOnly.forEach((order) => {
+      const tableNo = String(order.table_number || "").trim();
+      if (!tableNo) return;
+
+      if (!map[tableNo]) {
+        map[tableNo] = {
+          table_number: tableNo,
+          order_ids: [],
+          remarks: [],
+          items: [],
+          total: 0,
+          unpaid_orders_count: 0,
+          table_status: normalizeKitchenStatus(order.status),
+        };
+      }
+
+      map[tableNo].order_ids.push(order.id);
+      map[tableNo].unpaid_orders_count += 1;
+
+      if (order.remarks && order.remarks.trim()) {
+        map[tableNo].remarks.push(order.remarks.trim());
+      }
+
+      const orderLevelStatus = normalizeKitchenStatus(order.status);
+      if (tableStatusPriority[orderLevelStatus] > tableStatusPriority[map[tableNo].table_status]) {
+        map[tableNo].table_status = orderLevelStatus;
+      }
+
+      order.order_items?.forEach((item) => {
+        const quantity = Number(item.quantity || 0);
+        const unitPrice = Number(item.unit_price || 0);
+        const lineTotal = quantity * unitPrice;
+        const itemStatus = normalizeKitchenStatus(item.status || order.status);
+
+        const existingItem = map[tableNo].items.find(
+          (entry) => entry.item_name === item.item_name && entry.status === itemStatus
+        );
+
+        if (existingItem) {
+          existingItem.quantity += quantity;
+          existingItem.total += lineTotal;
+        } else {
+          map[tableNo].items.push({
+            item_name: item.item_name,
+            quantity,
+            total: lineTotal,
+            status: itemStatus,
+          });
+        }
+
+        if (tableStatusPriority[itemStatus] > tableStatusPriority[map[tableNo].table_status]) {
+          map[tableNo].table_status = itemStatus;
+        }
+
+        map[tableNo].total += lineTotal;
+      });
+    });
+
+    return Object.values(map)
+      .sort((a, b) => {
+        const aNum = Number(a.table_number);
+        const bNum = Number(b.table_number);
+
+        if (!Number.isNaN(aNum) && !Number.isNaN(bNum)) {
+          return aNum - bNum;
+        }
+
+        return a.table_number.localeCompare(b.table_number);
+      })
+      .map((table) => ({
+        ...table,
+        items: [...table.items].sort((a, b) => a.item_name.localeCompare(b.item_name)),
+      }));
+  }, [orders]);
+
+  const todayDashboardGroupedTableOrders = useMemo(() => {
+    const normalizeKitchenStatus = (value?: string | null): KitchenStatusKey => {
+      if (value === "ready") return "ready";
+      if (value === "preparing") return "preparing";
+      return "pending";
+    };
+
+    const tableStatusPriority: Record<KitchenStatusKey, number> = {
+      pending: 3,
+      preparing: 2,
+      ready: 1,
+    };
+
+    const todayUnpaidOnly = orders.filter((order) => {
+      const isTodayOrder = getLocalDateString(order.created_at) === todayLocalDate;
+      const isUnpaidOrPendingSync = order.is_paid !== true || order.sync_status === "pending_payment";
+      return isTodayOrder && isUnpaidOrPendingSync;
+    });
+
+    const map: Record<string, GroupedTableOrder> = {};
+
+    todayUnpaidOnly.forEach((order) => {
+      const tableNo = String(order.table_number || "").trim();
+      if (!tableNo) return;
+
+      if (!map[tableNo]) {
+        map[tableNo] = {
+          table_number: tableNo,
+          order_ids: [],
+          remarks: [],
+          items: [],
+          total: 0,
+          unpaid_orders_count: 0,
+          table_status: normalizeKitchenStatus(order.status),
+        };
+      }
+
+      map[tableNo].order_ids.push(order.id);
+      map[tableNo].unpaid_orders_count += 1;
+
+      if (order.remarks && order.remarks.trim()) {
+        map[tableNo].remarks.push(order.remarks.trim());
+      }
+
+      const orderLevelStatus = normalizeKitchenStatus(order.status);
+      if (tableStatusPriority[orderLevelStatus] > tableStatusPriority[map[tableNo].table_status]) {
+        map[tableNo].table_status = orderLevelStatus;
+      }
+
+      order.order_items?.forEach((item) => {
+        const quantity = Number(item.quantity || 0);
+        const unitPrice = Number(item.unit_price || 0);
+        const lineTotal = quantity * unitPrice;
+        const itemStatus = normalizeKitchenStatus(item.status || order.status);
+
+        const existingItem = map[tableNo].items.find(
+          (entry) => entry.item_name === item.item_name && entry.status === itemStatus
+        );
+
+        if (existingItem) {
+          existingItem.quantity += quantity;
+          existingItem.total += lineTotal;
+        } else {
+          map[tableNo].items.push({
+            item_name: item.item_name,
+            quantity,
+            total: lineTotal,
+            status: itemStatus,
+          });
+        }
+
+        if (tableStatusPriority[itemStatus] > tableStatusPriority[map[tableNo].table_status]) {
+          map[tableNo].table_status = itemStatus;
+        }
+
+        map[tableNo].total += lineTotal;
+      });
+    });
+
+    return Object.values(map)
+      .sort((a, b) => {
+        const aNum = Number(a.table_number);
+        const bNum = Number(b.table_number);
+
+        if (!Number.isNaN(aNum) && !Number.isNaN(bNum)) {
+          return aNum - bNum;
+        }
+
+        return a.table_number.localeCompare(b.table_number);
+      })
+      .map((table) => ({
+        ...table,
+        items: [...table.items].sort((a, b) => a.item_name.localeCompare(b.item_name)),
+      }));
+  }, [orders, todayLocalDate]);
+
+  const pendingPaymentOrders = useMemo(() => {
+    const byId = new Map<number, OrderRow>();
+
+    [...orders, ...localPendingPaymentOrders]
+      .filter((order) => order.sync_status === "pending_payment")
+      .forEach((order) => {
+        byId.set(Number(order.id), order);
+      });
+
+    return Array.from(byId.values()).sort(
+      (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+    );
+  }, [orders, localPendingPaymentOrders]);
+
+  useEffect(() => {
+    if (pendingPaymentOrders.length === 0 && showPaymentSyncQueue) {
+      setShowPaymentSyncQueue(false);
+    }
+  }, [pendingPaymentOrders.length, showPaymentSyncQueue]);
+
+
+const kitchenQueue = useMemo(() => {
+  return groupedTableOrders
+    .map((table) => {
+      const relatedOrders = orders
+        .filter(
+          (order) =>
+            String(order.table_number || "").trim() === table.table_number &&
+            order.is_paid !== true
+        )
+        .sort(
+          (a, b) =>
+            new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        );
+
+      const oldestCreatedAt = relatedOrders[0]?.created_at || "";
+      const visibleItems = [...table.items].sort((a, b) => a.item_name.localeCompare(b.item_name));
+
+      return {
+        ...table,
+        items: visibleItems,
+        oldestCreatedAt,
+      };
+    })
+    .filter((table) => table.table_status !== "ready")
+    .filter((table) => kitchenStatusFilter === "all" || table.table_status === kitchenStatusFilter)
+    .sort((a, b) => {
+      const aTime = a.oldestCreatedAt ? new Date(a.oldestCreatedAt).getTime() : 0;
+      const bTime = b.oldestCreatedAt ? new Date(b.oldestCreatedAt).getTime() : 0;
+      return aTime - bTime;
+    });
+}, [groupedTableOrders, orders, kitchenStatusFilter]);
+async function markGroupedTableAsPaid(
+  tableNo: string,
+  paymentMethod: "cash" | "qr" | "card"
+) {
+  if (markingPaidTable) return;
+
+  if (!restaurantId) {
+    showToast("Invalid restaurant link", "error");
+    return;
+  }
+
+  const normalizedTableNo = tableNo.trim();
+  if (!normalizedTableNo) {
+    showToast("Invalid table number", "error");
+    return;
+  }
+
+  const unpaidOrdersForTable = orders.filter(
+    (order) =>
+      String(order.table_number).trim() === normalizedTableNo &&
+      order.is_paid !== true &&
+      order.sync_status !== "pending_payment"
+  );
+
+  if (unpaidOrdersForTable.length === 0) {
+    showToast("No unpaid orders found for this table", "error");
+    return;
+  }
+
+  setMarkingPaidTable(normalizedTableNo);
+
+  const confirmPay = await askConfirm(
+    `Mark all unpaid orders for table ${normalizedTableNo} as paid with ${paymentMethod.toUpperCase()}?`,
+    "Mark paid",
+    "Back"
+  );
+
+  if (!confirmPay) {
+    setMarkingPaidTable(null);
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const previousOrders = orders;
+
+  try {
+    const localOrders = await localOrdersTable
+      .where("restaurant_id")
+      .equals(restaurantId)
+      .toArray();
+
+    const targetLocalOrders = localOrders.filter(
+      (order) =>
+        String(order.table_number).trim() === normalizedTableNo &&
+        order.is_paid !== true &&
+        order.sync_status !== "pending_payment"
+    );
+
+    if (isOnline) {
+      const hasUnsyncedOrder = unpaidOrdersForTable.some((order) => {
+        const localOrder = targetLocalOrders.find(
+          (local) =>
+            local.server_id === Number(order.id) ||
+            local.id === Number(order.id)
+        );
+
+        return localOrder && !localOrder.server_id;
+      });
+
+      if (hasUnsyncedOrder) {
+        showToast("Order saving हुँदैछ. केही सेकेन्डपछि pay गर्नुहोस्.", "info");
+        setMarkingPaidTable(null);
+        return;
+      }
+
+      await Promise.all(
+        unpaidOrdersForTable.map(async (order) => {
+          const targetLocalOrder =
+            targetLocalOrders.find((local) => local.server_id === Number(order.id)) ||
+            targetLocalOrders.find((local) => local.id === Number(order.id)) ||
+            await getLocalOrderForUiId(order.id);
+
+          const remoteOrderId = await ensureRemoteOrderIdForPayment(Number(order.id), targetLocalOrder || null);
+
+          const { data, error } = await supabase.rpc("mark_order_paid_fast", {
+            p_order_id: remoteOrderId,
+            p_payment_method: paymentMethod,
+          });
+
+          if (error) throw error;
+
+          const result = data as { success?: boolean; message?: string } | null;
+          const alreadyPaid = String(result?.message || "").toLowerCase().includes("already paid");
+          if (!result?.success && !alreadyPaid) {
+            throw new Error(result?.message || "Table payment failed");
+          }
+
+          const orderPaymentBreakdown = getOrderPaymentBreakdown(order, normalizedTableNo);
+
+          const { error: taxDiscountUpdateError } = await supabase
+            .from("orders")
+            .update(orderPaymentBreakdown)
+            .eq("id", remoteOrderId)
+            .eq("restaurant_id", restaurantId);
+
+          if (taxDiscountUpdateError) throw taxDiscountUpdateError;
+
+          // Online table pay also creates locked inventory/cost snapshots.
+          // If this fails, local row becomes pending_payment and syncPendingOrders will retry.
+          await runInventoryDeductionAndCostLock(remoteOrderId, {
+            throwOnError: true,
+            localOrderId: targetLocalOrder?.id || null,
+          });
+
+          if (targetLocalOrder?.id) {
+            await localOrdersTable.update(targetLocalOrder.id, {
+              server_id: remoteOrderId,
+              is_paid: true,
+              payment_method: paymentMethod,
+              paid_at: now,
+              ...orderPaymentBreakdown,
+              updated_at: now,
+              sync_status: "synced",
+            });
+          }
+        })
+      );
+
+      if (popupView === "inventory") {
+        setTimeout(() => {
+          fetchInventoryData(inventoryTab);
+        }, 300);
+      }
+    } else {
+      for (const order of unpaidOrdersForTable) {
+        const targetLocalOrder =
+          targetLocalOrders.find((localOrder) => localOrder.server_id === Number(order.id)) ||
+          targetLocalOrders.find((localOrder) => localOrder.id === Number(order.id)) ||
+          await getLocalOrderForUiId(order.id);
+
+        if (!targetLocalOrder?.id) {
+          throw new Error(`Local order not found for table ${normalizedTableNo}`);
+        }
+
+        const orderPaymentBreakdown = getOrderPaymentBreakdown(order, normalizedTableNo);
+
+        await localOrdersTable.update(targetLocalOrder.id, {
+          is_paid: true,
+          payment_method: paymentMethod,
+          paid_at: now,
+          ...orderPaymentBreakdown,
+          updated_at: now,
+          sync_status: "pending_payment",
+        });
+      }
+    }
+
+    setOrders((prev) =>
+  prev.map((order) =>
+    String(order.table_number).trim() === normalizedTableNo &&
+    order.is_paid !== true
+      ? {
+          ...order,
+          is_paid: true,
+          payment_method: paymentMethod,
+          paid_at: now,
+          ...getOrderPaymentBreakdown(order, normalizedTableNo),
+          sync_status: isOnline ? "synced" : "pending_payment",
+        }
+      : order
+  )
+);
+
+    const paidBillBaseOrder = unpaidOrdersForTable[0];
+    if (paidBillBaseOrder) {
+      const combinedPaidItems = unpaidOrdersForTable.flatMap((order, orderIndex) =>
+        (order.order_items || []).map((item, itemIndex) => ({
+          ...item,
+          id: Number(order.id || 0) * 100000 + orderIndex * 1000 + itemIndex + 1,
+        }))
+      );
+      const combinedSubtotal = unpaidOrdersForTable.reduce((sum, order) => sum + getOrderTotal(order), 0);
+      const combinedBreakdown = getPaymentBreakdown(combinedSubtotal, normalizedTableNo);
+
+      setSelectedPaidOrder({
+        ...paidBillBaseOrder,
+        table_number: normalizedTableNo,
+        is_paid: true,
+        payment_method: paymentMethod,
+        paid_at: now,
+        ...combinedBreakdown,
+        order_items: combinedPaidItems,
+        sync_status: isOnline ? "synced" : "pending_payment",
+      });
+    }
+
+    refreshPendingPaymentQueue();
+
+    showToast(
+      isOnline ? "Payment successful" : "Payment queued for sync",
+      "success"
+    );
+  } catch (error) {
+    console.error("markGroupedTableAsPaid failed:", error);
+    setOrders(previousOrders);
+    showToast(getReadableError(error) || "Payment failed", "error");
+  } finally {
+    setMarkingPaidTable(null);
+  }
+}
+
+async function updateKitchenTableStatus(
+  tableNo: string,
+  nextStatus: KitchenStatusKey
+) {
+  if (!restaurantId) {
+    showToast("Invalid restaurant link", "error");
+    return;
+  }
+
+  if (kitchenUpdatingTable === tableNo) return;
+
+  const cleanTableNo = String(tableNo || "").trim();
+
+  const targetOrders = orders.filter(
+    (order) =>
+      String(order.table_number || "").trim() === cleanTableNo &&
+      order.is_paid !== true
+  );
+
+  if (targetOrders.length === 0) {
+    showToast("No active kitchen order found", "error");
+    return;
+  }
+
+  const previousOrdersSnapshot = orders;
+  const now = new Date().toISOString();
+
+  setKitchenUpdatingTable(cleanTableNo);
+  setKitchenUpdatingStatus(nextStatus);
+
+  // Fast UI first. DB sync happens after this.
+  setOrders((prev) =>
+    prev.map((order) => {
+      if (
+        String(order.table_number || "").trim() !== cleanTableNo ||
+        order.is_paid === true
+      ) {
+        return order;
+      }
+
+      return {
+        ...order,
+        status: nextStatus,
+        order_items: (order.order_items || []).map((item) => ({
+          ...item,
+          status: nextStatus,
+        })),
+      };
+    })
+  );
+
+  try {
+    const localOrders = await localOrdersTable
+      .where("restaurant_id")
+      .equals(restaurantId)
+      .toArray();
+
+    const targetLocalOrders = localOrders.filter(
+      (order) =>
+        String(order.table_number || "").trim() === cleanTableNo &&
+        order.is_paid !== true
+    );
+
+    const remoteIdsFromUi = targetOrders
+      .map((order) => Number(order.id || 0))
+      .filter((id) => Number.isFinite(id) && id > 0 && id < 1000000000000);
+
+    const remoteIdsFromLocal = targetLocalOrders
+      .map((order) => Number(order.server_id || 0))
+      .filter((id) => Number.isFinite(id) && id > 0);
+
+    const remoteIds = Array.from(new Set([...remoteIdsFromUi, ...remoteIdsFromLocal]));
+
+    if (isOnline && remoteIds.length > 0) {
+      const [orderResult, itemResult] = await Promise.all([
+        supabase
+          .from("orders")
+          .update({ status: nextStatus })
+          .in("id", remoteIds)
+          .eq("restaurant_id", restaurantId),
+        supabase
+          .from("order_items")
+          .update({ status: nextStatus })
+          .in("order_id", remoteIds),
+      ]);
+
+      if (orderResult.error || itemResult.error) {
+        throw orderResult.error || itemResult.error;
+      }
+    }
+
+    // Keep local cache consistent in both online and offline mode.
+    for (const localOrder of targetLocalOrders) {
+      await localOrdersTable.update(localOrder.id!, {
+        status: nextStatus,
+        updated_at: now,
+        sync_status: isOnline
+          ? "synced"
+          : localOrder.server_id
+            ? "pending_update"
+            : "pending_create",
+      });
+
+      const localItems = await localOrderItemsTable
+        .where("local_order_id")
+        .equals(localOrder.id!)
+        .toArray();
+
+      for (const item of localItems) {
+        await localOrderItemsTable.update(item.id!, {
+          status: nextStatus,
+          updated_at: now,
+          sync_status: isOnline
+            ? "synced"
+            : item.server_id
+              ? "pending_update"
+              : "pending_create",
+        });
+      }
+    }
+
+    showToast(`Table ${cleanTableNo} moved to ${nextStatus}`, "success");
+  } catch (error) {
+    console.error(error);
+    setOrders(previousOrdersSnapshot);
+    showToast("Failed to update kitchen status", "error");
+  } finally {
+    setKitchenUpdatingTable(null);
+    setKitchenUpdatingStatus(null);
+  }
+}
+
+  const kitchenStatusSummary = useMemo(() => {
+    return groupedTableOrders.reduce(
+      (acc, table) => {
+        acc[table.table_status] += 1;
+        return acc;
+      },
+      { pending: 0, preparing: 0, ready: 0 } as Record<KitchenStatusKey, number>
+    );
+  }, [groupedTableOrders]);
+
+  const filteredKitchenTables = useMemo(() => {
+    if (kitchenStatusFilter === "all") return groupedTableOrders;
+    return groupedTableOrders.filter((table) => table.table_status === kitchenStatusFilter);
+  }, [groupedTableOrders, kitchenStatusFilter]);
+
+  const filteredTableOrders = useMemo(() => {
+    const search = tableSearch.trim().toLowerCase();
+
+    if (!search) return groupedTableOrders;
+
+    return groupedTableOrders.filter((table) =>
+      table.table_number.toLowerCase().includes(search)
+    );
+  }, [groupedTableOrders, tableSearch]);
+
+  const activeOrders = useMemo(() => {
+    return orders
+      // Pending-payment bills must stay visible until server sync succeeds.
+      // Otherwise the restaurant takes money and the bill appears to disappear.
+      .filter((order) => order.is_paid !== true || order.sync_status === "pending_payment")
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  }, [orders]);
+
+  const desktopFilteredActiveOrders = useMemo(() => {
+    const q = tableSearch.trim().toLowerCase();
+
+    return activeOrders.filter((order) => {
+      if (!q) return true;
+      const itemText = (order.order_items || []).map((item) => item.item_name).join(" ").toLowerCase();
+      return String(order.table_number || "").toLowerCase().includes(q) || itemText.includes(q);
+    });
+  }, [activeOrders, tableSearch]);
+
+async function retryPendingPaymentSync(order: OrderRow) {
+  if (!restaurantId) {
+    showToast("Invalid restaurant link", "error");
+    return;
+  }
+
+  if (!isOnline) {
+    showToast("Internet connect भएपछि retry गर", "error");
+    return;
+  }
+
+  if (retryingPaymentSyncOrderId === order.id) return;
+
+  setRetryingPaymentSyncOrderId(order.id);
+
+  try {
+    const localOrder = await getLocalOrderForUiId(order.id);
+
+    if (!localOrder?.id) {
+      throw new Error("Local pending payment order not found");
+    }
+
+    await syncPaymentForLocalOrder(localOrder);
+    setOrders((prev) => prev.filter((item) => Number(item.id) !== Number(order.id)));
+    await refreshPendingPaymentQueue();
+
+    if (popupView === "inventory") {
+      fetchInventoryData();
+    }
+
+    showToast("Payment sync successful", "success");
+  } catch (error) {
+    console.error("retryPendingPaymentSync failed:", error);
+    showToast(getReadableError(error) || "Payment sync failed", "error");
+  } finally {
+    setRetryingPaymentSyncOrderId(null);
+  }
+}
+
+
+
+  async function savePasswords() {
+    if (!restaurantId) {
+      showToast("Invalid restaurant link", "error");
+      return;
+    }
+
+    if (!isOnline) {
+      showToast("Password change needs internet", "error");
+      return;
+    }
+
+    const cleanCurrentOwnerPassword = currentOwnerPassword.trim();
+    const cleanNewOwnerPassword = newOwnerPassword.trim();
+    const cleanNewStaffPassword = newStaffPassword.trim();
+    const shouldChangePasswords = cleanNewOwnerPassword.length > 0 || cleanNewStaffPassword.length > 0;
+
+    if (!shouldChangePasswords) {
+      showToast("Enter new owner or staff password", "error");
+      return;
+    }
+
+    if (!cleanCurrentOwnerPassword) {
+      showToast("Current owner password required", "error");
+      return;
+    }
+
+    if (cleanNewOwnerPassword && cleanNewOwnerPassword.length < 4) {
+      showToast("New owner password must be at least 4 characters", "error");
+      return;
+    }
+
+    if (cleanNewStaffPassword && cleanNewStaffPassword.length < 4) {
+      showToast("New staff password must be at least 4 characters", "error");
+      return;
+    }
+
+    setSavingPasswords(true);
+
+    try {
+      const { data, error } = await supabase.rpc("change_restaurant_passwords", {
+        p_restaurant_id: restaurantId,
+        p_current_owner_password: cleanCurrentOwnerPassword,
+        p_new_owner_password: cleanNewOwnerPassword || null,
+        p_new_staff_password: cleanNewStaffPassword || null,
+        p_logout_all_devices: logoutAllDevicesAfterPasswordChange,
+      });
+
+      if (error) throw error;
+
+      const result = data as { success?: boolean; message?: string } | null;
+      if (!result?.success) {
+        throw new Error(result?.message || "Password update failed");
+      }
+
+      setCurrentOwnerPassword("");
+      setNewOwnerPassword("");
+      setNewStaffPassword("");
+      setShowCurrentOwnerPassword(false);
+      setShowNewOwnerPassword(false);
+      setShowNewStaffPassword(false);
+
+      showToast("Password updated", "success");
+
+      if (logoutAllDevicesAfterPasswordChange) {
+        localStorage.removeItem("activeRestaurantId");
+        localStorage.removeItem("activePanel");
+        localStorage.removeItem("lastPanel");
+        localStorage.removeItem(`trustedDeviceToken:${restaurantId}:owner`);
+        localStorage.removeItem(`trustedDeviceToken:${restaurantId}:staff`);
+        router.replace(`/launcher?id=${restaurantId}`);
+      }
+    } catch (error) {
+      console.error(error);
+      showToast(getReadableError(error) || "Failed to update password", "error");
+    } finally {
+      setSavingPasswords(false);
+    }
+  }
+
+
+  async function saveRestaurantBrandSettings() {
+    if (!restaurantId) {
+      showToast("Invalid restaurant link", "error");
+      return;
+    }
+
+    if (!isOnline) {
+      showToast("Restaurant logo update needs internet", "error");
+      return;
+    }
+
+    setSavingRestaurantLogo(true);
+
+    try {
+      let uploadedLogoUrl = restaurantLogoUrl;
+
+      if (restaurantLogoFile) {
+        uploadedLogoUrl = await uploadRestaurantLogoImage(restaurantLogoFile);
+        setRestaurantLogoUrl(uploadedLogoUrl);
+        setRestaurantLogoPreview(uploadedLogoUrl || null);
+        setRestaurantLogoFile(null);
+      }
+
+      const { error: logoUpdateError } = await supabase
+        .from("restaurants")
+        .update({
+          restaurant_logo_url: uploadedLogoUrl,
+        })
+        .eq("id", restaurantId);
+
+      if (logoUpdateError) throw logoUpdateError;
+
+      const localRestaurant = await localRestaurantCacheTable
+        .where("restaurant_id")
+        .equals(restaurantId)
+        .first();
+
+      if (localRestaurant?.id) {
+        await localRestaurantCacheTable.update(localRestaurant.id, {
+          restaurant_logo_url: uploadedLogoUrl,
+          updated_at: new Date().toISOString(),
+        });
+      }
+
+      setRestaurantLogoUrl(uploadedLogoUrl);
+      setRestaurantLogoPreview(uploadedLogoUrl || null);
+      showToast("Restaurant logo updated", "success");
+    } catch (error) {
+      console.error(error);
+      showToast(getReadableError(error) || "Failed to update restaurant logo", "error");
+    } finally {
+      setSavingRestaurantLogo(false);
+    }
+  }
+
+  async function savePaymentQrSettings() {
+    if (!restaurantId) {
+      showToast("Invalid restaurant link", "error");
+      return;
+    }
+
+    if (!isOnline) {
+      showToast("Payment QR update needs internet", "error");
+      return;
+    }
+
+    setSavingPaymentQr(true);
+
+    try {
+      let uploadedPaymentQrUrl = paymentQrUrl;
+
+      if (paymentQrFile) {
+        uploadedPaymentQrUrl = await uploadPaymentQrImage(paymentQrFile);
+        setPaymentQrUrl(uploadedPaymentQrUrl);
+        setPaymentQrPreview(uploadedPaymentQrUrl);
+        setPaymentQrFile(null);
+      }
+
+      const { error: qrUpdateError } = await supabase
+        .from("restaurants")
+        .update({
+          payment_qr_url: uploadedPaymentQrUrl,
+        })
+        .eq("id", restaurantId);
+
+      if (qrUpdateError) throw qrUpdateError;
+
+      const localRestaurant = await localRestaurantCacheTable
+        .where("restaurant_id")
+        .equals(restaurantId)
+        .first();
+
+      if (localRestaurant?.id) {
+        await localRestaurantCacheTable.update(localRestaurant.id, {
+          payment_qr_url: uploadedPaymentQrUrl,
+          updated_at: new Date().toISOString(),
+        });
+      }
+
+      setPaymentQrUrl(uploadedPaymentQrUrl);
+      setPaymentQrPreview(uploadedPaymentQrUrl);
+      showToast("Bill payment QR updated", "success");
+    } catch (error) {
+      console.error(error);
+      showToast(getReadableError(error) || "Failed to update payment QR", "error");
+    } finally {
+      setSavingPaymentQr(false);
+    }
+  }
+
+  async function saveProfitPercent() {
+    if (!restaurantId) {
+      showToast("Invalid restaurant link", "error");
+      return;
+    }
+
+    if (!Number.isFinite(profitPercent) || profitPercent < 0 || profitPercent > 100) {
+      showToast("Profit % must be between 0 and 100", "error");
+      return;
+    }
+
+    setSavingProfitPercent(true);
+
+    try {
+      if (isOnline) {
+        const { error } = await supabase
+          .from("restaurants")
+          .update({
+            profit_percent: Number(profitPercent),
+          })
+          .eq("id", restaurantId);
+
+        if (error) throw error;
+      }
+
+      const localRestaurant = await localRestaurantCacheTable
+        .where("restaurant_id")
+        .equals(restaurantId)
+        .first();
+
+      if (localRestaurant?.id) {
+        await localRestaurantCacheTable.update(localRestaurant.id, {
+          profit_percent: Number(profitPercent),
+          updated_at: new Date().toISOString(),
+        });
+      }
+
+      showToast(
+        isOnline
+          ? "Estimated profit percent updated successfully"
+          : "Estimated profit percent updated only in this device cache",
+        "success"
+      );
+    } catch (error) {
+      console.error(error);
+      showToast("Failed to update profit percent", "error");
+    } finally {
+      setSavingProfitPercent(false);
+    }
+  }
+
+  function formatPaymentMethod(method?: string | null) {
+    if (!method) return "-";
+    if (method === "qr") return "QR";
+    if (method === "card") return "Card";
+    return "Cash";
+  }
+
+  function formatReportDateLabel(dateValue: string) {
+    if (!dateValue) return "-";
+    return new Date(`${dateValue}T00:00:00`).toLocaleDateString();
+  }
+
+  function formatRangeLabel(fromDate: string, toDate: string) {
+    if (!fromDate || !toDate) return "-";
+    return `${formatReportDateLabel(fromDate)} to ${formatReportDateLabel(toDate)}`;
+  }
+
+  function formatShortDateWithDay(dateValue: Date) {
+    const dayName = dateValue.toLocaleDateString(undefined, { weekday: "short" });
+    const dateLabel = dateValue.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+    });
+    return {
+      dayName,
+      dateLabel,
+      fullLabel: `${dayName}, ${dateLabel}`,
+    };
+  }
+
+  const unpaidTablesCount = groupedTableOrders.length;
+  const unpaidAmount = groupedTableOrders.reduce((sum, table) => sum + table.total, 0);
+  const totalPaidOrdersToday = todaySalesOrders.length;
+  const avgOrderValueToday =
+    totalPaidOrdersToday > 0 ? Math.round(totalRevenueToday / totalPaidOrdersToday) : 0;
+
+  const peakHourLabel = useMemo(() => {
+    if (todayOrders.length === 0) return "-";
+
+    const hourMap: Record<number, number> = {};
+
+    todayOrders.forEach((order) => {
+      const hour = new Date(order.created_at).getHours();
+      hourMap[hour] = (hourMap[hour] || 0) + 1;
+    });
+
+    const peakHour = Object.entries(hourMap).sort((a, b) => b[1] - a[1])[0];
+    if (!peakHour) return "-";
+
+    const hourNum = Number(peakHour[0]);
+    const from = hourNum % 12 === 0 ? 12 : hourNum % 12;
+    const toHour = (hourNum + 1) % 24;
+    const to = toHour % 12 === 0 ? 12 : toHour % 12;
+    const fromSuffix = hourNum >= 12 ? "PM" : "AM";
+    const toSuffix = toHour >= 12 ? "PM" : "AM";
+
+    return `${from} ${fromSuffix} - ${to} ${toSuffix}`;
+  }, [todayOrders]);
+
+  const recentActivity = useMemo(() => {
+    return orders
+      .filter((order) => {
+        const activityDate = order.is_paid ? order.paid_at : order.created_at;
+        return Boolean(activityDate) && getLocalDateString(String(activityDate)) === todayLocalDate;
+      })
+      .sort((a, b) => {
+        const aDate = (a.is_paid ? a.paid_at : a.created_at) || a.created_at || "";
+        const bDate = (b.is_paid ? b.paid_at : b.created_at) || b.created_at || "";
+        return new Date(bDate).getTime() - new Date(aDate).getTime();
+      })
+      .slice(0, 5);
+  }, [orders, todayLocalDate]);
+
+  const AD_MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const BS_MONTH_NAMES = [
+    "Baisakh",
+    "Jestha",
+    "Ashadh",
+    "Shrawan",
+    "Bhadra",
+    "Ashwin",
+    "Kartik",
+    "Mangsir",
+    "Poush",
+    "Magh",
+    "Falgun",
+    "Chaitra",
+  ];
+
+  function getOrderAmount(order: OrderRow) {
+    return (order.order_items || []).reduce(
+      (sum, item) => sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
+      0
+    );
+  }
+
+  function getBsApproxParts(dateInput: Date | string) {
+    const date = dateInput instanceof Date ? dateInput : new Date(dateInput);
+    const year = date.getFullYear();
+    const month = date.getMonth();
+    const day = date.getDate();
+
+    const starts = [
+      { month: 3, day: 14 },
+      { month: 4, day: 15 },
+      { month: 5, day: 15 },
+      { month: 6, day: 17 },
+      { month: 7, day: 17 },
+      { month: 8, day: 17 },
+      { month: 9, day: 18 },
+      { month: 10, day: 17 },
+      { month: 11, day: 16 },
+      { month: 0, day: 15 },
+      { month: 1, day: 13 },
+      { month: 2, day: 15 },
+    ];
+
+    let bsYear = year + 57;
+    let bsMonthIndex = 0;
+
+    if (month < 3 || (month === 3 && day < 14)) {
+      bsYear = year + 56;
+    }
+
+    const candidates = starts.map((start, index) => {
+      let startYear = year;
+      if (index >= 9) {
+        startYear = month <= 2 ? year : year + 1;
+      }
+      if (index === 0) {
+        startYear = month < 3 || (month === 3 && day < 14) ? year - 1 : year;
+      }
+      return {
+        index,
+        date: new Date(startYear, start.month, start.day),
+      };
+    });
+
+    let active = candidates[0];
+    for (const candidate of candidates) {
+      if (date >= candidate.date && candidate.date >= active.date) {
+        active = candidate;
+      }
+    }
+
+    bsMonthIndex = active.index;
+
+    if (bsMonthIndex >= 9 && !(month < 3 || (month === 3 && day < 14))) {
+      bsYear += 1;
+    }
+
+    const diffMs = date.getTime() - active.date.getTime();
+    const bsDay = Math.floor(diffMs / (1000 * 60 * 60 * 24)) + 1;
+
+    return {
+      year: bsYear,
+      monthIndex: bsMonthIndex,
+      monthName: BS_MONTH_NAMES[bsMonthIndex],
+      day: Math.max(bsDay, 1),
+      key: `${bsYear}-${String(bsMonthIndex + 1).padStart(2, "0")}-${String(Math.max(bsDay, 1)).padStart(2, "0")}`,
+      monthKey: `${bsYear}-${String(bsMonthIndex + 1).padStart(2, "0")}`,
+    };
+  }
+
+  function getSalesCalendarMeta(dateInput: Date | string) {
+    const date = dateInput instanceof Date ? dateInput : new Date(dateInput);
+    const bs = getBsApproxParts(date);
+    return {
+      adYear: date.getFullYear(),
+      adMonthIndex: date.getMonth(),
+      adDateKey: getLocalDateString(date.toISOString()),
+      bsYear: bs.year,
+      bsMonthIndex: bs.monthIndex,
+      bsMonthName: bs.monthName,
+      bsDay: bs.day,
+      bsDateKey: bs.key,
+      bsMonthKey: bs.monthKey,
+    };
+  }
+
+  function getInsightRangeDisplayLabel(range: InsightRange = insightRange) {
+    const labels: Record<InsightRange, string> = {
+      today: "Today",
+      yesterday: "Yesterday",
+      thisWeek: "This Week",
+      lastWeek: "Last Week",
+      thisMonth: "This Month",
+      lastMonth: "Last Month",
+      thisYear: "This Year",
+      previousYear: "Previous Year",
+      lifetime: "Lifetime",
+      custom: "Custom",
+    };
+
+    return labels[range];
+  }
+
+  function getSalesRangeLabel() {
+    const now = new Date();
+    const meta = getSalesCalendarMeta(now);
+
+    if (insightRange === "custom") return "Open custom range from Reports";
+    if (insightRange === "lifetime") return "All paid orders";
+
+    if (calendarMode === "ad") {
+      if (insightRange === "today") return now.toLocaleDateString();
+      if (insightRange === "yesterday") return addDays(startOfDay(now), -1).toLocaleDateString();
+      if (insightRange === "thisWeek") return `This week • ${now.getFullYear()}`;
+      if (insightRange === "lastWeek") return `Last week • ${now.getFullYear()}`;
+      if (insightRange === "thisMonth") return `${AD_MONTH_NAMES[now.getMonth()]} ${now.getFullYear()}`;
+      if (insightRange === "lastMonth") {
+        const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        return `${AD_MONTH_NAMES[prev.getMonth()]} ${prev.getFullYear()}`;
+      }
+      if (insightRange === "previousYear") return `${now.getFullYear() - 1} (Jan - Dec)`;
+      return `${now.getFullYear()} (Jan - Dec)`;
+    }
+
+    if (insightRange === "today") return `${meta.bsYear} ${meta.bsMonthName} ${meta.bsDay}`;
+    if (insightRange === "yesterday") {
+      const prev = getSalesCalendarMeta(addDays(startOfDay(now), -1));
+      return `${prev.bsYear} ${prev.bsMonthName} ${prev.bsDay}`;
+    }
+    if (insightRange === "thisWeek") return `This week • ${meta.bsMonthName} ${meta.bsYear}`;
+    if (insightRange === "lastWeek") return `Last week • ${meta.bsMonthName} ${meta.bsYear}`;
+    if (insightRange === "thisMonth") return `${meta.bsMonthName} ${meta.bsYear}`;
+    if (insightRange === "lastMonth") {
+      let prevMonthIndex = meta.bsMonthIndex - 1;
+      let prevYear = meta.bsYear;
+      if (prevMonthIndex < 0) {
+        prevMonthIndex = 11;
+        prevYear -= 1;
+      }
+      return `${BS_MONTH_NAMES[prevMonthIndex]} ${prevYear}`;
+    }
+    if (insightRange === "previousYear") return `${meta.bsYear - 1} BS (Baisakh - Chaitra)`;
+    return `${meta.bsYear} BS (Baisakh - Chaitra)`;
+  }
+
+  function getWeekStart(date: Date) {
+    const d = startOfDay(date);
+    const day = d.getDay();
+    const diff = day === 0 ? -6 : 1 - day;
+    return addDays(d, diff);
+  }
+
+  function mapInsightRangeToSalesPeriod(range: InsightRange): SalesPeriod {
+    if (range === "today" || range === "yesterday") return "day";
+    if (range === "thisWeek" || range === "lastWeek") return "week";
+    if (range === "thisMonth" || range === "lastMonth") return "month";
+    return "year";
+  }
+
+  function selectInsightRange(range: InsightRange) {
+    setShowInsightRangeMenu(false);
+    if (range === "custom") {
+      setInsightRange(range);
+      changeView("report");
+      scrollMainContentToTop();
+      return;
+    }
+    setInsightRange(range);
+    setSalesPeriod(mapInsightRangeToSalesPeriod(range));
+  }
+
+  const selectedSalesOrders = useMemo(() => {
+    const now = new Date();
+    const todayStart = startOfDay(now);
+    const currentMeta = getSalesCalendarMeta(now);
+    const thisWeekStart = getWeekStart(now);
+    const lastWeekStart = addDays(thisWeekStart, -7);
+    const lastWeekEnd = addDays(thisWeekStart, -1);
+
+    return paidOrders.filter((order) => {
+      const rawDate = order.paid_at;
+      if (!rawDate) return false;
+      const paidDate = startOfDay(new Date(rawDate));
+      const meta = getSalesCalendarMeta(rawDate);
+
+      if (insightRange === "lifetime") return true;
+
+      if (insightRange === "today") {
+        return calendarMode === "ad"
+          ? getLocalDateString(rawDate) === getLocalDateString(todayStart.toISOString())
+          : meta.bsDateKey === currentMeta.bsDateKey;
+      }
+
+      if (insightRange === "yesterday") {
+        const yesterday = addDays(todayStart, -1);
+        const yesterdayMeta = getSalesCalendarMeta(yesterday);
+        return calendarMode === "ad"
+          ? getLocalDateString(rawDate) === getLocalDateString(yesterday.toISOString())
+          : meta.bsDateKey === yesterdayMeta.bsDateKey;
+      }
+
+      if (insightRange === "thisWeek") {
+        return paidDate >= thisWeekStart && paidDate <= todayStart;
+      }
+
+      if (insightRange === "lastWeek") {
+        return paidDate >= lastWeekStart && paidDate <= lastWeekEnd;
+      }
+
+      if (insightRange === "thisMonth") {
+        if (calendarMode === "ad") {
+          return paidDate.getFullYear() === now.getFullYear() && paidDate.getMonth() === now.getMonth();
+        }
+        return meta.bsYear === currentMeta.bsYear && meta.bsMonthIndex === currentMeta.bsMonthIndex;
+      }
+
+      if (insightRange === "lastMonth") {
+        if (calendarMode === "ad") {
+          const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+          return paidDate.getFullYear() === prev.getFullYear() && paidDate.getMonth() === prev.getMonth();
+        }
+        let prevMonthIndex = currentMeta.bsMonthIndex - 1;
+        let prevYear = currentMeta.bsYear;
+        if (prevMonthIndex < 0) {
+          prevMonthIndex = 11;
+          prevYear -= 1;
+        }
+        return meta.bsYear === prevYear && meta.bsMonthIndex === prevMonthIndex;
+      }
+
+      if (insightRange === "previousYear") {
+        if (calendarMode === "ad") {
+          return paidDate.getFullYear() === now.getFullYear() - 1;
+        }
+        return meta.bsYear === currentMeta.bsYear - 1;
+      }
+
+      if (calendarMode === "ad") {
+        return paidDate.getFullYear() === now.getFullYear();
+      }
+
+      return meta.bsYear === currentMeta.bsYear;
+    });
+  }, [paidOrders, insightRange, calendarMode]);
+
+  const previousSalesOrders = useMemo(() => {
+    const now = new Date();
+    const todayStart = startOfDay(now);
+    const currentMeta = getSalesCalendarMeta(now);
+
+    return paidOrders.filter((order) => {
+      const rawDate = order.paid_at;
+      if (!rawDate) return false;
+      const paidDate = startOfDay(new Date(rawDate));
+      const meta = getSalesCalendarMeta(rawDate);
+
+      if (salesPeriod === "day") {
+        const prevDay = addDays(todayStart, -1);
+        return calendarMode === "ad"
+          ? getLocalDateString(rawDate) === getLocalDateString(prevDay.toISOString())
+          : meta.bsYear === currentMeta.bsYear && meta.bsMonthIndex === currentMeta.bsMonthIndex && meta.bsDay === currentMeta.bsDay - 1;
+      }
+
+      if (salesPeriod === "week") {
+        const currentWeekStart = addDays(todayStart, -6);
+        const previousWeekStart = addDays(currentWeekStart, -7);
+        const previousWeekEnd = addDays(currentWeekStart, -1);
+        return paidDate >= previousWeekStart && paidDate <= previousWeekEnd;
+      }
+
+      if (salesPeriod === "month") {
+        if (calendarMode === "ad") {
+          return paidDate.getFullYear() === new Date(now.getFullYear(), now.getMonth() - 1, 1).getFullYear() && paidDate.getMonth() === new Date(now.getFullYear(), now.getMonth() - 1, 1).getMonth();
+        }
+        let prevMonthIndex = currentMeta.bsMonthIndex - 1;
+        let prevYear = currentMeta.bsYear;
+        if (prevMonthIndex < 0) {
+          prevMonthIndex = 11;
+          prevYear -= 1;
+        }
+        return meta.bsYear === prevYear && meta.bsMonthIndex === prevMonthIndex;
+      }
+
+      if (calendarMode === "ad") {
+        return paidDate.getFullYear() === now.getFullYear() - 1;
+      }
+
+      return meta.bsYear === currentMeta.bsYear - 1;
+    });
+  }, [paidOrders, salesPeriod, calendarMode]);
+
+  const selectedSalesSummary = useMemo(() => {
+    const totalSales = selectedSalesOrders.reduce((sum, order) => sum + getOrderAmount(order), 0);
+    const previousSales = previousSalesOrders.reduce((sum, order) => sum + getOrderAmount(order), 0);
+    const selectedOrderIds = new Set(
+      selectedSalesOrders.map((order) => Number(order.id)).filter((id) => Number.isFinite(id) && id > 0)
+    );
+    const previousOrderIds = new Set(
+      previousSalesOrders.map((order) => Number(order.id)).filter((id) => Number.isFinite(id) && id > 0)
+    );
+    const totalProfit = inventoryEnabled
+      ? Math.round(
+          orderCostSnapshots
+            .filter((snapshot) => selectedOrderIds.has(Number(snapshot.order_id)))
+            .reduce((sum, snapshot) => sum + Number(snapshot.total_profit || 0), 0)
+        )
+      : Math.round(totalSales * (Number(profitPercent || 0) / 100));
+    const totalCost = inventoryEnabled
+      ? Math.round(
+          orderCostSnapshots
+            .filter((snapshot) => selectedOrderIds.has(Number(snapshot.order_id)))
+            .reduce((sum, snapshot) => sum + Number(snapshot.total_cost || 0), 0)
+        )
+      : Math.max(totalSales - totalProfit, 0);
+    const previousProfit = inventoryEnabled
+      ? Math.round(
+          orderCostSnapshots
+            .filter((snapshot) => previousOrderIds.has(Number(snapshot.order_id)))
+            .reduce((sum, snapshot) => sum + Number(snapshot.total_profit || 0), 0)
+        )
+      : Math.round(previousSales * (Number(profitPercent || 0) / 100));
+    const totalOrders = selectedSalesOrders.length;
+    const avgOrderValue = totalOrders > 0 ? Math.round(totalSales / totalOrders) : 0;
+    const paymentTotals = { cash: 0, qr: 0, card: 0 };
+    let totalItemsSold = 0;
+    selectedSalesOrders.forEach((order) => {
+      const method = order.payment_method === "qr" || order.payment_method === "card" ? order.payment_method : "cash";
+      paymentTotals[method] += getOrderAmount(order);
+      totalItemsSold += (order.order_items || []).reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+    });
+
+    const itemMap: Record<string, SalesItem> = {};
+    selectedSalesOrders.forEach((order) => {
+      order.order_items?.forEach((item) => {
+        if (!itemMap[item.item_name]) {
+          itemMap[item.item_name] = { item_name: item.item_name, total_quantity: 0, total_revenue: 0 };
+        }
+        itemMap[item.item_name].total_quantity += Number(item.quantity || 0);
+        itemMap[item.item_name].total_revenue += Number(item.quantity || 0) * Number(item.unit_price || 0);
+      });
+    });
+
+    const topItems = Object.values(itemMap)
+      .sort((a, b) => (b.total_quantity !== a.total_quantity ? b.total_quantity - a.total_quantity : b.total_revenue - a.total_revenue))
+      .slice(0, 5);
+
+    const selectedProfitItems = inventoryEnabled
+      ? Array.from(
+          orderCostSnapshotItems
+            .filter((item) => selectedOrderIds.has(Number(item.order_id)))
+            .reduce((map, item) => {
+              const key = String(item.item_name || "Unknown item");
+              const existing = map.get(key) || { item_name: key, profit: 0 };
+              existing.profit += Number(item.profit || 0);
+              map.set(key, existing);
+              return map;
+            }, new Map<string, { item_name: string; profit: number }>())
+            .values()
+        )
+      : [];
+
+    const highestProfitItem = selectedProfitItems.length > 0 ? [...selectedProfitItems].sort((a, b) => b.profit - a.profit)[0] : null;
+    const lowestProfitItem = selectedProfitItems.length > 0 ? [...selectedProfitItems].sort((a, b) => a.profit - b.profit)[0] : null;
+
+    const previousPeriodLabel =
+      salesPeriod === "day" ? "previous day" : salesPeriod === "week" ? "previous week" : salesPeriod === "month" ? "previous month" : "previous year";
+
+    let comparisonText = `Rs. 0 vs ${previousPeriodLabel}`;
+    let comparisonClass = "text-slate-500";
+    if (previousSales <= 0) {
+      if (totalSales > 0) {
+        comparisonText = `+Rs. ${totalSales} vs ${previousPeriodLabel}`;
+        comparisonClass = "text-emerald-600";
+      }
+    } else {
+      const diff = totalSales - previousSales;
+      const percentage = Math.abs((diff / previousSales) * 100).toFixed(1);
+      if (diff > 0) {
+        comparisonText = `+${percentage}% vs ${previousPeriodLabel}`;
+        comparisonClass = "text-emerald-600";
+      } else if (diff < 0) {
+        comparisonText = `-${percentage}% vs ${previousPeriodLabel}`;
+        comparisonClass = "text-rose-600";
+      }
+    }
+
+    let profitComparisonText = `Rs. 0 vs ${previousPeriodLabel}`;
+    let profitComparisonClass = "text-slate-500";
+    if (previousProfit <= 0) {
+      if (totalProfit > 0) {
+        profitComparisonText = `+Rs. ${totalProfit} vs ${previousPeriodLabel}`;
+        profitComparisonClass = "text-emerald-600";
+      }
+    } else {
+      const profitDiff = totalProfit - previousProfit;
+      if (profitDiff > 0) {
+        profitComparisonText = `+Rs. ${profitDiff} vs ${previousPeriodLabel}`;
+        profitComparisonClass = "text-emerald-600";
+      } else if (profitDiff < 0) {
+        profitComparisonText = `-Rs. ${Math.abs(profitDiff)} vs ${previousPeriodLabel}`;
+        profitComparisonClass = "text-rose-600";
+      }
+    }
+
+    const basePeriodProfitLabel =
+      salesPeriod === "day" ? "Day Profit" : salesPeriod === "week" ? "Week Profit" : salesPeriod === "month" ? "Month Profit" : "Year Profit";
+    const periodProfitLabel = inventoryEnabled
+      ? `${basePeriodProfitLabel} (Real)`
+      : `Estimated ${basePeriodProfitLabel}`;
+
+    return {
+      totalSales,
+      totalProfit,
+      totalCost,
+      totalOrders,
+      avgOrderValue,
+      paymentTotals,
+      totalItemsSold,
+      topItems,
+      highestProfitItem,
+      lowestProfitItem,
+      bestSeller: topItems[0]?.item_name || "-",
+      comparisonText,
+      comparisonClass,
+      profitComparisonText,
+      profitComparisonClass,
+      periodProfitLabel,
+    };
+  }, [selectedSalesOrders, previousSalesOrders, profitPercent, salesPeriod, inventoryEnabled, orderCostSnapshots, orderCostSnapshotItems]);
+
+  const selectedSalesTrend = useMemo(() => {
+    const now = new Date();
+
+    if (salesPeriod === "day") {
+      const salesByHour: Record<number, number> = {};
+      selectedSalesOrders.forEach((order) => {
+        const hour = new Date(order.paid_at || 0).getHours();
+        salesByHour[hour] = (salesByHour[hour] || 0) + getOrderAmount(order);
+      });
+      return Array.from({ length: 24 }, (_, hour) => ({
+        label: formatHourShort(hour),
+        fullLabel: formatHourLabel(hour),
+        sales: salesByHour[hour] || 0,
+      }));
+    }
+
+    if (salesPeriod === "week") {
+      const salesByDate: Record<string, number> = {};
+      selectedSalesOrders.forEach((order) => {
+        const key = getLocalDateString(order.paid_at || "");
+        salesByDate[key] = (salesByDate[key] || 0) + getOrderAmount(order);
+      });
+
+      const weekStart = insightRange === "lastWeek" ? addDays(getWeekStart(now), -7) : getWeekStart(now);
+      return Array.from({ length: 7 }, (_, index) => {
+        const d = addDays(weekStart, index);
+        const key = getLocalDateString(d.toISOString());
+        return {
+          label: d.toLocaleDateString(undefined, { weekday: "short" }),
+          fullLabel: d.toLocaleDateString(),
+          sales: salesByDate[key] || 0,
+        };
+      });
+    }
+
+    if (salesPeriod === "month") {
+      const salesByBucket: Record<string, number> = {};
+      selectedSalesOrders.forEach((order) => {
+        const rawDate = order.paid_at || order.created_at || "";
+        const meta = getSalesCalendarMeta(rawDate);
+        const key = calendarMode === "ad" ? getLocalDateString(rawDate) : `${meta.bsYear}-${meta.bsMonthIndex + 1}-${meta.bsDay}`;
+        salesByBucket[key] = (salesByBucket[key] || 0) + getOrderAmount(order);
+      });
+
+      const points: SalesTrendPoint[] = [];
+      if (calendarMode === "ad") {
+        const anchor = insightRange === "lastMonth" ? new Date(now.getFullYear(), now.getMonth() - 1, 1) : now;
+        const totalDays = insightRange === "lastMonth" ? new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0).getDate() : anchor.getDate();
+        for (let day = 1; day <= totalDays; day++) {
+          const d = new Date(anchor.getFullYear(), anchor.getMonth(), day);
+          const key = getLocalDateString(d.toISOString());
+          points.push({ label: `${day}`, fullLabel: d.toLocaleDateString(), sales: salesByBucket[key] || 0 });
+        }
+      } else {
+        const currentMeta = getSalesCalendarMeta(now);
+        let targetYear = currentMeta.bsYear;
+        let targetMonthIndex = currentMeta.bsMonthIndex;
+        if (insightRange === "lastMonth") {
+          targetMonthIndex -= 1;
+          if (targetMonthIndex < 0) {
+            targetMonthIndex = 11;
+            targetYear -= 1;
+          }
+        }
+        const selectedDays = selectedSalesOrders
+          .map((order) => getSalesCalendarMeta(order.paid_at || "").bsDay)
+          .filter((day) => Number.isFinite(day) && day > 0);
+        const maxDay = insightRange === "lastMonth" ? Math.max(...selectedDays, 30) : Math.max(...selectedDays, currentMeta.bsDay);
+        for (let day = 1; day <= maxDay; day++) {
+          const key = `${targetYear}-${targetMonthIndex + 1}-${day}`;
+          points.push({ label: `${day}`, fullLabel: `${BS_MONTH_NAMES[targetMonthIndex]} ${day}`, sales: salesByBucket[key] || 0 });
+        }
+      }
+      return points;
+    }
+
+    const salesByBucket: Record<string, number> = {};
+    selectedSalesOrders.forEach((order) => {
+      const rawDate = order.paid_at || order.created_at || "";
+      const meta = getSalesCalendarMeta(rawDate);
+      const key = calendarMode === "ad" ? `${meta.adYear}-${meta.adMonthIndex}` : `${meta.bsYear}-${meta.bsMonthIndex}`;
+      salesByBucket[key] = (salesByBucket[key] || 0) + getOrderAmount(order);
+    });
+
+    if (insightRange === "lifetime") {
+      const sortedKeys = Object.keys(salesByBucket).sort((a, b) => a.localeCompare(b));
+      return sortedKeys.map((key) => {
+        const [yearText, monthText] = key.split("-");
+        const monthIndex = Number(monthText);
+        const year = Number(yearText);
+        return {
+          label: calendarMode === "ad" ? `${AD_MONTH_NAMES[monthIndex]} ${year}` : `${BS_MONTH_NAMES[monthIndex]} ${year}`,
+          fullLabel: calendarMode === "ad" ? `${AD_MONTH_NAMES[monthIndex]} ${year}` : `${BS_MONTH_NAMES[monthIndex]} ${year}`,
+          sales: salesByBucket[key] || 0,
+        };
+      });
+    }
+
+    const currentMeta = getSalesCalendarMeta(now);
+    const targetAdYear = insightRange === "previousYear" ? now.getFullYear() - 1 : now.getFullYear();
+    const targetBsYear = insightRange === "previousYear" ? currentMeta.bsYear - 1 : currentMeta.bsYear;
+    return Array.from({ length: 12 }, (_, index) => {
+      const key = calendarMode === "ad" ? `${targetAdYear}-${index}` : `${targetBsYear}-${index}`;
+      return {
+        label: calendarMode === "ad" ? AD_MONTH_NAMES[index] : BS_MONTH_NAMES[index],
+        fullLabel: calendarMode === "ad" ? `${AD_MONTH_NAMES[index]} ${targetAdYear}` : `${BS_MONTH_NAMES[index]} ${targetBsYear}`,
+        sales: salesByBucket[key] || 0,
+      };
+    });
+  }, [selectedSalesOrders, salesPeriod, calendarMode, insightRange]);
+
+  const salesDetailBoxes = useMemo(() => {
+    const now = new Date();
+
+    if (salesPeriod === "year") {
+      return selectedSalesTrend.map((point, index) => ({
+        key: `year-${point.fullLabel}`,
+        label: point.fullLabel,
+        sublabel: calendarMode === "ad" ? "Monthly total" : "BS month total",
+        sales: point.sales,
+        cardClass: index === 0 ? "border-slate-200 bg-white" : "border-slate-200 bg-slate-50",
+        badgeClass: "bg-slate-100 text-slate-700",
+        badgeText: `${index + 1}`,
+      }));
+    }
+
+    if (salesPeriod === "day") {
+      const currentTimeLabel = now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      const todaySalesTillNow = paidOrders.reduce((sum, order) => {
+        const rawDate = order.paid_at;
+        if (!rawDate) return sum;
+        const matches = calendarMode === "ad"
+          ? getLocalDateString(rawDate) === todayLocalDate
+          : getSalesCalendarMeta(rawDate).bsDateKey === getSalesCalendarMeta(now).bsDateKey;
+        if (!matches) return sum;
+        return sum + getOrderAmount(order);
+      }, 0);
+      const dayLabel = calendarMode === "ad" ? formatShortDateWithDay(now).fullLabel : `${getSalesCalendarMeta(now).bsMonthName} ${getSalesCalendarMeta(now).bsDay}`;
+      return [{
+        key: `day-${dayLabel}`,
+        label: dayLabel,
+        sublabel: `Sales till ${currentTimeLabel}`,
+        sales: todaySalesTillNow,
+        cardClass: "border-slate-200 bg-white",
+        badgeClass: "bg-slate-100 text-slate-700",
+        badgeText: "Now",
+      }];
+    }
+
+    const points = selectedSalesTrend.map((point, index, arr) => {
+      const previousSales = index > 0 ? arr[index - 1].sales : point.sales;
+      const up = point.sales > previousSales;
+      const down = point.sales < previousSales;
+      return {
+        key: `${salesPeriod}-${point.fullLabel}`,
+        label: point.fullLabel,
+        sublabel: salesPeriod === "week" ? "Daily total" : "Period total",
+        sales: point.sales,
+        cardClass: up ? "border-emerald-200 bg-emerald-50" : down ? "border-rose-200 bg-rose-50" : "border-slate-300 bg-slate-100",
+        badgeClass: up ? "bg-emerald-100 text-emerald-700" : down ? "bg-rose-100 text-rose-700" : "bg-slate-200 text-slate-700",
+        badgeText: index === 0 ? "Start" : up ? "Up" : down ? "Down" : "Same",
+      };
+    });
+
+    return points;
+  }, [paidOrders, salesPeriod, todayLocalDate, selectedSalesTrend, calendarMode]);
+
+  const selectedTrendMaxSales = useMemo(() => {
+    if (selectedSalesTrend.length === 0) return 0;
+    return getNiceCeiling(Math.max(...selectedSalesTrend.map((item) => item.sales), 0));
+  }, [selectedSalesTrend]);
+
+  const inventoryViewData = useMemo(() => {
+    const lowStockItems = inventoryItems.filter(
+      (item) => Number(item.current_stock || 0) <= Number(item.low_stock_threshold || 0)
+    );
+    const baseVisibleInventoryItems =
+      inventoryStockFilter === "low" ? lowStockItems : inventoryItems;
+    const inventorySearchText = inventorySearchQuery.trim().toLowerCase();
+    const visibleInventoryItems = baseVisibleInventoryItems.filter((item) => {
+      if (inventoryCategoryFilter !== "all" && (item.category || "Other") !== inventoryCategoryFilter) {
+        return false;
+      }
+
+      if (!inventorySearchText) return true;
+      return `${item.item_name} ${item.category || ""} ${item.item_type || ""} ${item.unit || ""}`
+        .toLowerCase()
+        .includes(inventorySearchText);
+    });
+    const totalStockValue = inventoryItems.reduce(
+      (sum, item) => sum + Number(item.current_stock || 0) * Number(item.cost_per_unit || 0),
+      0
+    );
+    const purchaseOnlyTransactions = purchaseTransactions
+      .filter((tx) => String(tx.transaction_type || "") === "purchase")
+      .sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+    const selectedInventoryDetailItem =
+      inventoryDetailItemId == null
+        ? null
+        : inventoryItemById.get(Number(inventoryDetailItemId)) || null;
+    const selectedInventoryUsage = selectedInventoryDetailItem
+      ? inventoryUsageByItemId.get(Number(selectedInventoryDetailItem.id))
+      : null;
+    const selectedInventoryLinkedMenus = selectedInventoryDetailItem
+      ? Array.from(
+          new Set([
+            ...(selectedInventoryUsage?.recipeLinks || []).map((link) => getMenuItemNameById(link.menu_item_id)),
+            ...(selectedInventoryUsage?.stockLinks || []).map((link) => getMenuItemNameById(link.menu_item_id)),
+          ])
+        ).filter(Boolean)
+      : [];
+    const selectedInventoryPurchaseHistory = selectedInventoryDetailItem
+      ? purchaseOnlyTransactions.filter((tx) => Number(tx.inventory_item_id) === Number(selectedInventoryDetailItem.id))
+      : [];
+    const selectedInventoryStockValue = selectedInventoryDetailItem
+      ? Number(selectedInventoryDetailItem.current_stock || 0) * Number(selectedInventoryDetailItem.cost_per_unit || 0)
+      : 0;
+
+    let totalSupplierPurchase = 0;
+    let totalSupplierPaid = 0;
+    let totalSupplierDue = 0;
+    supplierFinancialsById.forEach((totals) => {
+      totalSupplierPurchase += totals.totalPurchase;
+      totalSupplierPaid += totals.cashPaid;
+      totalSupplierDue += totals.creditLeft;
+    });
+
+    const supplierSearchText = supplierSearch.trim().toLowerCase();
+    const visibleSuppliers = suppliers.filter((supplier) => {
+      if (!supplierSearchText) return true;
+      return `${supplier.name} ${supplier.phone || ""}`.toLowerCase().includes(supplierSearchText);
+    });
+
+    return {
+      lowStockItems,
+      visibleInventoryItems,
+      inventorySearchText,
+      totalStockValue,
+      purchaseEntryCount: purchaseOnlyTransactions.length,
+      totalSupplierPurchase,
+      totalSupplierPaid,
+      totalSupplierDue,
+      visibleSuppliers,
+      purchaseOnlyTransactions,
+      summaryListItems: inventorySummaryModal === "low" ? lowStockItems : inventoryItems,
+      selectedInventoryDetailItem,
+      selectedInventoryLinkedMenus,
+      selectedInventoryPurchaseHistory,
+      selectedInventoryStockValue,
+    };
+  }, [
+    inventoryItems,
+    inventoryStockFilter,
+    inventorySearchQuery,
+    inventoryCategoryFilter,
+    purchaseTransactions,
+    inventoryDetailItemId,
+    inventoryItemById,
+    inventoryUsageByItemId,
+    supplierFinancialsById,
+    supplierSearch,
+    suppliers,
+    inventorySummaryModal,
+  ]);
+
+  const costInsightViewData = useMemo(() => {
+    const costSnapshotByOrderId = new Map<number, OrderCostSnapshot>(
+      orderCostSnapshots.map((snapshot) => [Number(snapshot.order_id), snapshot])
+    );
+    const lockedItemsByOrderId = new Map<number, OrderCostSnapshotItem[]>();
+
+    orderCostSnapshotItems.forEach((snapshotItem) => {
+      const orderId = Number(snapshotItem.order_id || 0);
+      if (!orderId) return;
+      const existing = lockedItemsByOrderId.get(orderId) || [];
+      existing.push(snapshotItem);
+      lockedItemsByOrderId.set(orderId, existing);
+    });
+
+    const buildLockedItemBreakdowns = (orderId: number) => {
+      const lockedItems = lockedItemsByOrderId.get(orderId) || [];
+
+      return lockedItems.map((item, index) => ({
+        key: `locked-${item.id || index}`,
+        order_id: Number(item.order_id),
+        item_name: item.item_name,
+        quantity: Number(item.quantity || 0),
+        unit_price: Number(item.unit_price || 0),
+        selling: Number(item.selling || 0),
+        cost: Number(item.cost || 0),
+        profit: Number(item.profit || 0),
+        materials: [...(item.materials || [])].sort((a, b) => Number(b.cost || 0) - Number(a.cost || 0)),
+      })) as CostInsightItemBreakdown[];
+    };
+
+    const buildLockedMaterialsSummary = (items: CostInsightItemBreakdown[]) => {
+      const materialMap = new Map<string, CostInsightMaterialRow>();
+
+      items.forEach((item) => {
+        item.materials.forEach((material) => {
+          const key = `${material.type}-${material.item_name}-${material.unit}`;
+          const existing = materialMap.get(key);
+
+          materialMap.set(key, {
+            key,
+            item_name: material.item_name,
+            unit: material.unit,
+            quantity: Number(existing?.quantity || 0) + Number(material.quantity || 0),
+            cost: Number(existing?.cost || 0) + Number(material.cost || 0),
+            type: material.type,
+          });
+        });
+      });
+
+      return Array.from(materialMap.values()).sort((a, b) => Number(b.cost || 0) - Number(a.cost || 0));
+    };
+
+    const orderById = new Map<number, OrderRow>();
+    orders.forEach((order) => {
+      const orderId = Number(order.id || 0);
+      if (Number.isFinite(orderId) && orderId > 0) {
+        orderById.set(orderId, order);
+      }
+    });
+
+    const todayCostInsightSnapshots = orderCostSnapshots.filter((snapshot) => {
+      const dateSource = snapshot.order_paid_at || snapshot.created_at;
+      return Boolean(dateSource) && getLocalDateString(String(dateSource)) === getTodayLocalDate();
+    });
+
+    const costInsightBills = todayCostInsightSnapshots
+      .map((snapshot) => {
+        const orderId = Number(snapshot.order_id);
+        const existingOrder = orderById.get(orderId);
+        const order: OrderRow = existingOrder || {
+          id: orderId,
+          table_number: String(snapshot.table_number || "").trim() || `Order ${orderId}`,
+          status: snapshot.order_status || "paid",
+          created_at: snapshot.order_created_at || snapshot.created_at || new Date().toISOString(),
+          waiter_cleared: false,
+          is_paid: snapshot.order_is_paid ?? true,
+          payment_method: snapshot.order_payment_method || null,
+          paid_at: snapshot.order_paid_at || snapshot.created_at || null,
+          remarks: snapshot.order_remarks || null,
+          inventory_deducted: snapshot.order_inventory_deducted ?? true,
+          order_items: [],
+        };
+
+        const itemBreakdowns = buildLockedItemBreakdowns(orderId);
+
+        return {
+          table_number: String(order.table_number || snapshot.table_number || "").trim() || `Order ${orderId}`,
+          order_ids: [orderId],
+          selling: Number(snapshot.total_revenue || 0),
+          cost: Number(snapshot.total_cost || 0),
+          profit: Number(snapshot.total_profit || 0),
+          materials: buildLockedMaterialsSummary(itemBreakdowns),
+          itemBreakdowns,
+          orders: [order],
+          cost_locked: Boolean(costSnapshotByOrderId.get(orderId)),
+        } as CostInsightBill;
+      })
+      .sort((a, b) => {
+        const aOrder = a.orders[0];
+        const bOrder = b.orders[0];
+        const aTime = new Date(aOrder?.paid_at || aOrder?.created_at || 0).getTime();
+        const bTime = new Date(bOrder?.paid_at || bOrder?.created_at || 0).getTime();
+        return bTime - aTime;
+      });
+
+    const costInsightSearchText = costInsightSearch.trim().toLowerCase();
+    const visibleCostInsightBills = costInsightBills.filter((bill) => {
+      if (!costInsightSearchText) return true;
+      return bill.table_number.toLowerCase().includes(costInsightSearchText);
+    });
+    const lockedCostInsightBills = costInsightBills.filter((bill) => bill.cost_locked);
+
+    return {
+      visibleCostInsightBills,
+      costInsightTotalSales: lockedCostInsightBills.reduce((sum, bill) => sum + bill.selling, 0),
+      costInsightTotalCost: lockedCostInsightBills.reduce((sum, bill) => sum + bill.cost, 0),
+      costInsightTotalProfit: lockedCostInsightBills.reduce((sum, bill) => sum + bill.profit, 0),
+    };
+  }, [orderCostSnapshots, orderCostSnapshotItems, orders, costInsightSearch]);
+
+  function iconBubble(icon: string, bg: string) {
+    return (
+      <span
+        className={`inline-flex h-9 w-9 items-center justify-center rounded-2xl text-base ${bg}`}
+      >
+        {icon}
+      </span>
+    );
+  }
+
+function bottomNavButtonClass(view: MiniView) {
+  const active = miniView === view;
+  return `group flex min-h-[58px] min-w-0 flex-col items-center justify-center gap-1 rounded-2xl px-2 py-2 text-[11px] font-bold leading-none transition-all active:scale-[0.96] ${
+    active ? "text-red-600" : "text-slate-500 hover:text-slate-800"
+  }`;
+}
+
+function bottomNavIconClass(view: MiniView) {
+  const active = miniView === view;
+  return `transition-all ${active ? "scale-110 stroke-[2.6]" : "stroke-[2.2] opacity-80 group-hover:opacity-100"}`;
+}
+
+
+function desktopSidebarButtonClass(view: MiniView) {
+  const active = miniView === view && popupView === null;
+  return `group flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-sm font-bold transition ${
+    active
+      ? "bg-red-600 text-white shadow-[0_16px_34px_rgba(220,38,38,0.24)]"
+      : "text-slate-600 hover:bg-slate-100 hover:text-slate-950"
+  }`;
+}
+
+function desktopUtilityButtonClass(active = false) {
+  return `group flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-sm font-bold transition ${
+    active
+      ? "bg-slate-950 text-white shadow-[0_16px_34px_rgba(15,23,42,0.18)]"
+      : "text-slate-600 hover:bg-slate-100 hover:text-slate-950"
+  }`;
+}
+
+function plusMenuItemClass() {
+  return "flex min-h-[64px] flex-col items-center justify-start gap-1 rounded-none px-1 py-1 text-center text-[12px] font-semibold text-slate-600 transition active:scale-[0.98]";
+}
+
+function closePlusMenu() {
+  setShowHeaderMenu(false);
+  setPlusMenuSearch("");
+  setPlusMenuDragStartY(null);
+  setPlusMenuDragOffsetY(0);
+}
+
+function openPlusMenuAction(action: () => void) {
+  closePlusMenu();
+  action();
+}
+
+function plusMenuIcon(iconName: string) {
+  const commonProps = {
+    width: 22,
+    height: 22,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 2.2,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    className: "h-[22px] w-[22px]",
+  };
+
+  const icons: Record<string, React.ReactNode> = {
+    menu: (
+      <svg {...commonProps}><path d="M4 4h6v6H4z" /><path d="M14 4h6v6h-6z" /><path d="M4 14h6v6H4z" /><path d="M14 14h6v6h-6z" /></svg>
+    ),
+    categories: (
+      <svg {...commonProps}><path d="M20 10v10H4V10" /><path d="M2 7h20v3H2z" /><path d="M12 7v13" /><path d="M12 7c0-2.2 1.4-4 3.2-4S18 4.2 18 5.5C18 7 16.6 7 12 7Z" /><path d="M12 7c0-2.2-1.4-4-3.2-4S6 4.2 6 5.5C6 7 7.4 7 12 7Z" /></svg>
+    ),
+    upload: (
+      <svg {...commonProps}><path d="M12 16V4" /><path d="m7 9 5-5 5 5" /><path d="M4 20h16" /></svg>
+    ),
+    inventory: (
+      <svg {...commonProps}><path d="m21 8-9-5-9 5 9 5 9-5Z" /><path d="M3 8v8l9 5 9-5V8" /><path d="M12 13v8" /></svg>
+    ),
+    restock: (
+      <svg {...commonProps}><path d="M6 7h11a4 4 0 0 1 0 8H8" /><path d="m6 7 3-3" /><path d="M6 7l3 3" /><path d="M8 15l-3 3" /><path d="M8 15l-3-3" /></svg>
+    ),
+    cost: (
+      <svg {...commonProps}><path d="M4 19V5" /><path d="M4 19h16" /><path d="M8 16v-5" /><path d="M12 16V8" /><path d="M16 16v-7" /></svg>
+    ),
+    recipe: (
+      <svg {...commonProps}><path d="M5 4h14v16H5z" /><path d="M8 8h8" /><path d="M8 12h8" /><path d="M8 16h5" /></svg>
+    ),
+    unit: (
+      <svg {...commonProps}><path d="M5 19h14" /><path d="M7 19V5" /><path d="M7 5h10" /><path d="M7 9h6" /><path d="M7 13h8" /></svg>
+    ),
+    group: (
+      <svg {...commonProps}><path d="M4 7h16" /><path d="M4 12h16" /><path d="M4 17h16" /><path d="M7 5v4" /><path d="M12 10v4" /><path d="M17 15v4" /></svg>
+    ),
+    supplier: (
+      <svg {...commonProps}><path d="M3 7h11v10H3z" /><path d="M14 11h4l3 3v3h-7z" /><path d="M7 20a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z" /><path d="M18 20a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z" /></svg>
+    ),
+    history: (
+      <svg {...commonProps}><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v6h6" /><path d="M12 7v5l3 2" /></svg>
+    ),
+    reports: (
+      <svg {...commonProps}><path d="M6 2h9l5 5v15H6z" /><path d="M14 2v6h6" /><path d="M9 13h6" /><path d="M9 17h6" /></svg>
+    ),
+    payments: (
+      <svg {...commonProps}><rect x="3" y="6" width="18" height="13" rx="3" /><path d="M3 10h18" /><path d="M7 15h4" /></svg>
+    ),
+    settings: (
+      <svg {...commonProps}><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.05.05a2 2 0 1 1-2.83 2.83l-.05-.05A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6l-.03.04a2 2 0 1 1-3.44 0L10.5 20a1.7 1.7 0 0 0-1-.6 1.7 1.7 0 0 0-1.88.34l-.05.05a2 2 0 1 1-2.83-2.83l.05-.05A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1l-.04-.03a2 2 0 1 1 0-3.44L4 10.5a1.7 1.7 0 0 0 .6-1 1.7 1.7 0 0 0-.34-1.88l-.05-.05a2 2 0 1 1 2.83-2.83l.05.05A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6l.03-.04a2 2 0 1 1 3.44 0L13.5 4a1.7 1.7 0 0 0 1 .6 1.7 1.7 0 0 0 1.88-.34l.05-.05a2 2 0 1 1 2.83 2.83l-.05.05A1.7 1.7 0 0 0 19.4 9c.2.38.42.7.6 1l.04.03a2 2 0 1 1 0 3.44L20 13.5a1.7 1.7 0 0 0-.6 1.5Z" /></svg>
+    ),
+    qr: (
+      <svg {...commonProps}><path d="M4 4h6v6H4z" /><path d="M14 4h6v6h-6z" /><path d="M4 14h6v6H4z" /><path d="M14 14h2" /><path d="M20 14h-1" /><path d="M14 17h6" /><path d="M17 20h3" /><path d="M14 20h1" /></svg>
+    ),
+    dashboard: (
+      <svg {...commonProps}><path d="M3 11.5 12 4l9 7.5" /><path d="M5 10v10h14V10" /><path d="M9 20v-6h6v6" /></svg>
+    ),
+    order: (
+      <svg {...commonProps}><path d="M7 3h10v18H7z" /><path d="M9.5 7h5" /><path d="M9.5 11h5" /><path d="M9.5 15h3" /></svg>
+    ),
+    kitchen: (
+      <svg {...commonProps}><path d="M6 3v7" /><path d="M10 3v7" /><path d="M8 3v18" /><path d="M17 3v18" /><path d="M14 3h3a3 3 0 0 1 0 6h-3" /></svg>
+    ),
+  };
+
+  return (
+    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-slate-100 text-slate-950 ring-1 ring-slate-200">
+      {icons[iconName] || icons.menu}
+    </span>
+  );
+}
+
+function normalizePlusMenuSearch(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function plusMenuMatches(label: string, section: string) {
+  const query = normalizePlusMenuSearch(plusMenuSearch);
+  if (!query) return true;
+  return `${section} ${label}`.toLowerCase().includes(query);
+}
+
+function renderPlusActionSheet() {
+  if (!showHeaderMenu) return null;
+
+  const ownerSections = [
+    {
+      title: "Menu",
+      items: [
+        {
+          label: "Menu Items",
+          icon: "menu",
+          action: () => {
+            setPopupView("menuItems");
+            setMenuManageMode("items");
+            setShowProfitSetupInMenuItems(false);
+            scrollMainContentToTop();
+          },
+        },
+        {
+          label: "Add Categories",
+          icon: "categories",
+          action: () => {
+            setPopupView("menuItems");
+            setMenuManageMode("categories");
+            setShowProfitSetupInMenuItems(false);
+            scrollMainContentToTop();
+          },
+        },
+        {
+          label: "Upload CSV",
+          icon: "upload",
+          action: () => {
+            setPopupView("menuItems");
+            setMenuManageMode("csv");
+            setShowProfitSetupInMenuItems(false);
+            scrollMainContentToTop();
+          },
+        },
+      ],
+    },
+    {
+      title: "Inventory",
+      items: [
+        {
+          label: "Inventory Items",
+          icon: "inventory",
+          action: () => {
+            setPopupView("inventory");
+            setInventoryTab("items");
+            scrollMainContentToTop();
+          },
+        },
+        {
+          label: "Buy / Restock",
+          icon: "restock",
+          action: () => {
+            setPopupView("inventory");
+            setInventoryTab("restock");
+            scrollMainContentToTop();
+          },
+        },
+        {
+          label: "Cost Insight",
+          icon: "cost",
+          action: () => {
+            setPopupView("inventory");
+            setInventoryTab("costInsight");
+            scrollMainContentToTop();
+          },
+        },
+      ],
+    },
+    {
+      title: "Reports",
+      items: [
+        {
+          label: "Reports",
+          icon: "reports",
+          action: () => changeView("report"),
+        },
+        {
+          label: "Payment History",
+          icon: "payments",
+          action: () => changeView("paymentHistory"),
+        },
+      ],
+    },
+    {
+      title: "Management",
+      items: [
+        {
+          label: "Settings",
+          icon: "settings",
+          action: () => {
+            setPopupView("settings");
+            scrollMainContentToTop();
+          },
+        },
+        {
+          label: "Brand & QR",
+          icon: "qr",
+          action: openQrAccess,
+        },
+      ],
+    },
+  ];
+
+  const staffSections = [
+    {
+      title: "Staff Menu",
+      items: [
+        { label: "Dashboard", icon: "dashboard", action: () => changeView("dashboard") },
+        { label: "Order", icon: "order", action: () => changeView("order") },
+        { label: "KOT", icon: "kitchen", action: () => { setOrderTopTab("kot"); changeView("order"); } },
+      ],
+    },
+  ];
+
+  const sections = isOwnerMode ? ownerSections : staffSections;
+  const visibleSections = sections
+    .map((section) => ({
+      ...section,
+      items: section.items.filter((item) => plusMenuMatches(item.label, section.title)),
+    }))
+    .filter((section) => section.items.length > 0);
+
+  const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (plusMenuDragStartY === null) return;
+    const nextOffset = Math.max(0, event.clientY - plusMenuDragStartY);
+    setPlusMenuDragOffsetY(nextOffset);
+  };
+
+  const handlePointerUp = () => {
+    if (plusMenuDragOffsetY > 90) {
+      closePlusMenu();
+      return;
+    }
+
+    setPlusMenuDragStartY(null);
+    setPlusMenuDragOffsetY(0);
+  };
+
+  return (
+    <div className="fixed inset-0 z-40 bg-slate-950/35 backdrop-blur-[2px] lg:hidden" onClick={closePlusMenu}>
+      <div
+        className="absolute inset-x-5 bottom-[88px] mx-auto max-w-md overflow-hidden rounded-[18px] bg-white shadow-[0_28px_80px_rgba(15,23,42,0.28)] transition-transform duration-200"
+        style={{ transform: `translateY(${plusMenuDragOffsetY}px)` }}
+        onClick={(event) => event.stopPropagation()}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+      >
+        <div
+          className="cursor-grab px-4 pb-1.5 pt-2 active:cursor-grabbing"
+          onPointerDown={(event) => {
+            setPlusMenuDragStartY(event.clientY);
+            setPlusMenuDragOffsetY(0);
+          }}
+        >
+          <div className="mx-auto h-1 w-10 rounded-full bg-slate-200" />
+        </div>
+
+        <div className="px-4 pb-5">
+          <div className="mb-4 flex h-14 items-center gap-3 rounded-[12px] border border-slate-200 bg-white px-4 text-slate-900 shadow-sm">
+            <span className="text-[26px] font-light text-slate-800">⌕</span>
+            <input
+              type="text"
+              value={plusMenuSearch}
+              onChange={(event) => setPlusMenuSearch(event.target.value)}
+              placeholder="Search here"
+              className="h-full min-w-0 flex-1 bg-transparent text-[16px] font-medium text-slate-900 outline-none placeholder:text-slate-400"
+            />
+            {plusMenuSearch && (
+              <button
+                type="button"
+                onClick={() => setPlusMenuSearch("")}
+                className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 text-sm font-black text-slate-700"
+                aria-label="Clear search"
+              >
+                ×
+              </button>
+            )}
+          </div>
+
+          <div>
+            {visibleSections.length > 0 ? (
+              visibleSections.map((section) => (
+                <div key={`plus-section-${section.title}`} className="mb-4 last:mb-0">
+                  <p className="mb-3 text-[20px] font-semibold tracking-normal text-slate-950">{section.title}</p>
+                  <div className="grid grid-cols-3 gap-x-4 gap-y-4">
+                    {section.items.map((item) => (
+                      <button
+                        key={`plus-item-${section.title}-${item.label}`}
+                        type="button"
+                        onClick={() => openPlusMenuAction(item.action)}
+                        className={plusMenuItemClass()}
+                      >
+                        {plusMenuIcon(item.icon)}
+                        <span>{item.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="px-4 py-8 text-center text-sm font-semibold text-slate-500">
+                No option found
+              </div>
+            )}
+
+            {!isOwnerMode && (
+              <button
+                type="button"
+                onClick={() => openPlusMenuAction(logoutOwner)}
+                className="mt-3 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-700"
+              >
+                Logout
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function renderDesktopSidebar() {
+  const ownerNavItems: { view: MiniView; icon: string; label: string }[] = [
+    { view: "dashboard", icon: "📊", label: "Home" },
+    { view: "order", icon: "🍽️", label: "Order" },
+    { view: "salesOverview", icon: "💹", label: "Insights" },
+    { view: "manage", icon: "🧩", label: "Manage" },
+  ];
+
+  const staffNavItems: { view: MiniView; icon: string; label: string }[] = [
+    { view: "dashboard", icon: "📊", label: "Home" },
+    { view: "order", icon: "🍽️", label: "Order" },
+  ];
+
+  const navItems = isOwnerMode ? ownerNavItems : staffNavItems;
+  const inventorySidebarItems: {
+    key: "items" | "recipes" | "measuringUnits" | "stockGroups" | "restock" | "costInsight" | "suppliers" | "history";
+    icon: string;
+    label: string;
+  }[] = [
+    { key: "recipes", icon: "📦", label: "Menu Recipe" },
+    { key: "items", icon: "📦", label: "Stock Items" },
+    { key: "measuringUnits", icon: "📏", label: "Measuring Unit" },
+    { key: "stockGroups", icon: "🧺", label: "Stock Group" },
+    { key: "restock", icon: "🛒", label: "Buy / Restock" },
+    { key: "costInsight", icon: "📊", label: "Cost Insight" },
+    { key: "suppliers", icon: "🚚", label: "Suppliers" },
+    { key: "history", icon: "🧾", label: "Stock History" },
+  ];
+
+  function openInventorySidebarItem(
+    key: "items" | "recipes" | "measuringUnits" | "stockGroups" | "restock" | "costInsight" | "suppliers" | "history"
+  ) {
+    setDesktopInventoryExpanded(true);
+    setDesktopInventoryContentOpen(true);
+    setPopupView(null);
+    setShowQR(false);
+    setShowInventoryMoreMenu(false);
+    setShowArchivedInventoryView(false);
+    setInventoryTab(key);
+    if (key === "recipes") setInventoryRecipePanel("menuRecipe");
+    scrollMainContentToTop();
+  }
+
+  return (
+    <aside className="hidden h-full w-[268px] shrink-0 border-r border-slate-200 bg-white/95 px-4 py-4 shadow-[18px_0_50px_rgba(15,23,42,0.04)] lg:flex lg:flex-col">
+      <div className="flex items-center gap-3 px-1">
+  <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-red-600 text-lg font-black text-white shadow-[0_14px_30px_rgba(220,38,38,0.22)]">
+  S
+</div>
+
+<div className="min-w-0">
+  <p className="truncate text-xl font-black tracking-tight text-slate-950 flex items-center">
+    <span>SERVE</span>
+
+    <span className="ml-[2px] inline-block text-[1.55rem] leading-none text-red-600">
+      X
+    </span>
+  </p>
+
+  <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
+    {isStaffMode ? "ServeX Staff" : "ServeX Owner"}
+  </p>
+</div>
+      </div>
+
+      <div className="mt-5 rounded-[24px] border border-slate-200 bg-slate-50/70 p-3">
+        <div className="flex items-center gap-3">
+          <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-white text-base font-black text-red-600 ring-1 ring-slate-200">
+            {restaurantLogoUrl ? (
+              <img src={restaurantLogoUrl} alt={`${restaurantName || "Restaurant"} logo`} className="h-full w-full object-cover" />
+            ) : (
+              <span>{getRestaurantInitial()}</span>
+            )}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-black text-slate-950">{restaurantName || "Restaurant"}</p>
+            <p className="mt-0.5 text-xs font-bold text-slate-500">{isOnline ? "Online" : "Offline"}</p>
+          </div>
+        </div>
+      </div>
+
+      <nav className="mt-5 flex-1 space-y-1.5 overflow-y-auto pr-1">
+        {navItems.map((item) => (
+          <button key={`desktop-nav-${item.view}`} type="button" onClick={() => changeView(item.view)} className={desktopSidebarButtonClass(item.view)}>
+            <span className="text-lg leading-none">{item.icon}</span>
+            <span>{item.label}</span>
+          </button>
+        ))}
+
+        {isOwnerMode && (
+          <>
+            <div className="my-3 border-t border-slate-200" />
+            <button
+              type="button"
+              onClick={() => {
+                setDesktopMenuExpanded((current) => !current);
+                setDesktopInventoryExpanded(false);
+                setDesktopInventoryContentOpen(false);
+                setShowQR(false);
+              }}
+              className={desktopUtilityButtonClass(popupView === "menuItems" || desktopMenuExpanded)}
+            >
+              <span className="text-lg leading-none">📋</span>
+              <span className="flex-1 text-left">Menu</span>
+              <span className={`text-xs transition ${desktopMenuExpanded ? "rotate-90 text-white/80" : "text-slate-400"}`}>›</span>
+            </button>
+
+            {desktopMenuExpanded && (
+              <div className="ml-6 mt-1 space-y-1 border-l border-slate-200 pl-3">
+                {[
+                  { key: "items", label: "Menu Items", icon: "🍽️" },
+                  { key: "categories", label: "Categories", icon: "🏷️" },
+                  { key: "csv", label: "Upload CSV", icon: "⬆️" },
+                ].map((item) => {
+                  const active = popupView === "menuItems" && menuManageMode === item.key;
+                  return (
+                    <button
+                      key={`desktop-menu-sub-${item.key}`}
+                      type="button"
+                      onClick={() => {
+                        setPopupView("menuItems");
+                        setMenuManageMode(item.key as "items" | "categories" | "csv");
+                        setMenuItemWorkMode("list");
+                        setManageMenuSelectedCategory("all");
+                        setDesktopInventoryContentOpen(false);
+                        setShowQR(false);
+                        setShowProfitSetupInMenuItems(false);
+                        scrollMainContentToTop();
+                      }}
+                      className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-xs font-black transition ${
+                        active
+                          ? "bg-red-50 text-red-700 ring-1 ring-slate-200"
+                          : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+                      }`}
+                    >
+                      <span className="text-sm leading-none">{item.icon}</span>
+                      <span className="truncate">{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setDesktopInventoryExpanded((current) => !current);
+                setDesktopMenuExpanded(false);
+                setShowQR(false);
+              }}
+              className={desktopUtilityButtonClass(desktopInventoryContentOpen || desktopInventoryExpanded)}
+            >
+              <span className="text-lg leading-none">📦</span>
+              <span className="flex-1 text-left">Inventory</span>
+              <span className={`text-xs transition ${desktopInventoryExpanded ? "rotate-90 text-white/80" : "text-slate-400"}`}>›</span>
+            </button>
+
+            {desktopInventoryExpanded && (
+              <div className="ml-6 mt-1 space-y-1 border-l border-slate-200 pl-3">
+                {inventorySidebarItems.map((item) => {
+                  const active = desktopInventoryContentOpen && !showArchivedInventoryView && inventoryTab === item.key;
+
+                  return (
+                    <button
+                      key={`desktop-inventory-sub-${item.key}`}
+                      type="button"
+                      onClick={() => openInventorySidebarItem(item.key)}
+                      className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-xs font-black transition ${
+                        active
+                          ? "bg-red-50 text-red-700 ring-1 ring-slate-200"
+                          : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+                      }`}
+                    >
+                      <span className="text-sm leading-none">{item.icon}</span>
+                      <span className="truncate">{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <button type="button" onClick={openQrAccess} className={desktopUtilityButtonClass(showQR)}>
+              <span className="text-lg leading-none">🏷️</span>
+              <span>Brand & QR</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setPopupView("settings");
+                setDesktopInventoryContentOpen(false);
+                scrollMainContentToTop();
+              }}
+              className={desktopUtilityButtonClass(popupView === "settings")}
+            >
+              <span className="text-lg leading-none">⚙️</span>
+              <span>Settings</span>
+            </button>
+          </>
+        )}
+      </nav>
+
+      <div className="border-t border-slate-200 pt-3">
+        <button type="button" onClick={logoutOwner} className="flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-sm font-bold text-slate-500 transition hover:bg-rose-50 hover:text-rose-600">
+          <span className="text-lg leading-none">🚪</span>
+          <span>Logout</span>
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+function renderDesktopTopbar() {
+  return (
+    <div className="hidden shrink-0 border-b border-slate-200 bg-white/85 px-6 py-4 backdrop-blur-xl lg:block">
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">
+            {new Date().toLocaleDateString()}
+          </p>
+          <h1 className="mt-1 truncate text-2xl font-black tracking-tight text-slate-950">
+            {desktopInventoryContentOpen
+              ? "Inventory"
+              : popupView === "menuItems"
+                ? "Menu"
+                : popupView === "settings"
+                  ? "Settings"
+                  : popupView === "taxDiscount"
+                    ? "Tax & Discount"
+                  : miniView === "order"
+                    ? "Orders"
+                    : miniView === "manage"
+                      ? "Manage"
+                      : miniView === "kitchen"
+                        ? "KOT"
+                        : miniView === "salesOverview"
+                        ? "Insights"
+                        : miniView === "report"
+                          ? "Reports"
+                          : miniView === "paymentHistory"
+                            ? "Payment History"
+                            : "Dashboard"}
+          </h1>
+        </div>
+
+        <div className="flex items-center gap-3">
+          {miniView === "order" && !popupView && !desktopInventoryContentOpen && (
+            <div className="flex h-11 w-[340px] items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 shadow-sm">
+              <span className="text-slate-400">⌕</span>
+              <input
+                type="text"
+                value={tableSearch}
+                onChange={(event) => setTableSearch(event.target.value)}
+                placeholder="Search"
+                className="h-full w-full bg-transparent text-sm font-semibold text-slate-800 outline-none placeholder:text-slate-400"
+              />
+            </div>
+          )}
+          {miniView === "order" && !popupView && !desktopInventoryContentOpen && (
+            <button
+              type="button"
+              onClick={openTakeOrderModal}
+              className="rounded-2xl bg-red-600 px-6 py-3.5 text-sm font-black text-white shadow-[0_14px_30px_rgba(220,38,38,0.24)] hover:bg-red-700"
+            >
+              + Take Order
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+  function paymentButtonClass(tableNo: string, method: "cash" | "qr" | "card") {
+    const selected = tablePaymentMethods[tableNo] || "cash";
+
+    return `py-2.5 rounded-2xl text-sm font-semibold border ${
+      selected === method
+        ? "bg-blue-600 text-white border-blue-600"
+        : "bg-white text-slate-700 border-slate-200"
+    }`;
+  }
+
+  function roundMoney(value: number) {
+    return Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
+  }
+
+  function getTableDiscountPercent(tableNo: string) {
+    if (!enableDiscount) return 0;
+    const raw = tableDiscountPercents[tableNo];
+    const parsed = Number(raw || 0);
+    if (!Number.isFinite(parsed) || parsed < 0) return 0;
+    return Math.min(parsed, 100);
+  }
+
+  function getPaymentBreakdown(subtotalValue: number, tableNo: string) {
+    const subtotal = roundMoney(Math.max(0, Number(subtotalValue || 0)));
+    const discountPercent = getTableDiscountPercent(tableNo);
+    const discountAmount = enableDiscount ? roundMoney((subtotal * discountPercent) / 100) : 0;
+    const taxableAmount = roundMoney(Math.max(0, subtotal - discountAmount));
+    const taxPercent = enableTax ? Math.max(0, Number(defaultTaxPercent || 0)) : 0;
+    const taxAmount = enableTax ? roundMoney((taxableAmount * taxPercent) / 100) : 0;
+    const grandTotal = roundMoney(taxableAmount + taxAmount);
+
+    return {
+      subtotal,
+      discount_enabled: Boolean(enableDiscount),
+      discount_percent: discountPercent,
+      discount_amount: discountAmount,
+      tax_enabled: Boolean(enableTax),
+      tax_percent: taxPercent,
+      tax_amount: taxAmount,
+      grand_total: grandTotal,
+    };
+  }
+
+  function getOrderPaymentBreakdown(order: OrderRow, tableNo: string) {
+    return getPaymentBreakdown(getOrderTotal(order), tableNo);
+  }
+
+  function salesPeriodButtonClass(period: SalesPeriod) {
+    const active = salesPeriod === period;
+    return `rounded-2xl px-3 py-2 text-sm font-semibold ${
+      active ? "bg-white text-blue-600 shadow-sm" : "text-slate-600"
+    }`;
+  }
+
+  function salesCalendarButtonClass(mode: CalendarMode) {
+    const active = calendarMode === mode;
+    return `rounded-2xl px-3 py-2 text-sm font-semibold ${
+      active ? "bg-slate-900 text-white shadow-sm" : "bg-white text-slate-600"
+    }`;
+  }
+
+  function statCard(
+    title: string,
+    value: string | number,
+    icon: string,
+    cardClass = "bg-white border border-slate-200"
+  ) {
+    return (
+      <div className={`rounded-[24px] p-3.5 shadow-[0_10px_28px_rgba(15,23,42,0.07)] ${cardClass}`}>
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-[11px] font-medium text-slate-500">{title}</p>
+            <p className="mt-1 break-words text-base font-bold text-slate-900">{value}</p>
+          </div>
+          <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-2xl bg-slate-100 text-sm">
+            {icon}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  function sectionTitle(title: string, subtitle: string, icon: string) {
+    return (
+      <div className="flex items-start gap-3.5">
+        <div className="shrink-0">{iconBubble(icon, "bg-blue-50")}</div>
+        <div>
+          <h2 className="text-[17px] font-extrabold tracking-tight text-slate-900">{title}</h2>
+          <p className="text-xs leading-5 text-slate-500">{subtitle}</p>
+        </div>
+      </div>
+    );
+  }
+
+  function renderHourlyAreaChart() {
+    const hourlyChartMaxSales =
+      hourlySalesTrend.length === 0
+        ? 0
+        : getNiceCeiling(Math.max(...hourlySalesTrend.map((item) => item.sales), 0));
+
+    const hourlyChartPoints = hourlySalesTrend.map((point, index) => {
+      const max = hourlyChartMaxSales || 1;
+      const x =
+        hourlySalesTrend.length === 1
+          ? 50
+          : 12 + (index / Math.max(hourlySalesTrend.length - 1, 1)) * 80;
+      const y = 86 - (point.sales / max) * 62;
+
+      return {
+        ...point,
+        x,
+        y,
+      };
+    });
+
+    function buildSmoothPath(points: { x: number; y: number }[]) {
+      if (points.length === 0) return "";
+      if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+
+      let path = `M ${points[0].x} ${points[0].y}`;
+
+      for (let index = 0; index < points.length - 1; index += 1) {
+        const current = points[index];
+        const next = points[index + 1];
+        const previous = points[index - 1] || current;
+        const afterNext = points[index + 2] || next;
+        const controlPointOneX = current.x + (next.x - previous.x) / 6;
+        const controlPointOneY = current.y + (next.y - previous.y) / 6;
+        const controlPointTwoX = next.x - (afterNext.x - current.x) / 6;
+        const controlPointTwoY = next.y - (afterNext.y - current.y) / 6;
+
+        path += ` C ${controlPointOneX} ${controlPointOneY}, ${controlPointTwoX} ${controlPointTwoY}, ${next.x} ${next.y}`;
+      }
+
+      return path;
+    }
+
+    const hourlyLinePath = buildSmoothPath(hourlyChartPoints);
+    const hourlyAreaPath =
+      hourlyChartPoints.length > 0
+        ? [
+            `M ${hourlyChartPoints[0].x} 88`,
+            hourlyLinePath.replace(/^M [^C]+/, `L ${hourlyChartPoints[0].x} ${hourlyChartPoints[0].y}`),
+            `L ${hourlyChartPoints[hourlyChartPoints.length - 1].x} 88`,
+            "Z",
+          ].join(" ")
+        : "";
+
+    return (
+      <div className="relative h-[160px] w-full overflow-hidden rounded-[20px] border border-slate-200 bg-white px-2.5 pb-1 pt-2">
+        {hoveredHourlyPoint && (
+          <div
+            className="absolute z-10 rounded-xl bg-slate-900 px-3 py-2 text-xs text-white shadow-lg"
+            style={{
+              left: `${Math.min(Math.max(hoveredHourlyPoint.x, 14), 88)}%`,
+              top: `${Math.min(Math.max(hoveredHourlyPoint.y - 4, 10), 76)}%`,
+              transform: "translate(-50%, -100%)",
+            }}
+          >
+            <p>{hoveredHourlyPoint.label}</p>
+            <p>Rs. {hoveredHourlyPoint.sales}</p>
+          </div>
+        )}
+
+        {hourlySalesTrend.length === 0 ? (
+          <div className="flex h-full items-center justify-center text-sm font-medium text-slate-400">
+            No hourly sales data today.
+          </div>
+        ) : (
+          <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-full w-full">
+            <defs>
+              <linearGradient id="hourlyAreaFillClean" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#0f766e" stopOpacity="0.18" />
+                <stop offset="100%" stopColor="#0f766e" stopOpacity="0.02" />
+              </linearGradient>
+            </defs>
+
+            {[0, 0.5, 1].map((ratio) => {
+              const y = 86 - ratio * 62;
+              return (
+                <line
+                  key={ratio}
+                  x1="8"
+                  y1={y}
+                  x2="96"
+                  y2={y}
+                  stroke="#e2e8f0"
+                  strokeWidth="0.45"
+                  strokeDasharray="2 2"
+                />
+              );
+            })}
+
+            {hourlyAreaPath && <path d={hourlyAreaPath} fill="url(#hourlyAreaFillClean)" />}
+            {hourlyLinePath && (
+              <path
+                d={hourlyLinePath}
+                fill="none"
+                stroke="#0f766e"
+                strokeWidth="1.05"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            )}
+
+            {hourlyChartPoints.map((point, index) => (
+              <g key={point.hour}>
+                <circle
+                  cx={point.x}
+                  cy={point.y}
+                  r="1.15"
+                  fill="#0f766e"
+                  stroke="#ffffff"
+                  strokeWidth="0.7"
+                  style={{ cursor: "pointer" }}
+                  onMouseEnter={() =>
+                    setHoveredHourlyPoint({
+                      hour: point.hour,
+                      label: point.label,
+                      sales: point.sales,
+                      x: point.x,
+                      y: point.y,
+                    })
+                  }
+                  onMouseLeave={() => setHoveredHourlyPoint(null)}
+                />
+                {index % 2 === 0 && (
+                  <text x={point.x} y="96" textAnchor="middle" fontSize="2.7" fill="#64748b">
+                    {point.shortLabel}
+                  </text>
+                )}
+              </g>
+            ))}
+          </svg>
+        )}
+      </div>
+    );
+  }
+
+  function renderCompactTrendChart() {
+    const values = selectedSalesTrend.map((point) => Number(point.sales || 0));
+    const positiveValues = values.filter((value) => value > 0);
+    const rawMin = positiveValues.length > 0 ? Math.min(...positiveValues) : 0;
+    const rawMax = values.length > 0 ? Math.max(...values) : 0;
+    const hasSales = rawMax > 0;
+    const sameValue = hasSales && rawMax === rawMin;
+    const visualMin = hasSales && !sameValue ? Math.max(0, rawMin - (rawMax - rawMin) * 0.18) : 0;
+    const visualMax = hasSales
+      ? sameValue
+        ? rawMax * 1.35
+        : rawMax + (rawMax - visualMin) * 0.14
+      : 100;
+    const range = Math.max(visualMax - visualMin, 1);
+    const highestSales = rawMax;
+    const highestPointIndex = selectedSalesTrend.findIndex((point) => Number(point.sales || 0) === highestSales && highestSales > 0);
+
+    function compactAmount(value: number) {
+      if (value >= 10000000) return `${(value / 10000000).toFixed(value % 10000000 === 0 ? 0 : 1)}Cr`;
+      if (value >= 100000) return `${(value / 100000).toFixed(value % 100000 === 0 ? 0 : 1)}L`;
+      if (value >= 1000) return `${(value / 1000).toFixed(value % 1000 === 0 ? 0 : 1)}k`;
+      return `${Math.round(value)}`;
+    }
+
+    function getVisibleLabelStep(length: number) {
+      if (length <= 7) return 1;
+      if (length <= 12) return 2;
+      if (length <= 24) return 4;
+      if (length <= 31) return 5;
+      return Math.ceil(length / 7);
+    }
+
+    const labelStep = getVisibleLabelStep(selectedSalesTrend.length);
+
+    const chartPoints = selectedSalesTrend.map((point, index) => {
+      const x =
+        selectedSalesTrend.length === 1
+          ? 50
+          : 8 + (index / Math.max(selectedSalesTrend.length - 1, 1)) * 86;
+      const sales = Number(point.sales || 0);
+      const y = hasSales ? 84 - ((sales - visualMin) / range) * 58 : 74;
+      return { ...point, sales, x, y: Math.min(84, Math.max(18, y)) };
+    });
+
+    function buildSmoothPath(points: typeof chartPoints) {
+      if (points.length === 0) return "";
+      if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+
+      const commands = [`M ${points[0].x} ${points[0].y}`];
+      for (let index = 0; index < points.length - 1; index++) {
+        const current = points[index];
+        const next = points[index + 1];
+        const previous = points[index - 1] || current;
+        const afterNext = points[index + 2] || next;
+        const cp1x = current.x + (next.x - previous.x) / 6;
+        const cp1y = current.y + (next.y - previous.y) / 6;
+        const cp2x = next.x - (afterNext.x - current.x) / 6;
+        const cp2y = next.y - (afterNext.y - current.y) / 6;
+        commands.push(`C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${next.x} ${next.y}`);
+      }
+      return commands.join(" ");
+    }
+
+    const linePath = buildSmoothPath(chartPoints);
+    const areaPath =
+      chartPoints.length > 0
+        ? [
+            `M ${chartPoints[0].x} 88`,
+            linePath.replace(/^M[^CQL]+/, `L ${chartPoints[0].x} ${chartPoints[0].y}`),
+            `L ${chartPoints[chartPoints.length - 1].x} 88`,
+            "Z",
+          ].join(" ")
+        : "";
+
+    const guideValues = hasSales
+      ? [visualMin, visualMin + range * 0.5, visualMax]
+      : [0, 50, 100];
+
+    return (
+      <div className="relative overflow-hidden rounded-[28px] border border-slate-200 bg-gradient-to-b from-white to-slate-50 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)]">
+        <div className="mb-2 flex items-center justify-between gap-3 px-1">
+          <div>
+            <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">Trend Focus</p>
+            <p className="text-xs font-bold text-slate-500">Smooth scale • {getInsightRangeDisplayLabel()}</p>
+          </div>
+          {hasSales && (
+            <div className="rounded-2xl bg-white px-3 py-2 text-right shadow-sm ring-1 ring-slate-200">
+              <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Peak</p>
+              <p className="text-xs font-black text-slate-950">Rs. {compactAmount(highestSales)}</p>
+            </div>
+          )}
+        </div>
+
+        {hoveredTrendPoint && (
+          <div
+            className="pointer-events-none absolute z-20 rounded-2xl bg-slate-950 px-3.5 py-2.5 text-xs text-white shadow-[0_18px_45px_rgba(15,23,42,0.32)]"
+            style={{
+              left: `${Math.min(Math.max(hoveredTrendPoint.x, 14), 88)}%`,
+              top: `${Math.min(Math.max(hoveredTrendPoint.y + 10, 18), 76)}%`,
+              transform: "translate(-50%, -100%)",
+            }}
+          >
+            <p className="font-black">{hoveredTrendPoint.label}</p>
+            <p className="mt-0.5 font-semibold text-slate-200">Rs. {hoveredTrendPoint.sales}</p>
+          </div>
+        )}
+
+        {selectedSalesTrend.length === 0 ? (
+          <div className="flex h-[230px] items-center justify-center rounded-[24px] border border-dashed border-slate-200 bg-white text-sm font-bold text-slate-500">
+            No trend data.
+          </div>
+        ) : (
+          <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-[230px] w-full overflow-visible">
+            <defs>
+              <linearGradient id="insightPremiumFill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#0f172a" stopOpacity="0.16" />
+                <stop offset="58%" stopColor="#475569" stopOpacity="0.07" />
+                <stop offset="100%" stopColor="#f8fafc" stopOpacity="0" />
+              </linearGradient>
+              <filter id="insightLineGlow" x="-20%" y="-20%" width="140%" height="140%">
+                <feDropShadow dx="0" dy="2" stdDeviation="1.4" floodColor="#0f172a" floodOpacity="0.16" />
+              </filter>
+            </defs>
+
+            {guideValues.map((value, index) => {
+              const y = hasSales ? 84 - ((value - visualMin) / range) * 58 : 84 - (index / 2) * 58;
+              return (
+                <g key={`premium-guide-${index}-${value}`}>
+                  <line x1="8" y1={y} x2="94" y2={y} stroke="#e5e7eb" strokeWidth="0.45" strokeDasharray="2 3" />
+                  <text x="7" y={y + 1.2} textAnchor="end" fontSize="3" fontWeight="700" fill="#94a3b8">
+                    {compactAmount(value)}
+                  </text>
+                </g>
+              );
+            })}
+
+            <line x1="8" y1="88" x2="94" y2="88" stroke="#cbd5e1" strokeWidth="0.5" />
+
+            {areaPath && <path d={areaPath} fill="url(#insightPremiumFill)" />}
+            {linePath && (
+              <path
+                d={linePath}
+                fill="none"
+                stroke="#0f172a"
+                strokeWidth="1.75"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                filter="url(#insightLineGlow)"
+              />
+            )}
+
+            {chartPoints.map((point, index) => {
+              const showLabel = index === 0 || index === chartPoints.length - 1 || index % labelStep === 0;
+              const isPeak = index === highestPointIndex;
+              const isInteractivePoint = isPeak || selectedSalesTrend.length <= 12 || index % labelStep === 0;
+
+              return (
+                <g key={`premium-point-${point.fullLabel}-${index}`}>
+                  {isInteractivePoint && (
+                    <circle
+                      cx={point.x}
+                      cy={point.y}
+                      r={isPeak ? "2.8" : "2.05"}
+                      fill="#ffffff"
+                      stroke="#0f172a"
+                      strokeWidth={isPeak ? "1.15" : "0.85"}
+                      style={{ cursor: "pointer" }}
+                      onMouseEnter={() =>
+                        setHoveredTrendPoint({
+                          label: point.fullLabel,
+                          sales: point.sales,
+                          x: point.x,
+                          y: point.y,
+                        })
+                      }
+                      onMouseLeave={() => setHoveredTrendPoint(null)}
+                    />
+                  )}
+                  {isPeak && (
+                    <text x={point.x} y={Math.max(10, point.y - 5)} textAnchor="middle" fontSize="3" fontWeight="900" fill="#0f172a">
+                      Peak
+                    </text>
+                  )}
+                  {showLabel && (
+                    <text x={point.x} y="97" textAnchor="middle" fontSize="3.2" fontWeight="800" fill="#64748b">
+                      {String(point.label).length > 6 ? String(point.label).slice(0, 6) : point.label}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+          </svg>
+        )}
+      </div>
+    );
+  }
+
+  function renderCompactBarChart() {
+    const maxValue = selectedSalesTrend.length === 0 ? 0 : Math.max(...selectedSalesTrend.map((item) => item.sales), 0);
+    const positivePoints = selectedSalesTrend.filter((item) => item.sales > 0);
+    const highestValue = positivePoints.length > 0 ? Math.max(...positivePoints.map((item) => item.sales)) : 0;
+    const lowestValue = positivePoints.length > 0 ? Math.min(...positivePoints.map((item) => item.sales)) : 0;
+
+    return (
+      <div className="rounded-[20px] border border-slate-200 bg-slate-50 p-2.5">
+        {selectedSalesTrend.length === 0 ? (
+          <div className="flex h-[96px] items-center justify-center text-sm text-slate-500">No chart data.</div>
+        ) : (
+          <div className="space-y-1.5">
+            {selectedSalesTrend.map((point, index) => {
+              const width = maxValue > 0 ? Math.max((point.sales / maxValue) * 100, point.sales > 0 ? 10 : 4) : 4;
+              const isHighest = point.sales > 0 && point.sales === highestValue;
+              const isLowest = point.sales > 0 && point.sales === lowestValue;
+              const fillClass = isHighest
+                ? "bg-emerald-500"
+                : isLowest
+                  ? "bg-rose-500"
+                  : index % 5 === 0
+                    ? "bg-sky-500"
+                    : index % 5 === 1
+                      ? "bg-violet-500"
+                      : index % 5 === 2
+                        ? "bg-amber-500"
+                        : index % 5 === 3
+                          ? "bg-cyan-500"
+                          : "bg-indigo-500";
+
+              return (
+                <div key={point.fullLabel} className="grid grid-cols-[52px_minmax(0,1fr)_58px] items-center gap-2">
+                  <div className="truncate text-[10px] font-semibold text-slate-700">{point.label}</div>
+                  <div className="h-2.5 overflow-hidden rounded-full bg-slate-200">
+                    <div className={`h-2.5 rounded-full ${fillClass}`} style={{ width: `${width}%` }} />
+                  </div>
+                  <div className="text-right text-[10px] font-semibold text-slate-600">
+                    {point.sales > 0 ? `Rs. ${point.sales}` : "-"}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function getKitchenStatusBadgeClass(status: KitchenStatusKey) {
+    if (status === "ready") return "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100";
+    if (status === "preparing") return "bg-amber-50 text-amber-700 ring-1 ring-amber-100";
+    return "bg-orange-50 text-orange-700 ring-1 ring-orange-100";
+  }
+
+  function getKitchenStatusDotClass(status: KitchenStatusKey) {
+    if (status === "ready") return "bg-emerald-500";
+    if (status === "preparing") return "bg-amber-500";
+    return "bg-orange-400";
+  }
+
+  function getKitchenStatusLabel(status: KitchenStatusKey) {
+    if (status === "ready") return "Ready";
+    if (status === "preparing") return "Preparing";
+    return "Pending";
+  }
+
+  function kitchenFilterButtonClass(filter: "all" | KitchenStatusKey) {
+    const active = kitchenStatusFilter === filter;
+    return `rounded-full px-3 py-2 text-[11px] font-black transition ${
+      active ? "bg-slate-950 text-white shadow-sm" : "bg-white text-slate-600 ring-1 ring-slate-200"
+    }`;
+  }
+
+
+function renderKitchenStatusCards() {
+  return (
+    <div className="space-y-3">
+      <div className="space-y-3 px-1">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-bold text-slate-900">Table Queue</h3>
+          </div>
+          <div className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold text-slate-700">
+            {kitchenQueue.length} active
+          </div>
+        </div>
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          {(["all", "pending", "preparing", "ready"] as ("all" | KitchenStatusKey)[]).map((filter) => (
+            <button
+              key={`kot-filter-${filter}`}
+              type="button"
+              onClick={() => setKitchenStatusFilter(filter)}
+              className={kitchenFilterButtonClass(filter)}
+            >
+              {filter === "all" ? "All" : getKitchenStatusLabel(filter)}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {kitchenQueue.length === 0 ? (
+        <div className="rounded-[24px] border border-dashed border-slate-200 bg-white px-4 py-8 text-center text-sm text-slate-500 shadow-sm">
+          No kitchen queue right now.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {kitchenQueue.map((table, index) => {
+            const isUpdatingKitchenTable = kitchenUpdatingTable === table.table_number;
+
+            return (
+            <div
+              key={`kitchen-queue-${table.table_number}`}
+              className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-[0_10px_28px_rgba(15,23,42,0.08)]"
+            >
+              {(index === 0 || index === 1) && (
+                <div className="mb-3">
+                  {index === 0 ? (
+                    <span className="inline-flex items-center rounded-full bg-red-600 px-3 py-1 text-[11px] font-bold text-white shadow-md">
+                      🔴 Oldest
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center rounded-full bg-amber-500 px-3 py-1 text-[11px] font-bold text-white shadow-md">
+                      🟠 2nd Oldest
+                    </span>
+                  )}
+                </div>
+              )}
+
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-base font-bold text-slate-900">Table {table.table_number}</p>
+                  </div>
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    {table.unpaid_orders_count} order(s) • {table.oldestCreatedAt ? new Date(table.oldestCreatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-"}
+                  </p>
+                </div>
+
+                <div className="relative shrink-0" onClick={(event) => event.stopPropagation()}>
+                  <button
+                    type="button"
+                    disabled={isUpdatingKitchenTable}
+                    onClick={() => setOpenKitchenStatusTable((current) => current === table.table_number ? null : table.table_number)}
+                    className={`flex min-w-[128px] items-center justify-between gap-2 rounded-2xl px-3.5 py-3 text-[12px] font-black shadow-sm outline-none transition active:scale-[0.98] ${getKitchenStatusBadgeClass(table.table_status)} ${isUpdatingKitchenTable ? "opacity-60" : ""}`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <span className={`h-2.5 w-2.5 rounded-full ${getKitchenStatusDotClass(table.table_status)}`} />
+                      {isUpdatingKitchenTable ? "Updating..." : getKitchenStatusLabel(table.table_status)}
+                    </span>
+                    <span className={`text-xs transition ${openKitchenStatusTable === table.table_number ? "rotate-180" : ""}`}>⌄</span>
+                  </button>
+
+                  {openKitchenStatusTable === table.table_number && (
+                    <div className="absolute right-0 top-[calc(100%+8px)] z-40 w-[170px] overflow-hidden rounded-[18px] border border-slate-200 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.18)]">
+                      {(["pending", "preparing", "ready"] as KitchenStatusKey[]).map((statusOption) => (
+                        <button
+                          key={`${table.table_number}-${statusOption}`}
+                          type="button"
+                          onClick={() => {
+                            setOpenKitchenStatusTable(null);
+                            if (statusOption !== table.table_status) {
+                              updateKitchenTableStatus(table.table_number, statusOption);
+                            }
+                          }}
+                          className={`flex w-full items-center justify-between px-4 py-3 text-left text-[12px] font-black transition ${
+                            statusOption === table.table_status
+                              ? "bg-slate-100 text-slate-950"
+                              : statusOption === "ready"
+                                ? "text-emerald-600 hover:bg-emerald-50"
+                                : statusOption === "preparing"
+                                  ? "text-amber-600 hover:bg-amber-50"
+                                  : "text-orange-500 hover:bg-orange-50"
+                          }`}
+                        >
+                          <span className="flex items-center gap-2">
+                            <span className={`h-2.5 w-2.5 rounded-full ${getKitchenStatusDotClass(statusOption)}`} />
+                            {getKitchenStatusLabel(statusOption)}
+                          </span>
+                          {statusOption === table.table_status ? <span>✓</span> : null}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {(() => {
+                const kotTable = convertGroupedTableToKotReceipt(table);
+                const activeKotItems = kotTable ? getActiveKotItems(kotTable.items) : [];
+                const readyKotItems = kotTable ? getReadyKotItems(kotTable.items) : [];
+                const totalQty = activeKotItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+
+                return (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => kotTable && setSelectedKitchenKotTable(kotTable)}
+                      className="mt-3 block w-full rounded-[18px] border border-dashed border-slate-300 bg-white px-4 py-4 text-left font-mono text-slate-950 shadow-inner active:scale-[0.99]"
+                    >
+                      <div className="text-center">
+                        <p className="text-[13px] font-black uppercase tracking-wide">{restaurantName || "Restaurant"}</p>
+                        <p className="mt-1 text-xs font-black">KOT</p>
+                      </div>
+                      <div className="my-3 border-t border-dashed border-slate-400" />
+                      <div className="space-y-1 text-[11px] font-bold">
+                        <p>Table : {table.table_number}</p>
+                        <p>Time  : {table.oldestCreatedAt ? new Date(table.oldestCreatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-"}</p>
+                        <p>Orders: {table.order_ids.join(", ")}</p>
+                      </div>
+                      <div className="my-3 border-t border-dashed border-slate-400" />
+                      <div className="space-y-2 text-[13px]">
+                        {activeKotItems.length > 0 && (
+                          <div className="mb-1 rounded-xl bg-orange-50 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-orange-700">
+                            New / remaining items — print हुने items
+                          </div>
+                        )}
+                        {activeKotItems.map((item, itemIndex) => (
+                          <div
+                            key={`${table.table_number}-active-${item.item_name}-${itemIndex}`}
+                            className="grid grid-cols-[1fr_auto] gap-3"
+                          >
+                            <p className="break-words font-black">{item.item_name}</p>
+                            <p className="font-black">x{item.quantity}</p>
+                          </div>
+                        ))}
+                        {readyKotItems.length > 0 && (
+                          <div className="mt-2 space-y-2 border-t border-dashed border-slate-300 pt-2">
+                            <div className="rounded-xl bg-slate-100 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-slate-500">
+                              Already ready — print हुँदैन
+                            </div>
+                            {readyKotItems.map((item, itemIndex) => (
+                              <div
+                                key={`${table.table_number}-ready-${item.item_name}-${itemIndex}`}
+                                className="grid grid-cols-[1fr_auto] gap-3 rounded-xl bg-slate-100/80 px-2 py-2 opacity-45 blur-[0.35px]"
+                              >
+                                <p className="break-words font-black line-through decoration-slate-500/60">{item.item_name}</p>
+                                <p className="font-black line-through decoration-slate-500/60">x{item.quantity}</p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <div className="my-3 border-t border-dashed border-slate-400" />
+                      <div className="space-y-1 text-[11px] font-bold">
+                        <div className="flex justify-between"><span>Print Items</span><span>{activeKotItems.length}</span></div>
+                        <div className="flex justify-between"><span>Print Qty</span><span>{totalQty}</span></div>
+                        {readyKotItems.length > 0 && (
+                          <div className="flex justify-between text-slate-500"><span>Ready Hidden From Print</span><span>{readyKotItems.length}</span></div>
+                        )}
+                      </div>
+                      {table.remarks.length > 0 && (
+                        <>
+                          <div className="my-3 border-t border-dashed border-slate-400" />
+                          <p className="text-[11px] font-black uppercase">Remarks</p>
+                          <div className="mt-1 space-y-1 text-[11px] font-bold">
+                            {table.remarks.map((remark, remarkIndex) => (
+                              <p key={`${table.table_number}-remark-${remarkIndex}`}>• {remark}</p>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                      <p className="mt-3 text-center text-[10px] font-bold text-slate-500">Tap to open print/download preview</p>
+                    </button>
+
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => kotTable && printBill(kotTable, "kot")}
+                        className="rounded-2xl border border-slate-300 bg-white py-2.5 text-xs font-black text-slate-800 shadow-sm active:scale-[0.98]"
+                      >
+                        Print KOT
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => kotTable && downloadBill(kotTable, "kot")}
+                        className="rounded-2xl border border-blue-200 bg-blue-50 py-2.5 text-xs font-black text-blue-700 shadow-sm active:scale-[0.98]"
+                      >
+                        Download
+                      </button>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function renderDashboardView() {
+    const paymentMethods = [
+      { key: "cash", label: "Cash", value: todayPaymentBreakdown.cash, percent: todayPaymentBreakdown.cashPercent, className: "bg-teal-600" },
+      { key: "qr", label: "QR", value: todayPaymentBreakdown.qr, percent: todayPaymentBreakdown.qrPercent, className: "bg-amber-500" },
+      { key: "card", label: "Card", value: todayPaymentBreakdown.card, percent: todayPaymentBreakdown.cardPercent, className: "bg-sky-600" },
+    ];
+
+    const totalPaidByMethod = paymentMethods.reduce((sum, item) => sum + Number(item.value || 0), 0);
+
+    function posSummaryCard(
+      title: string,
+      value: string,
+      icon: string,
+      accentClass: string,
+      subText?: string,
+      onClick?: () => void
+    ) {
+      const content = (
+        <>
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-[11px] font-extrabold tracking-tight text-slate-700">{title}</p>
+              <p className="mt-1 break-words text-[18px] font-black leading-tight text-slate-950">{value}</p>
+            </div>
+            <span className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-sm ${accentClass}`}>
+              {icon}
+            </span>
+          </div>
+          {subText ? <p className="mt-1.5 line-clamp-2 text-[10.5px] font-semibold leading-4 text-slate-500">{subText}</p> : null}
+        </>
+      );
+
+      if (onClick) {
+        return (
+          <button
+            type="button"
+            onClick={onClick}
+            className="min-h-[92px] rounded-[18px] border border-slate-200 bg-white p-3 text-left shadow-[0_8px_22px_rgba(15,23,42,0.07)] transition active:scale-[0.99] lg:min-h-[132px] lg:rounded-[28px] lg:p-5 lg:shadow-[0_18px_45px_rgba(15,23,42,0.08)] lg:hover:-translate-y-0.5 lg:hover:shadow-[0_24px_60px_rgba(15,23,42,0.12)]"
+          >
+            {content}
+          </button>
+        );
+      }
+
+      return (
+        <div className="min-h-[92px] rounded-[18px] border border-slate-200 bg-white p-3 text-left shadow-[0_8px_22px_rgba(15,23,42,0.07)] lg:min-h-[132px] lg:rounded-[28px] lg:p-5 lg:shadow-[0_18px_45px_rgba(15,23,42,0.08)]">
+          {content}
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-4 overflow-x-hidden pb-6 lg:mx-auto lg:max-w-[1520px] lg:space-y-6 lg:overflow-visible lg:pb-10">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-6 lg:gap-4">
+          {isStaffMode ? (
+            <>
+              {posSummaryCard(
+                "Total Sales",
+                `Rs. ${totalRevenueToday}`,
+                "↗",
+                "bg-emerald-50 text-emerald-700",
+                salesVsYesterday.text
+              )}
+
+              {posSummaryCard(
+                "Unpaid Amount",
+                `Rs. ${unpaidAmount}`,
+                "⏳",
+                "bg-rose-50 text-rose-700",
+                `${unpaidTablesCount} unpaid table(s)`
+              )}
+
+              {inventoryEnabled
+                ? posSummaryCard(
+                    "Low Stock",
+                    `${dashboardLowStockItems.length}`,
+                    dashboardLowStockItems.length > 0 ? "⚠️" : "✅",
+                    dashboardLowStockItems.length > 0 ? "bg-rose-50 text-rose-700" : "bg-emerald-50 text-emerald-700",
+                    dashboardCriticalLowStockCount > 0
+                      ? `${dashboardCriticalLowStockCount} critical item(s)`
+                      : dashboardLowStockItems.length > 0
+                        ? "Tap to view items"
+                        : "Stock healthy",
+                    () => setShowDashboardLowStockModal(true)
+                  )
+                : posSummaryCard(
+                    "Best Seller",
+                    bestSellingItem ? bestSellingItem.item_name : "-",
+                    "🔥",
+                    "bg-purple-50 text-purple-700",
+                    bestSellingItem ? `${bestSellingItem.total_quantity} sold today` : "No sales yet"
+                  )}
+
+              {posSummaryCard(
+                "Items Sold",
+                `${totalItemsSoldToday}`,
+                "🛒",
+                "bg-blue-50 text-blue-700",
+                `${totalOrdersToday} order(s) today`
+              )}
+
+              {posSummaryCard(
+                "Orders",
+                `${totalOrdersToday}`,
+                "🧾",
+                "bg-orange-50 text-orange-700",
+                `${todayDashboardGroupedTableOrders.length} active table(s)`
+              )}
+
+              {posSummaryCard(
+                "Best Seller",
+                bestSellingItem ? bestSellingItem.item_name : "-",
+                "🔥",
+                "bg-purple-50 text-purple-700",
+                bestSellingItem ? `${bestSellingItem.total_quantity} sold today` : "No sales yet"
+              )}
+            </>
+          ) : (
+            <>
+              {posSummaryCard(
+                "Today Sales",
+                `Rs. ${totalRevenueToday}`,
+                "↗",
+                "bg-emerald-50 text-emerald-700",
+                salesVsYesterday.text
+              )}
+
+              {posSummaryCard(
+                inventoryEnabled ? "Today Profit" : "Est. Profit",
+                `Rs. ${todayProfit}`,
+                "💸",
+                "bg-teal-50 text-teal-700",
+                inventoryEnabled
+                  ? todaySnapshotProcessingCount > 0
+                    ? `${todaySnapshotProcessingCount} payment processing...`
+                    : profitVsYesterday.text
+                  : profitVsYesterday.text
+              )}
+
+              {posSummaryCard(
+                "Unpaid Amount",
+                `Rs. ${unpaidAmount}`,
+                "⏳",
+                "bg-rose-50 text-rose-700",
+                `${unpaidTablesCount} unpaid table(s)`
+              )}
+
+              {inventoryEnabled
+                ? posSummaryCard(
+                    "Today Cost",
+                    `Rs. ${todayLockedCost}`,
+                    "📦",
+                    "bg-amber-50 text-amber-700",
+                    "Locked after payment"
+                  )
+                : posSummaryCard(
+                    "Items Sold",
+                    `${totalItemsSoldToday}`,
+                    "🧾",
+                    "bg-orange-50 text-orange-700",
+                    bestSellingItem ? `Best: ${bestSellingItem.item_name}` : "No sold items yet"
+                  )}
+
+              {inventoryEnabled
+                ? posSummaryCard(
+                    "Low Stock",
+                    `${dashboardLowStockItems.length}`,
+                    dashboardLowStockItems.length > 0 ? "⚠️" : "✅",
+                    dashboardLowStockItems.length > 0 ? "bg-rose-50 text-rose-700" : "bg-emerald-50 text-emerald-700",
+                    dashboardCriticalLowStockCount > 0
+                      ? `${dashboardCriticalLowStockCount} critical item(s)`
+                      : dashboardLowStockItems.length > 0
+                        ? "Tap to view items"
+                        : "Stock healthy",
+                    () => setShowDashboardLowStockModal(true)
+                  )
+                : posSummaryCard(
+                    "Best Seller",
+                    bestSellingItem ? bestSellingItem.item_name : "-",
+                    "🔥",
+                    "bg-purple-50 text-purple-700",
+                    bestSellingItem ? `${bestSellingItem.total_quantity} sold today` : "No sales yet"
+                  )}
+
+              {posSummaryCard(
+                "Items Sold",
+                `${totalItemsSoldToday}`,
+                "🛒",
+                "bg-blue-50 text-blue-700",
+                `${totalOrdersToday} order(s) today`
+              )}
+            </>
+          )}
+        </div>
+
+        {showDashboardLowStockModal && (
+          <div className="fixed inset-0 z-[9998] flex items-end justify-center bg-slate-950/45 px-3 pb-3 backdrop-blur-sm">
+            <div className="max-h-[82vh] w-full max-w-md overflow-hidden rounded-[28px] bg-white shadow-[0_24px_80px_rgba(15,23,42,0.28)]">
+              <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+                <div>
+                  <h3 className="text-base font-black text-slate-950">Low Stock</h3>
+                  <p className="text-xs font-semibold text-slate-500">Inventory items below threshold</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowDashboardLowStockModal(false)}
+                  className="rounded-full bg-slate-100 px-3 py-1.5 text-sm font-black text-slate-700"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="max-h-[58vh] overflow-y-auto px-5 py-4">
+                {dashboardLowStockItems.length === 0 ? (
+                  <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-center">
+                    <p className="text-2xl">✅</p>
+                    <p className="mt-2 text-sm font-black text-emerald-800">No low stock item</p>
+                    <p className="mt-1 text-xs font-semibold text-emerald-700">Stock level looks healthy right now.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {dashboardLowStockItems.map((item) => {
+                      const threshold = Number(item.low_stock_threshold || 0);
+                      const current = Number(item.current_stock || 0);
+                      const isCritical = current <= 0 || (threshold > 0 && current <= threshold * 0.25);
+                      const percent = threshold > 0 ? Math.max(0, Math.min(100, Math.round((current / threshold) * 100))) : 0;
+
+                      return (
+                        <div
+                          key={item.id}
+                          className={`rounded-2xl border p-3 ${isCritical ? "border-rose-200 bg-rose-50" : "border-amber-200 bg-amber-50"}`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-black text-slate-950">{item.item_name}</p>
+                              <p className="mt-1 text-xs font-semibold text-slate-600">
+                                Stock: {current} {item.unit} • Threshold: {threshold} {item.unit}
+                              </p>
+                            </div>
+                            <span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-black uppercase ${isCritical ? "bg-rose-600 text-white" : "bg-amber-500 text-white"}`}>
+                              {isCritical ? "Critical" : "Low"}
+                            </span>
+                          </div>
+                          <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/80">
+                            <div
+                              className={`h-full rounded-full ${isCritical ? "bg-rose-500" : "bg-amber-500"}`}
+                              style={{ width: `${percent}%` }}
+                            />
+                          </div>
+                          <p className="mt-2 text-[11px] font-bold text-slate-500">
+                            {threshold > 0 ? `${percent}% of threshold remaining` : "Threshold is zero"}
+                          </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {dashboardLowStockItems.length > 0 && isOwnerMode ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowDashboardLowStockModal(false);
+                      setPopupView("inventory");
+                      setInventoryTab("items");
+                      setInventoryStockFilter("low");
+                    }}
+                    className="mt-4 w-full rounded-2xl bg-slate-950 px-4 py-3 text-sm font-black text-white"
+                  >
+                    Open Inventory Low Stock
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1.65fr)_minmax(360px,0.95fr)]">
+          <div className="space-y-6">
+            <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-[0_8px_24px_rgba(15,23,42,0.06)] lg:rounded-[34px] lg:p-6 lg:shadow-[0_22px_70px_rgba(15,23,42,0.08)]">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-[15px] font-black text-slate-950">Today&apos;s Sales Trend</h3>
+              <p className="text-[11px] font-semibold text-slate-500">Hourly sales movement</p>
+            </div>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-[10px] font-black text-slate-600">
+              {peakHourLabel === "-" ? "No peak" : `Peak ${peakHourLabel}`}
+            </span>
+          </div>
+          {renderHourlyAreaChart()}
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 lg:gap-4">
+          <div className="rounded-[22px] border border-slate-200 bg-white p-3.5 shadow-[0_8px_24px_rgba(15,23,42,0.06)]">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-sm font-black text-slate-950">Best Sellers</h3>
+              <span className="text-[10px] font-bold text-slate-400">Qty</span>
+            </div>
+            {salesByItem.length === 0 ? (
+              <p className="py-5 text-center text-xs font-semibold text-slate-400">No sales yet</p>
+            ) : (
+              <div className="space-y-2.5">
+                {salesByItem.slice(0, 4).map((item, index) => (
+                  <div key={item.item_name} className="flex items-center justify-between gap-2">
+                    <div className="min-w-0 flex items-center gap-2">
+                      <span className="w-4 shrink-0 text-[11px] font-black text-slate-500">{index + 1}.</span>
+                      <p className="truncate text-[11px] font-black text-slate-800">{item.item_name}</p>
+                    </div>
+                    <span className="shrink-0 text-[11px] font-black text-slate-950">{item.total_quantity}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-[22px] border border-slate-200 bg-white p-3.5 shadow-[0_8px_24px_rgba(15,23,42,0.06)]">
+            <h3 className="mb-3 text-sm font-black text-slate-950">Method of Payment</h3>
+            <div className="mx-auto mb-3 h-20 w-20 rounded-full p-2" style={{ background: `conic-gradient(#0f766e 0 ${todayPaymentBreakdown.cashPercent}%, #f59e0b ${todayPaymentBreakdown.cashPercent}% ${Number(todayPaymentBreakdown.cashPercent) + Number(todayPaymentBreakdown.qrPercent)}%, #0284c7 ${Number(todayPaymentBreakdown.cashPercent) + Number(todayPaymentBreakdown.qrPercent)}% 100%)` }}>
+              <div className="flex h-full w-full items-center justify-center rounded-full bg-white text-[10px] font-black text-slate-700">
+                Rs. {totalPaidByMethod}
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              {paymentMethods.map((method) => (
+                <div key={method.key} className="flex items-center justify-between gap-2 text-[10.5px] font-bold text-slate-600">
+                  <span className="flex items-center gap-1.5">
+                    <span className={`h-2 w-2 rounded-full ${method.className}`} />
+                    {method.label}
+                  </span>
+                  <span className="text-right">Rs. {method.value} · {method.percent}%</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+            {inventoryEnabled && (
+          <div className="grid grid-cols-2 gap-3 lg:gap-4">
+            <div className="rounded-[20px] border border-emerald-200 bg-emerald-50 px-4 py-3 shadow-sm">
+              <p className="text-[11px] font-bold text-slate-500">🏆 Top Profit Item</p>
+              <p className="mt-1 truncate text-sm font-black text-slate-950">{topProfitItem?.item_name || "-"}</p>
+              <p className="mt-1 text-[11px] font-black text-emerald-700">Rs. {Math.round(topProfitItem?.profit || 0)} profit</p>
+            </div>
+
+            <div className="rounded-[20px] border border-rose-200 bg-rose-50 px-4 py-3 shadow-sm">
+              <p className="text-[11px] font-bold text-slate-500">⚠ Lowest Profit Item</p>
+              <p className="mt-1 truncate text-sm font-black text-slate-950">{worstProfitItem?.item_name || "-"}</p>
+              <p className="mt-1 text-[11px] font-black text-rose-700">Rs. {Math.round(worstProfitItem?.profit || 0)} profit</p>
+            </div>
+          </div>
+        )}
+
+          </div>
+
+          <div className="space-y-6">
+            <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-[0_8px_24px_rgba(15,23,42,0.06)] lg:sticky lg:top-6 lg:rounded-[34px] lg:p-5 lg:shadow-[0_22px_70px_rgba(15,23,42,0.08)]">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-[15px] font-black text-slate-950">Recent Activity</h3>
+              <p className="text-[11px] font-semibold text-slate-500">Today only — resets automatically tomorrow</p>
+            </div>
+            <div className="flex rounded-full bg-slate-100 p-1">
+              {(["unpaid", "paid", "activity"] as const).map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setDashboardMobileTab(tab)}
+                  className={`rounded-full px-2.5 py-1 text-[10px] font-black capitalize transition ${
+                    dashboardMobileTab === tab ? "bg-white text-slate-950 shadow-sm" : "text-slate-500"
+                  }`}
+                >
+                  {tab === "paid" ? "Paid" : tab}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {dashboardMobileTab === "unpaid" ? (
+            todayDashboardGroupedTableOrders.length === 0 ? (
+              <p className="rounded-2xl bg-slate-50 py-5 text-center text-sm font-semibold text-slate-400">No unpaid tables today.</p>
+            ) : (
+              <div className="space-y-2.5">
+                {todayDashboardGroupedTableOrders.slice(0, 5).map((table) => (
+                  <button
+                    key={table.table_number}
+                    type="button"
+                    onClick={() => openDashboardUnpaidShortcut(table)}
+                    className="flex w-full items-center justify-between gap-3 rounded-2xl border border-rose-100 bg-slate-50 px-3.5 py-3 text-left transition active:scale-[0.99] active:bg-rose-50"
+                  >
+                    <div className="min-w-0 flex items-center gap-2.5">
+                      <span className="h-2 w-2 shrink-0 rounded-full bg-rose-500" />
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-black text-slate-900">Table {table.table_number}</p>
+                        <p className="text-[11px] font-semibold text-slate-500">{table.unpaid_orders_count} unpaid order(s) • Tap to pay</p>
+                      </div>
+                    </div>
+                    <p className="shrink-0 text-sm font-black text-slate-950">Rs. {table.total}</p>
+                  </button>
+                ))}
+              </div>
+            )
+          ) : dashboardMobileTab === "paid" ? (
+            todayPaidOrders.length === 0 ? (
+              <p className="rounded-2xl bg-slate-50 py-5 text-center text-sm font-semibold text-slate-400">No payments today.</p>
+            ) : (
+              <div className="space-y-2.5">
+                {todayPaidOrders.slice(0, 5).map((order) => {
+                  const total =
+                    order.order_items?.reduce(
+                      (sum, item) => sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
+                      0
+                    ) || 0;
+
+                  return (
+                    <button
+                      key={`paid-${order.id}`}
+                      type="button"
+                      onClick={() => openPaidOrderBill(order)}
+                      className="flex w-full items-center justify-between gap-3 rounded-2xl border border-emerald-100 bg-emerald-50/70 px-3.5 py-3 text-left transition active:scale-[0.99] active:bg-emerald-100"
+                    >
+                      <div className="min-w-0 flex items-center gap-2.5">
+                        <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-black text-slate-900">Table {order.table_number}</p>
+                          <p className="text-[11px] font-semibold text-slate-500">
+                            {order.payment_method ? order.payment_method.toUpperCase() : "PAID"} • {order.paid_at ? new Date(order.paid_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Paid"} • View bill
+                          </p>
+                        </div>
+                      </div>
+                      <p className="shrink-0 text-sm font-black text-emerald-700">Rs. {total}</p>
+                    </button>
+                  );
+                })}
+              </div>
+            )
+          ) : recentActivity.length === 0 ? (
+            <p className="rounded-2xl bg-slate-50 py-5 text-center text-sm font-semibold text-slate-400">No activity today.</p>
+          ) : (
+            <div className="space-y-3">
+              {recentActivity.slice(0, 5).map((order) => {
+                const total =
+                  order.order_items?.reduce(
+                    (sum, item) => sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
+                    0
+                  ) || 0;
+                const firstItem = order.order_items?.[0];
+                const itemCount = order.order_items?.length || 0;
+
+                return (
+                  <button
+                    key={order.id}
+                    type="button"
+                    onClick={() => openDashboardOrderShortcut(order)}
+                    className="flex w-full items-start gap-3 rounded-2xl border border-slate-100 bg-slate-50 px-3.5 py-3 text-left transition active:scale-[0.99] active:bg-slate-100"
+                  >
+                    <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${order.is_paid ? "bg-emerald-500" : "bg-rose-500"}`} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="min-w-0 text-[12px] font-black leading-5 text-slate-900">
+                          Table {order.table_number} • {firstItem ? firstItem.item_name : "Order"}{itemCount > 1 ? ` +${itemCount - 1}` : ""}
+                        </p>
+                        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[9px] font-black ${order.sync_status === "pending_payment" ? "bg-blue-100 text-blue-700" : order.is_paid ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
+                          {order.sync_status === "pending_payment" ? "Sync" : order.is_paid ? "Paid" : "Unpaid"}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex items-center justify-between gap-2">
+                        <p className="text-[11px] font-semibold text-slate-500">{new Date(order.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} • {order.is_paid ? "View bill" : "Open pay"}</p>
+                        <p className="text-[12px] font-black text-slate-950">Rs. {total}</p>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderSalesOverviewView() {
+    const topItems = selectedSalesSummary.topItems;
+    const rangeOptions: { key: InsightRange; label: string }[] = [
+      { key: "today", label: "Today" },
+      { key: "yesterday", label: "Yesterday" },
+      { key: "thisWeek", label: "This Week" },
+      { key: "lastWeek", label: "Last Week" },
+      { key: "thisMonth", label: "This Month" },
+      { key: "lastMonth", label: "Last Month" },
+      { key: "thisYear", label: "This Year" },
+      { key: "previousYear", label: "Previous Year" },
+      { key: "lifetime", label: "Lifetime" },
+      { key: "custom", label: "Custom" },
+    ];
+
+    const paymentTotal =
+      Number(selectedSalesSummary.paymentTotals.cash || 0) +
+      Number(selectedSalesSummary.paymentTotals.qr || 0) +
+      Number(selectedSalesSummary.paymentTotals.card || 0);
+
+    const getPaymentShare = (value: number) => {
+      if (paymentTotal <= 0) return 0;
+      return Math.round((Number(value || 0) / paymentTotal) * 100);
+    };
+
+    const insightPaymentRows = [
+      { label: "Cash", value: Number(selectedSalesSummary.paymentTotals.cash || 0) },
+      { label: "QR", value: Number(selectedSalesSummary.paymentTotals.qr || 0) },
+      { label: "Card", value: Number(selectedSalesSummary.paymentTotals.card || 0) },
+    ];
+
+    const getTopItemImageUrl = (itemName: string) => {
+      const cleanTarget = normalizeDefaultImageKeyword(itemName);
+      if (!cleanTarget) return "";
+      const matchedMenu = menuItems.find((menu) => normalizeDefaultImageKeyword(menu.item_name) === cleanTarget);
+      if (matchedMenu?.image_url) return matchedMenu.image_url;
+      const partialMatch = menuItems.find((menu) => {
+        const cleanMenuName = normalizeDefaultImageKeyword(menu.item_name);
+        return cleanMenuName && (cleanMenuName.includes(cleanTarget) || cleanTarget.includes(cleanMenuName));
+      });
+      return partialMatch?.image_url || "";
+    };
+
+    const renderTopItemImage = (itemName: string, large = false) => {
+      const imageUrl = getTopItemImageUrl(itemName);
+      const sizeClass = large ? "h-20 w-20 rounded-[24px]" : "h-14 w-14 rounded-2xl";
+      if (imageUrl) {
+        return (
+          <div className={`${sizeClass} flex shrink-0 items-center justify-center overflow-hidden bg-white p-1.5 ring-1 ring-slate-200`}>
+            <img
+              src={imageUrl}
+              alt={itemName}
+              className="h-full w-full object-contain"
+            />
+          </div>
+        );
+      }
+
+      return (
+        <div className={`${sizeClass} flex shrink-0 items-center justify-center bg-slate-100 text-lg font-black text-slate-400 ring-1 ring-slate-200`}>
+          {String(itemName || "I").charAt(0).toUpperCase()}
+        </div>
+      );
+    };
+
+    const renderPeriodBreakdown = () => {
+      const showBreakdown = salesPeriod === "week" || salesPeriod === "month" || (salesPeriod === "year" && insightRange !== "lifetime");
+      if (!showBreakdown) return null;
+
+      const maxSales = Math.max(0, ...selectedSalesTrend.map((point) => Number(point.sales || 0)));
+      const title = salesPeriod === "week" ? "7-Day Sales" : salesPeriod === "month" ? "Daily Sales" : "12-Month Sales";
+      const subtitle = salesPeriod === "week"
+        ? "Selected week ko daily comparison"
+        : salesPeriod === "month"
+          ? "Selected month ko day-by-day comparison"
+          : "One-glance monthly comparison";
+
+      return (
+        <div className="rounded-[30px] border border-slate-200 bg-white p-4 shadow-[0_12px_42px_rgba(15,23,42,0.06)]">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-black text-slate-950">{title}</h3>
+              <p className="text-[11px] font-semibold text-slate-500">{subtitle}</p>
+            </div>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-[10px] font-black text-slate-500">
+              {getInsightRangeDisplayLabel()}
+            </span>
+          </div>
+
+          <div className="space-y-2.5">
+            {selectedSalesTrend.map((point, index) => {
+              const value = Number(point.sales || 0);
+              const percent = maxSales > 0 ? Math.max(4, Math.round((value / maxSales) * 100)) : 4;
+              const shortLabel = salesPeriod === "year" ? point.label.slice(0, 3) : point.label;
+
+              return (
+                <div key={`insight-vertical-${point.fullLabel}-${index}`} className="grid grid-cols-[64px_1fr_82px] items-center gap-3 rounded-[18px] border border-slate-100 bg-slate-50 px-3 py-2.5">
+                  <p className="truncate text-sm font-black text-slate-600">{shortLabel}</p>
+                  <div className="h-3 overflow-hidden rounded-full bg-white ring-1 ring-slate-200">
+                    <div className="h-full rounded-full bg-slate-900/80" style={{ width: `${percent}%` }} />
+                  </div>
+                  <p className="text-right text-[11px] font-black text-slate-950">Rs. {value}</p>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    };
+
+    return (
+      <div className="space-y-3 pb-4 lg:min-h-[calc(100vh-92px)] lg:space-y-4 lg:rounded-[30px] lg:border lg:border-slate-200 lg:bg-white lg:p-4 lg:shadow-[0_18px_55px_rgba(15,23,42,0.06)]">
+        <div className="rounded-[24px] border border-slate-200 bg-white p-2.5 shadow-[0_10px_32px_rgba(15,23,42,0.07)] lg:rounded-[22px] lg:bg-white lg:p-3 lg:text-slate-950 lg:shadow-[0_12px_35px_rgba(15,23,42,0.06)]">
+          <div className="flex items-center gap-2 lg:justify-between">
+            <div className="relative min-w-0 flex-1">
+              <button
+                type="button"
+                onClick={() => setShowInsightRangeMenu((current) => !current)}
+                className="flex h-12 w-full items-center justify-between gap-2 rounded-[18px] border border-slate-200 bg-slate-50 px-3 text-left active:scale-[0.99] lg:h-9 lg:max-w-[190px] lg:border-slate-200 lg:bg-slate-50 lg:px-2.5"
+              >
+                <div className="min-w-0">
+                  <p className="text-[9px] font-black uppercase tracking-[0.16em] text-slate-400 lg:text-slate-400">Insights Range</p>
+                  <p className="truncate text-sm font-black leading-4 text-slate-950 lg:text-slate-950">{getInsightRangeDisplayLabel()}</p>
+                </div>
+                <span className={`shrink-0 text-base font-black text-slate-500 transition lg:text-slate-500 ${showInsightRangeMenu ? "rotate-180" : ""}`}>⌄</span>
+              </button>
+
+              {showInsightRangeMenu && (
+                <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-40 overflow-hidden rounded-[18px] border border-slate-200 bg-white p-1.5 shadow-[0_22px_70px_rgba(15,23,42,0.20)]">
+                  {rangeOptions.map((option) => (
+                    <button
+                      key={option.key}
+                      type="button"
+                      onClick={() => selectInsightRange(option.key)}
+                      className={`flex w-full items-center justify-between rounded-[13px] px-2.5 py-2 text-left text-xs font-black active:scale-[0.99] ${insightRange === option.key ? "bg-red-600 text-white" : "text-slate-700 hover:bg-slate-50"}`}
+                    >
+                      <span>{option.label}</span>
+                      {insightRange === option.key && <span>✓</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="grid h-12 w-[92px] shrink-0 grid-cols-2 rounded-[18px] bg-slate-100 p-1 ring-1 ring-slate-200 lg:h-9 lg:w-[74px] lg:bg-slate-50 lg:ring-slate-200">
+              <button type="button" aria-label="Use AD calendar" onClick={() => setCalendarMode("ad")} className={`rounded-[10px] text-[10px] font-black ${calendarMode === "ad" ? "bg-white text-slate-950 shadow-sm" : "text-slate-500 lg:text-slate-500"}`}>AD</button>
+              <button type="button" aria-label="Use BS calendar" onClick={() => setCalendarMode("bs")} className={`rounded-[10px] text-[10px] font-black ${calendarMode === "bs" ? "bg-white text-slate-950 shadow-sm" : "text-slate-500 lg:text-slate-500"}`}>BS</button>
+            </div>
+          </div>
+          <div className="mt-2 hidden items-center justify-between gap-3 px-1 lg:flex"><div><p className="text-[9px] font-black uppercase tracking-[0.18em] text-slate-400">Owner Insights</p><h2 className="mt-0.5 text-xl font-black tracking-tight text-red-600">Financial Dashboard</h2></div><p className="max-w-[420px] truncate text-right text-xs font-semibold text-slate-500">{getSalesRangeLabel()}</p></div><p className="mt-1.5 truncate px-1 text-[11px] font-semibold text-slate-500 lg:hidden">{getSalesRangeLabel()}</p>
+        </div>
+
+        <div className="grid grid-cols-4 gap-3 lg:grid-cols-12 lg:gap-3">
+          <div className="col-span-4 rounded-[32px] border border-slate-200 bg-white p-5 shadow-[0_18px_55px_rgba(15,23,42,0.09)] lg:col-span-4 lg:min-h-[118px] lg:rounded-[24px] lg:bg-white lg:p-4 lg:text-slate-950 lg:shadow-[0_12px_36px_rgba(15,23,42,0.06)]">
+            <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400 lg:text-red-500">Total Sales</p>
+            <p className="mt-2 text-4xl font-black tracking-tight text-slate-950 lg:mt-2 lg:text-3xl lg:text-red-600">Rs. {selectedSalesSummary.totalSales}</p>
+            <p className="mt-2 text-xs font-bold text-slate-500 lg:mt-1 lg:text-xs lg:text-slate-500">{getInsightRangeDisplayLabel()} • {selectedSalesSummary.totalOrders} paid order(s)</p>
+          </div>
+
+          <div className="col-span-2 rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2 lg:rounded-[22px] lg:p-3.5 lg:shadow-[0_10px_30px_rgba(15,23,42,0.05)]">
+            <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Profit</p>
+            <p className="mt-2 text-2xl font-black text-slate-950 lg:text-xl lg:text-red-600">Rs. {selectedSalesSummary.totalProfit}</p>
+            <p className="mt-1 text-[11px] font-bold text-slate-500">{inventoryEnabled ? "Real cost" : "Estimated"}</p>
+          </div>
+
+          <div className="col-span-2 rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2 lg:rounded-[22px] lg:p-3.5 lg:shadow-[0_10px_30px_rgba(15,23,42,0.05)]">
+            <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Orders</p>
+            <p className="mt-2 text-2xl font-black text-slate-950 lg:text-xl lg:text-red-600">{selectedSalesSummary.totalOrders}</p>
+            <p className="mt-1 text-[11px] font-bold text-slate-500">Paid orders only</p>
+          </div>
+
+          <div className="col-span-2 rounded-[22px] border border-slate-200 bg-white p-3.5 shadow-sm lg:col-span-2 lg:rounded-[22px] lg:p-3.5 lg:shadow-[0_10px_30px_rgba(15,23,42,0.05)]">
+            <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Avg Order</p>
+            <p className="mt-1 text-lg font-black text-slate-950 lg:text-base lg:text-red-600">Rs. {selectedSalesSummary.avgOrderValue}</p>
+          </div>
+
+          <div className="col-span-2 rounded-[22px] border border-slate-200 bg-white p-3.5 shadow-sm lg:col-span-2 lg:rounded-[22px] lg:p-3.5 lg:shadow-[0_10px_30px_rgba(15,23,42,0.05)]">
+            <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Cost</p>
+            <p className="mt-1 text-lg font-black text-slate-950 lg:text-base lg:text-red-600">Rs. {selectedSalesSummary.totalCost}</p>
+          </div>
+        </div>
+
+        <div className="space-y-3 lg:grid lg:grid-cols-12 lg:gap-4 lg:space-y-0">
+          <div className="space-y-3 lg:col-span-8 lg:space-y-4">
+            <div className="rounded-[32px] border border-slate-200 bg-white p-4 shadow-[0_18px_55px_rgba(15,23,42,0.09)] lg:rounded-[24px] lg:p-4 lg:shadow-[0_12px_36px_rgba(15,23,42,0.06)]">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-[16px] font-black text-slate-950">Sales Trend</h3>
+                  <p className="text-[11px] font-semibold text-slate-500">Clean sales movement.</p>
+                </div>
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-[10px] font-black text-slate-600">{getInsightRangeDisplayLabel()}</span>
+              </div>
+              {renderCompactTrendChart()}
+            </div>
+
+            {renderPeriodBreakdown()}
+          </div>
+
+          <div className="space-y-3 lg:col-span-4 lg:space-y-4">
+            <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_12px_42px_rgba(15,23,42,0.07)] lg:rounded-[24px] lg:p-4 lg:shadow-[0_12px_36px_rgba(15,23,42,0.06)]">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-black text-slate-950">Payment Split</h3>
+              <p className="text-[11px] font-semibold text-slate-500">Cash, QR and card split</p>
+            </div>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-[10px] font-black text-slate-500">Rs. {paymentTotal}</span>
+          </div>
+
+          <div className="space-y-3">
+            {insightPaymentRows.map((row) => {
+              const share = getPaymentShare(row.value);
+              return (
+                <div key={row.label} className="rounded-[22px] border border-slate-200 bg-slate-50 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-black text-slate-800">{row.label}</p>
+                    <div className="text-right">
+                      <p className="text-sm font-black text-slate-950">Rs. {row.value}</p>
+                      <p className="text-[11px] font-bold text-slate-500">{share}%</p>
+                    </div>
+                  </div>
+                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-white ring-1 ring-slate-200">
+                    <div className="h-full rounded-full bg-red-500" style={{ width: `${share}%` }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+            {inventoryEnabled && (
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-1">
+                <div className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-sm lg:rounded-[28px] lg:p-5">
+                  <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Highest Profit</p>
+                  <p className="mt-2 truncate text-sm font-black text-slate-950">{selectedSalesSummary.highestProfitItem?.item_name || "-"}</p>
+                  <p className="mt-1 text-xs font-bold text-slate-500">Rs. {Math.round(Number(selectedSalesSummary.highestProfitItem?.profit || 0))}</p>
+                </div>
+                <div className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-sm lg:rounded-[28px] lg:p-5">
+                  <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Lowest Profit</p>
+                  <p className="mt-2 truncate text-sm font-black text-slate-950">{selectedSalesSummary.lowestProfitItem?.item_name || "-"}</p>
+                  <p className="mt-1 text-xs font-bold text-slate-500">Rs. {Math.round(Number(selectedSalesSummary.lowestProfitItem?.profit || 0))}</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-[30px] border border-slate-200 bg-white p-4 shadow-[0_12px_42px_rgba(15,23,42,0.07)] lg:rounded-[24px] lg:p-4 lg:shadow-[0_12px_36px_rgba(15,23,42,0.06)]">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-black text-slate-950">Top 5 Items</h3>
+              <p className="text-[11px] font-semibold text-slate-500">Sold count and amount.</p>
+            </div>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-[10px] font-black text-slate-500">{topItems.length}/5</span>
+          </div>
+
+          {topItems.length === 0 ? (
+            <div className="rounded-[24px] bg-slate-50 p-5 text-center text-sm font-bold text-slate-500 ring-1 ring-slate-200">
+              No item sales for this range.
+            </div>
+          ) : (
+            <div className="space-y-2.5 lg:space-y-0 lg:overflow-hidden lg:rounded-[24px] lg:border lg:border-slate-200">
+              {topItems.map((item, index) => (
+                <div
+                  key={`${item.item_name}-${index}`}
+                  className={`${index === 0 ? "rounded-[28px] p-4 lg:rounded-none lg:p-4" : "rounded-[22px] p-3 lg:rounded-none lg:p-4"} flex items-center gap-3 border border-slate-200 bg-slate-50 lg:border-x-0 lg:border-t-0 lg:bg-white lg:hover:bg-slate-50`}
+                >
+                  {renderTopItemImage(item.item_name, index === 0)}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 lg:justify-between">
+                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white text-[10px] font-black text-slate-600 ring-1 ring-slate-200">{index + 1}</span>
+                      <p className={`${index === 0 ? "text-base" : "text-sm"} truncate font-black text-slate-950`}>{item.item_name}</p>
+                    </div>
+                    <p className="mt-1 text-xs font-bold text-slate-500">{item.total_quantity} sold</p>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <p className={`${index === 0 ? "text-base" : "text-sm"} font-black text-slate-950`}>Rs. {item.total_revenue}</p>
+                    <p className="mt-0.5 text-[10px] font-bold text-slate-400">Total</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+
+  function renderReportView() {
+    return (
+      <div className="manage-subpage-slide space-y-4 pb-4 pt-5">
+        <button type="button" onClick={() => changeView("manage")} className="inline-flex items-center rounded-full bg-white px-3.5 py-2 text-xs font-black text-slate-700 shadow-sm ring-1 ring-slate-200 active:scale-[0.98]">← Back Manage</button>
+        {sectionTitle(
+          "Report",
+          "Date-wise, custom range, item-wise, payment breakdown",
+          "📝"
+        )}
+
+        <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm space-y-5">
+          <div className="rounded-[22px] border border-blue-200 bg-blue-50 p-4 space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-base font-bold text-slate-900">Date-wise Report</h3>
+              <span className="text-xs text-slate-600">
+                {formatReportDateLabel(selectedReportDate)}
+              </span>
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm font-semibold text-slate-700">Date</label>
+              <input
+                type="date"
+                value={selectedReportDate}
+                onChange={(e) => setSelectedReportDate(e.target.value)}
+                className="w-full rounded-2xl border border-slate-200/80 bg-white/90 px-4 py-3 font-semibold text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              {statCard("Total Sales", `Rs. ${reportData.totalSales}`, "💰")}
+              {statCard("Paid Orders", reportData.paidOrdersCount, "✅")}
+              {statCard("Items Sold", reportData.totalItemsSold, "🍽️")}
+              {statCard("Avg Order", `Rs. ${reportData.averageOrderValue}`, "📦")}
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-3">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <p className="text-sm font-black text-slate-900">Summary Report</p>
+                <div className="flex gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => downloadOwnerSummaryCsvForDates(selectedReportDate, selectedReportDate, selectedReportDate)}
+                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-black text-slate-700 active:scale-[0.98]"
+                  >
+                    CSV
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => downloadOwnerSummaryPdfForDates(selectedReportDate, selectedReportDate, selectedReportDate)}
+                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-black text-slate-700 active:scale-[0.98]"
+                  >
+                    PDF
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => printOwnerSummaryForDates(selectedReportDate, selectedReportDate, selectedReportDate)}
+                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-black text-slate-700 active:scale-[0.98]"
+                  >
+                    Print
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-3">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-black text-slate-900">Item Details</p>
+                <button
+                  type="button"
+                  onClick={() => downloadOwnerItemDetailsCsvForDates(selectedReportDate, selectedReportDate, selectedReportDate)}
+                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-black text-slate-700 active:scale-[0.98]"
+                >
+                  CSV
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <h4 className="mb-3 font-bold text-slate-900">Item-wise Report</h4>
+
+              {reportData.itemWiseReport.length === 0 ? (
+                <p className="text-sm text-slate-500">No paid orders found for this date.</p>
+              ) : (
+                <div className="space-y-3">
+                  {reportData.itemWiseReport.map((item) => (
+                    <div
+                      key={item.item_name}
+                      className="flex items-center justify-between rounded-xl border border-slate-200 px-3 py-3"
+                    >
+                      <div>
+                        <p className="font-semibold text-slate-900">{item.item_name}</p>
+                        <p className="text-sm text-slate-500">Qty: {item.total_quantity}</p>
+                      </div>
+                      <p className="font-bold text-slate-900">Rs. {item.total_revenue}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <h4 className="mb-3 font-bold text-slate-900">Payment Breakdown</h4>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between rounded-xl border border-slate-200 px-3 py-3">
+                  <span>Cash</span>
+                  <span className="font-bold">Rs. {reportData.paymentTotals.cash}</span>
+                </div>
+                <div className="flex items-center justify-between rounded-xl border border-slate-200 px-3 py-3">
+                  <span>QR</span>
+                  <span className="font-bold">Rs. {reportData.paymentTotals.qr}</span>
+                </div>
+                <div className="flex items-center justify-between rounded-xl border border-slate-200 px-3 py-3">
+                  <span>Card</span>
+                  <span className="font-bold">Rs. {reportData.paymentTotals.card}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-[22px] border border-orange-200 bg-orange-50 p-4 space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-base font-bold text-slate-900">Custom Range Report</h3>
+              <span className="text-xs text-slate-600">
+                {formatRangeLabel(reportFromDate, reportToDate)}
+              </span>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="mb-2 block text-sm font-semibold text-slate-700">From Date</label>
+                <input
+                  type="date"
+                  value={reportFromDate}
+                  onChange={(e) => setReportFromDate(e.target.value)}
+                  className="w-full rounded-2xl border border-slate-200/80 bg-white/90 px-4 py-3 font-semibold text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-semibold text-slate-700">To Date</label>
+                <input
+                  type="date"
+                  value={reportToDate}
+                  onChange={(e) => setReportToDate(e.target.value)}
+                  className="w-full rounded-2xl border border-slate-200/80 bg-white/90 px-4 py-3 font-semibold text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                />
+              </div>
+            </div>
+
+            {reportFromDate > reportToDate && (
+              <p className="text-sm font-medium text-red-600">
+                From date cannot be greater than To date.
+              </p>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              {statCard(
+                "Total Sales",
+                `Rs. ${reportFromDate > reportToDate ? 0 : rangeReportData.totalSales}`,
+                "💰"
+              )}
+              {statCard(
+                "Paid Orders",
+                reportFromDate > reportToDate ? 0 : rangeReportData.paidOrdersCount,
+                "✅"
+              )}
+              {statCard(
+                "Items Sold",
+                reportFromDate > reportToDate ? 0 : rangeReportData.totalItemsSold,
+                "🍽️"
+              )}
+              {statCard(
+                "Avg Order",
+                `Rs. ${reportFromDate > reportToDate ? 0 : rangeReportData.averageOrderValue}`,
+                "📦"
+              )}
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-3">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <p className="text-sm font-black text-slate-900">Summary Report</p>
+                <div className="flex gap-1.5">
+                  <button
+                    type="button"
+                    disabled={reportFromDate > reportToDate}
+                    onClick={() => downloadOwnerSummaryCsvForDates(reportFromDate, reportToDate)}
+                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-black text-slate-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    CSV
+                  </button>
+                  <button
+                    type="button"
+                    disabled={reportFromDate > reportToDate}
+                    onClick={() => downloadOwnerSummaryPdfForDates(reportFromDate, reportToDate)}
+                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-black text-slate-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    PDF
+                  </button>
+                  <button
+                    type="button"
+                    disabled={reportFromDate > reportToDate}
+                    onClick={() => printOwnerSummaryForDates(reportFromDate, reportToDate)}
+                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-black text-slate-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Print
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-3">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-black text-slate-900">Item Details</p>
+                <button
+                  type="button"
+                  disabled={reportFromDate > reportToDate}
+                  onClick={() => downloadOwnerItemDetailsCsvForDates(reportFromDate, reportToDate)}
+                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-black text-slate-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  CSV
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-[22px] border border-emerald-200 bg-emerald-50 p-4 space-y-4">
+            <div>
+              <h3 className="text-base font-bold text-slate-900">Quick Summary Reports</h3>
+              <p className="mt-1 text-xs font-semibold text-slate-500">
+                Owner lai daily total sales, orders, payment split{inventoryEnabled ? ", cost and profit" : ""} herna.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              {[
+                { label: "Today Summary", period: "day" as OwnerCsvPeriod },
+                { label: "Last 7 Days Summary", period: "week" as OwnerCsvPeriod },
+                { label: "Last 30 Days Summary", period: "month" as OwnerCsvPeriod },
+              ].map((report) => (
+                <div
+                  key={report.period}
+                  className="flex items-center justify-between gap-3 rounded-2xl bg-white p-3 shadow-sm ring-1 ring-emerald-100"
+                >
+                  <p className="text-sm font-black text-slate-900">{report.label}</p>
+                  <div className="flex gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => downloadOwnerSummaryCsv(report.period)}
+                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-black text-slate-700 active:scale-[0.98]"
+                    >
+                      CSV
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => downloadOwnerSummaryPdf(report.period)}
+                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-black text-slate-700 active:scale-[0.98]"
+                    >
+                      PDF
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => printOwnerSummary(report.period)}
+                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-black text-slate-700 active:scale-[0.98]"
+                    >
+                      Print
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-[22px] border border-purple-200 bg-purple-50 p-4 space-y-4">
+            <div>
+              <h3 className="text-base font-bold text-slate-900">Quick Item Detail Reports</h3>
+              <p className="mt-1 text-xs font-semibold text-slate-500">
+                Accountant/deep check ko lagi order-item level details.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              {[
+                { label: "Today Item Details", period: "day" as OwnerCsvPeriod },
+                { label: "Last 7 Days Item Details", period: "week" as OwnerCsvPeriod },
+                { label: "Last 30 Days Item Details", period: "month" as OwnerCsvPeriod },
+              ].map((report) => (
+                <div
+                  key={report.period}
+                  className="flex items-center justify-between gap-3 rounded-2xl bg-white p-3 shadow-sm ring-1 ring-purple-100"
+                >
+                  <p className="text-sm font-black text-slate-900">{report.label}</p>
+                  <button
+                    type="button"
+                    onClick={() => downloadOwnerItemDetailsCsv(report.period)}
+                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-black text-slate-700 active:scale-[0.98]"
+                  >
+                    CSV
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+
+  function renderManageView() {
+    if (!isOwnerMode) {
+      return renderDashboardView();
+    }
+
+    const manageSections = [
+      {
+        title: "MENU & OFFERS",
+        items: [
+          { label: "Menu Items", subtitle: "Items & prices", icon: "menu", action: () => { setPopupView("menuItems"); setMenuManageMode("items"); setMenuItemWorkMode("list"); setManageMenuSelectedCategory("all"); setShowProfitSetupInMenuItems(false); scrollMainContentToTop(); } },
+          { label: "Categories", subtitle: "Organize items", icon: "categories", action: () => { setPopupView("menuItems"); setMenuManageMode("categories"); setShowProfitSetupInMenuItems(false); scrollMainContentToTop(); } },
+          { label: "Upload CSV", subtitle: "Bulk menu setup", icon: "upload", action: () => { setPopupView("menuItems"); setMenuManageMode("csv"); setShowProfitSetupInMenuItems(false); scrollMainContentToTop(); } },
+        ],
+      },
+      {
+        title: "INVENTORY",
+        items: [
+          { label: "Stock Items", subtitle: "Items, archive & CSV", icon: "inventory", action: () => { setPopupView("inventory"); setInventoryTab("items"); setShowAddInventoryItemForm(false); setShowArchivedInventoryView(false); setShowInventoryMoreMenu(false); scrollMainContentToTop(); } },
+          { label: "Recipe", subtitle: "Menu material setup", icon: "recipe", action: () => { setPopupView("inventory"); setInventoryTab("recipes"); setInventoryRecipePanel("menuRecipe"); scrollMainContentToTop(); } },
+          { label: "Measuring Unit", subtitle: "kg, g, ltr, pcs", icon: "unit", action: () => { setPopupView("inventory"); setInventoryTab("measuringUnits"); setShowArchivedInventoryView(false); setShowAddInventoryItemForm(false); setShowInventoryMoreMenu(false); scrollMainContentToTop(); } },
+          { label: "Stock Group", subtitle: "Meat, veg, dry goods", icon: "group", action: () => { setPopupView("inventory"); setInventoryTab("stockGroups"); setShowArchivedInventoryView(false); setShowAddInventoryItemForm(false); setShowInventoryMoreMenu(false); scrollMainContentToTop(); } },
+          { label: "Buy / Restock", subtitle: "Purchases & supply", icon: "restock", action: () => { setPopupView("inventory"); setInventoryTab("restock"); scrollMainContentToTop(); } },
+          { label: "Cost Insight", subtitle: "Real profit mode", icon: "cost", action: () => { setPopupView("inventory"); setInventoryTab("costInsight"); scrollMainContentToTop(); } },
+          { label: "Suppliers", subtitle: "Vendor records", icon: "supplier", action: () => { setPopupView("inventory"); setInventoryTab("suppliers"); scrollMainContentToTop(); } },
+          { label: "Stock History", subtitle: "Purchase & deduction", icon: "history", action: () => { setPopupView("inventory"); setInventoryTab("history"); scrollMainContentToTop(); } },
+        ],
+      },
+      {
+        title: "FINANCE & INSIGHTS",
+        items: [
+          { label: "Reports", subtitle: "Weekly/Monthly", icon: "reports", action: () => changeView("report") },
+          { label: "Payment History", subtitle: "Paid bills", icon: "payments", action: () => changeView("paymentHistory") },
+        ],
+      },
+      {
+        title: "BRAND & CONTROL",
+        items: [
+          { label: "Brand & QR", subtitle: "Logo & payment QR", icon: "qr", action: openQrAccess },
+          { label: "Settings", subtitle: "Password & devices", icon: "settings", action: () => { setPopupView("settings"); scrollMainContentToTop(); } },
+        ],
+      },
+      {
+        title: "TAX & DISCOUNT",
+        items: [
+          { label: "Tax & Discount", subtitle: "VAT and bill discount", icon: "payments", action: () => { setPopupView("taxDiscount"); scrollMainContentToTop(); } },
+        ],
+      },
+    ];
+
+    function getManageIconBubbleClass(icon: string) {
+      const inventoryIconNames = new Set(["inventory", "recipe", "unit", "group", "restock", "cost", "supplier", "history"]);
+      if (inventoryIconNames.has(icon)) return "bg-white text-slate-950 ring-slate-300 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.04)]";
+      if (icon === "payments") return "bg-slate-100 text-slate-800 ring-slate-200";
+      if (icon === "qr") return "bg-amber-50 text-amber-700 ring-amber-100";
+      if (icon === "settings") return "bg-indigo-50 text-indigo-700 ring-indigo-100";
+      return "bg-slate-100 text-slate-950 ring-slate-200";
+    }
+
+    const menuAndOfferSection = manageSections[0];
+    const stockAndCostSection = manageSections[1];
+    const financeSection = manageSections[2];
+    const brandSection = manageSections[3];
+    const taxSection = manageSections[4];
+
+    const renderManageSection = (section: typeof manageSections[number], compact = false) => (
+      <section key={`manage-section-${section.title}`} className="rounded-[22px] border border-slate-200 bg-white p-3 shadow-[0_12px_34px_rgba(15,23,42,0.045)] lg:p-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h3 className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">
+            {section.title}
+          </h3>
+          <span className="rounded-full bg-slate-50 px-2.5 py-1 text-[10px] font-black text-slate-500 ring-1 ring-slate-100">
+            {section.items.length}
+          </span>
+        </div>
+        <div className={`grid gap-2.5 ${compact ? "grid-cols-1" : "grid-cols-2 lg:grid-cols-3"}`}>
+          {section.items.map((item) => (
+            <button
+              key={`manage-item-${section.title}-${item.label}`}
+              type="button"
+              onClick={item.action}
+              className="group flex min-h-[78px] touch-manipulation items-center gap-3 rounded-[18px] border border-slate-100 bg-white px-3 py-3 text-left shadow-[0_4px_14px_rgba(15,23,42,0.025)] transition hover:-translate-y-0.5 hover:border-slate-200 hover:shadow-[0_14px_34px_rgba(15,23,42,0.07)] active:scale-[0.98] lg:min-h-[72px]"
+            >
+              <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[13px] text-[15px] ring-1 transition group-hover:scale-105 ${getManageIconBubbleClass(item.icon)}`}>
+                {plusMenuIcon(item.icon)}
+              </span>
+              <span className="min-w-0">
+                <span className="block truncate text-[13px] font-black leading-tight tracking-tight text-slate-950 lg:text-[14px]">
+                  {item.label}
+                </span>
+                <span className="mt-0.5 block truncate text-[11px] font-semibold leading-tight text-slate-400">
+                  {item.subtitle}
+                </span>
+              </span>
+            </button>
+          ))}
+        </div>
+      </section>
+    );
+
+    return (
+      <div className="min-h-full touch-pan-y overflow-x-hidden bg-white px-1 pb-24 pt-1 overscroll-x-none sm:rounded-[28px] sm:px-2 sm:pt-2 lg:pb-4">
+        <div className="space-y-5 lg:hidden">
+          {manageSections.map((section) => (
+            <section key={`manage-section-${section.title}`}>
+              <h3 className="mb-2.5 px-1 text-[14px] font-black uppercase tracking-[0.16em] text-slate-900">
+                {section.title}
+              </h3>
+              <div className="grid grid-cols-2 gap-2.5">
+                {section.items.map((item) => (
+                  <button
+                    key={`manage-item-${section.title}-${item.label}`}
+                    type="button"
+                    onClick={item.action}
+                    className="flex min-h-[92px] touch-manipulation flex-col items-start justify-start rounded-[18px] border border-slate-100 bg-white px-3 py-3 text-left shadow-[0_6px_18px_rgba(15,23,42,0.035)] transition active:scale-[0.98]"
+                  >
+                    <span className={`mb-3 flex h-9 w-9 items-center justify-center rounded-[13px] text-[15px] ring-1 ${getManageIconBubbleClass(item.icon)}`}>
+                      {plusMenuIcon(item.icon)}
+                    </span>
+                    <span className="block text-[14px] font-bold leading-tight tracking-tight text-slate-950">
+                      {item.label}
+                    </span>
+                    <span className="mt-1 block text-[11px] font-medium leading-tight text-slate-400">
+                      {item.subtitle}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+
+        <div className="hidden lg:block">
+          <div className="mb-5 rounded-[28px] border border-slate-200 bg-white px-5 py-4 shadow-[0_18px_48px_rgba(15,23,42,0.055)]">
+            <div className="flex items-center justify-between gap-5">
+              <div>
+                <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">Owner Control</p>
+                <h2 className="mt-1 text-[24px] font-black tracking-tight text-slate-950">Manage</h2>
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-right">
+                <div className="rounded-2xl bg-slate-50 px-4 py-2 ring-1 ring-slate-100">
+                  <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">Menu</p>
+                  <p className="text-sm font-black text-slate-900">Setup</p>
+                </div>
+                <div className="rounded-2xl bg-slate-50 px-4 py-2 ring-1 ring-slate-100">
+                  <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">Inventory</p>
+                  <p className="text-sm font-black text-slate-900">Stock</p>
+                </div>
+                <div className="rounded-2xl bg-slate-50 px-4 py-2 ring-1 ring-slate-100">
+                  <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">Control</p>
+                  <p className="text-sm font-black text-slate-900">Secure</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-12 gap-4">
+            <div className="col-span-8 space-y-4">
+              {renderManageSection(menuAndOfferSection)}
+              {renderManageSection(stockAndCostSection)}
+            </div>
+            <div className="col-span-4 space-y-4">
+              {renderManageSection(financeSection, true)}
+              {renderManageSection(brandSection, true)}
+              {renderManageSection(taxSection, true)}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderOrderView() {
+    return (
+      <>
+        <div className="hidden min-h-[calc(100vh-92px)] rounded-[34px] border border-slate-200 bg-white p-6 shadow-[0_24px_80px_rgba(15,23,42,0.08)] lg:block">
+          <div className="flex items-start justify-between gap-6">
+            <div className="inline-flex rounded-[14px] bg-slate-100 p-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setOrderTopTab("orders");
+                  setSelectedTableOrderId(null);
+                }}
+                className={`rounded-[11px] px-7 py-2.5 text-sm font-black transition ${orderTopTab === "orders" ? "bg-red-600 text-white shadow-[0_10px_22px_rgba(220,38,38,0.22)]" : "text-slate-600 hover:bg-white"}`}
+              >
+                Orders
+              </button>
+              <button
+                type="button"
+                onClick={() => setOrderTopTab("table")}
+                className={`rounded-[11px] px-7 py-2.5 text-sm font-black transition ${orderTopTab === "table" ? "bg-red-600 text-white shadow-[0_10px_22px_rgba(220,38,38,0.22)]" : "text-slate-600 hover:bg-white"}`}
+              >
+                Table
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setOrderTopTab("kot");
+                  setSelectedTableOrderId(null);
+                }}
+                className={`rounded-[11px] px-7 py-2.5 text-sm font-black transition ${orderTopTab === "kot" ? "bg-red-600 text-white shadow-[0_10px_22px_rgba(220,38,38,0.22)]" : "text-slate-600 hover:bg-white"}`}
+              >
+                KOT
+              </button>
+            </div>
+
+            <div className="hidden lg:block" />
+          </div>
+
+          {orderTopTab === "kot" ? (
+            <div className="mt-8 rounded-[28px] border border-slate-200 bg-slate-50/80 p-5">
+              {renderKitchenStatusCards()}
+            </div>
+          ) : orderTopTab === "table" ? (
+            <div className="mt-8">
+              <div className="mb-5 flex items-center justify-between">
+                <div>
+                  <h2 className="text-2xl font-black text-slate-950">Tables</h2>
+                  <p className="mt-1 text-sm font-semibold text-slate-500">Open table bills and kitchen status.</p>
+                </div>
+                <span className="rounded-full bg-red-50 px-4 py-2 text-sm font-black text-red-700 ring-1 ring-slate-200">
+                  {desktopFilteredActiveOrders.length} Active
+                </span>
+              </div>
+
+              {desktopFilteredActiveOrders.length === 0 ? (
+                <div className="flex min-h-[520px] flex-col items-center justify-center text-center">
+                  <div className="flex h-24 w-24 items-center justify-center rounded-[32px] bg-slate-100 text-4xl">🪑</div>
+                  <h3 className="mt-6 text-xl font-black text-slate-950">No Tables found</h3>
+                  <p className="mt-2 text-sm font-semibold text-slate-500">No active table bills yet.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-4 gap-4 2xl:grid-cols-5">
+                  {desktopFilteredActiveOrders.map((order) => {
+                    const total = getOrderTotal(order);
+                    const status = getOrderDisplayStatus(order);
+                    const itemCount = (order.order_items || []).reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+                    return (
+                      <button
+                        key={`desktop-table-${order.id}`}
+                        type="button"
+                        onClick={() => setSelectedTableOrderId(Number(order.id))}
+                        className="rounded-[26px] bg-red-950 p-5 text-left shadow-[0_18px_42px_rgba(127,29,29,0.24)] ring-1 ring-red-900 transition hover:-translate-y-0.5 hover:shadow-[0_24px_55px_rgba(127,29,29,0.28)]"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-2xl font-black text-white">Table {order.table_number}</p>
+                            <p className="mt-1 text-xs font-bold text-red-100/75">{itemCount} item(s)</p>
+                          </div>
+                          <span className="rounded-full bg-white/10 px-3 py-1 text-[11px] font-black text-white ring-1 ring-white/15">
+                            {getKitchenStatusLabel(status)}
+                          </span>
+                        </div>
+                        <div className="mt-8 flex items-end justify-between">
+                          <p className="text-xs font-black uppercase tracking-[0.16em] text-red-100/60">Total</p>
+                          <p className="text-xl font-black text-white">Rs. {total}</p>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="mt-8">
+              {desktopFilteredActiveOrders.length === 0 ? (
+                <div className="flex min-h-[560px] flex-col items-center justify-center text-center">
+                  <div className="relative flex h-28 w-28 items-center justify-center rounded-full bg-slate-50 ring-1 ring-slate-100">
+                    <div className="flex h-20 w-20 items-center justify-center rounded-[26px] bg-white text-4xl shadow-[0_18px_45px_rgba(15,23,42,0.08)]">🧾</div>
+                  </div>
+                  <h3 className="mt-6 text-xl font-black text-slate-950">No Orders found</h3>
+                  <p className="mt-2 text-sm font-semibold text-slate-500">No orders found. Please create a new order to see it here.</p>
+                </div>
+              ) : (
+                <div className="overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-[0_18px_50px_rgba(15,23,42,0.06)]">
+                  <div className="grid grid-cols-[1.1fr_1.3fr_0.8fr_0.9fr_1.2fr] border-b border-slate-100 bg-slate-50 px-5 py-4 text-xs font-black uppercase tracking-[0.14em] text-slate-500">
+                    <span>Table</span>
+                    <span>Items</span>
+                    <span>Status</span>
+                    <span>Total</span>
+                    <span className="text-right">Action</span>
+                  </div>
+                  <div className="divide-y divide-slate-100">
+                    {desktopFilteredActiveOrders.map((order) => {
+                      const orderTotal = getOrderTotal(order);
+                      const displayStatus = getOrderDisplayStatus(order);
+                      const itemPreview = (order.order_items || []).slice(0, 2);
+                      const moreCount = Math.max((order.order_items || []).length - 2, 0);
+                      const isPendingPaymentSync = order.sync_status === "pending_payment";
+                      const isLockedOrder = displayStatus === "ready" || isPendingPaymentSync;
+                      return (
+                        <div key={`desktop-order-${order.id}`} className="grid grid-cols-[1.1fr_1.3fr_0.8fr_0.9fr_1.2fr] items-center gap-4 px-5 py-4 transition hover:bg-slate-50/80">
+                          <div>
+                            <p className="text-base font-black text-slate-950">Table {order.table_number}</p>
+                            <p className="mt-1 text-xs font-semibold text-slate-500">
+                              {new Date(order.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                            </p>
+                          </div>
+                          <div className="min-w-0">
+                            {itemPreview.length === 0 ? (
+                              <p className="text-sm font-semibold text-slate-400">No items</p>
+                            ) : (
+                              <div className="space-y-1">
+                                {itemPreview.map((item) => (
+                                  <p key={`desktop-order-item-${order.id}-${item.id}`} className="truncate text-sm font-bold text-slate-800">
+                                    {item.item_name} × {item.quantity}
+                                  </p>
+                                ))}
+                                {moreCount > 0 && <p className="text-xs font-semibold text-slate-500">+{moreCount} more</p>}
+                              </div>
+                            )}
+                          </div>
+                          <div>
+                            <span className={`rounded-full px-3 py-1.5 text-xs font-black ${isPendingPaymentSync ? "bg-amber-100 text-amber-700" : displayStatus === "ready" ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-700"}`}>
+                              {isPendingPaymentSync ? "Sync" : getKitchenStatusLabel(displayStatus)}
+                            </span>
+                          </div>
+                          <p className="text-base font-black text-slate-950">Rs. {orderTotal}</p>
+                          <div className="flex items-center justify-end gap-2">
+                            <button type="button" onClick={() => openOrderReport(order, "kot")} className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-black text-slate-700">KOT</button>
+                            <button type="button" onClick={() => openOrderReport(order)} className="rounded-xl bg-blue-50 px-3 py-2 text-xs font-black text-blue-700">Bill</button>
+                            <button type="button" disabled={editingOrderLoading || isLockedOrder} onClick={() => handleEditOrder(order)} className={`rounded-xl px-3 py-2 text-xs font-black ${editingOrderLoading || isLockedOrder ? "bg-slate-200 text-slate-400" : "bg-white text-slate-700 ring-1 ring-slate-200"}`}>Edit</button>
+                            <button type="button" disabled={isLockedOrder} onClick={() => handleCancelOrder(order.id)} className={`rounded-xl px-3 py-2 text-xs font-black ${isLockedOrder ? "bg-slate-200 text-slate-400" : "bg-rose-50 text-rose-600 ring-1 ring-rose-100"}`}>Cancel</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-3 pb-4 lg:hidden">
+        <div className="rounded-[26px] border border-slate-200/80 bg-white p-2 shadow-[0_10px_28px_rgba(15,23,42,0.05)]">
+          <div className="grid grid-cols-3 gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setOrderTopTab("orders");
+                setSelectedTableOrderId(null);
+              }}
+              className={`rounded-[18px] px-4 py-3 text-sm font-black transition ${orderTopTab === "orders" ? "bg-slate-950 text-white shadow-sm" : "bg-slate-50 text-slate-600"}`}
+            >
+              Order
+            </button>
+            <button
+              type="button"
+              onClick={() => setOrderTopTab("table")}
+              className={`rounded-[18px] px-4 py-3 text-sm font-black transition ${orderTopTab === "table" ? "bg-slate-950 text-white shadow-sm" : "bg-slate-50 text-slate-600"}`}
+            >
+              Table
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setOrderTopTab("kot");
+                setSelectedTableOrderId(null);
+              }}
+              className={`rounded-[18px] px-4 py-3 text-sm font-black transition ${orderTopTab === "kot" ? "bg-slate-950 text-white shadow-sm" : "bg-slate-50 text-slate-600"}`}
+            >
+              KOT
+            </button>
+          </div>
+        </div>
+
+        {orderTopTab === "kot" ? (
+          renderKitchenStatusCards()
+        ) : orderTopTab === "table" ? (
+          <div className="rounded-[28px] border border-slate-200/80 bg-white p-4 shadow-[0_12px_34px_rgba(15,23,42,0.06)]">
+            {(() => {
+              const selectedTableOrder = selectedTableOrderId
+                ? activeOrders.find((order) => Number(order.id) === Number(selectedTableOrderId)) || null
+                : null;
+
+              if (selectedTableOrder) {
+                const selectedTotal = getOrderTotal(selectedTableOrder);
+                const selectedItems = selectedTableOrder.order_items || [];
+                const selectedStatus = getOrderDisplayStatus(selectedTableOrder);
+                const canAddDish = !selectedTableOrder.is_paid && selectedTableOrder.sync_status !== "pending_payment";
+
+                return (
+                  <div className="space-y-4">
+                    <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3">
+                      <div>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedTableOrderId(null)}
+                          className="mb-2 rounded-full bg-slate-100 px-3 py-1 text-sm font-black text-slate-600"
+                        >
+                          ← Tables
+                        </button>
+                        <h3 className="text-xl font-black text-slate-950">Table {selectedTableOrder.table_number}</h3>
+                        <p className="mt-1 text-xs font-semibold text-slate-500">
+                          {selectedItems.length} item(s) • {getKitchenStatusLabel(selectedStatus)}
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400">Bill Total</p>
+                        <p className="mt-1 text-xl font-black text-slate-950">Rs. {selectedTotal}</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      {selectedItems.length === 0 ? (
+                        <div className="rounded-[20px] border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+                          No items in this table.
+                        </div>
+                      ) : (
+                        selectedItems.map((item) => (
+                          <div key={`table-detail-item-${item.id}`} className="grid grid-cols-[1fr_auto] items-center gap-3 rounded-[18px] bg-slate-50 px-3 py-3 ring-1 ring-slate-200/80">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-black text-slate-900">{item.item_name}</p>
+                              <p className="mt-1 text-[11px] font-semibold text-slate-500">
+                                Qty {item.quantity} × Rs. {Number(item.unit_price || 0)}
+                              </p>
+                            </div>
+                            <p className="text-sm font-black text-slate-950">
+                              Rs. {Number(item.quantity || 0) * Number(item.unit_price || 0)}
+                            </p>
+                          </div>
+                        ))
+                      )}
+                    </div>
+
+                    {selectedTableOrder.remarks && (
+                      <div className="rounded-[18px] bg-amber-50 px-3 py-3 text-xs font-semibold text-amber-700 ring-1 ring-amber-100">
+                        Remark: {selectedTableOrder.remarks}
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <button
+                        type="button"
+                        onClick={() => openOrderReport(selectedTableOrder)}
+                        className="rounded-[18px] bg-white py-3 text-xs font-black text-slate-800 ring-1 ring-slate-200"
+                      >
+                        View Bill
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!canAddDish || editingOrderLoading}
+                        onClick={() => handleEditOrder(selectedTableOrder)}
+                        className={`rounded-[18px] py-3 text-xs font-black shadow-sm ${canAddDish ? "bg-slate-950 text-white" : "bg-slate-200 text-slate-400"}`}
+                      >
+                        Add Dish
+                      </button>
+                    </div>
+
+                    {!canAddDish && (
+                      <p className="text-center text-[11px] font-semibold text-slate-500">
+                        Paid or pending-sync bills cannot be edited.
+                      </p>
+                    )}
+                  </div>
+                );
+              }
+
+              return (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-black text-slate-950">Active Tables</h3>
+                      <p className="mt-1 text-xs font-semibold text-slate-500">Booked/reserved tables with open bills</p>
+                    </div>
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-black text-slate-600">
+                      {activeOrders.length} Active
+                    </span>
+                  </div>
+
+                  {activeOrders.length === 0 ? (
+                    <div className="rounded-[20px] border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+                      No active tables yet.
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-3">
+                      {activeOrders.map((order) => {
+                        const total = getOrderTotal(order);
+                        const status = getOrderDisplayStatus(order);
+                        const itemCount = (order.order_items || []).reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+
+                        return (
+                          <button
+                            key={`active-table-${order.id}`}
+                            type="button"
+                            onClick={() => setSelectedTableOrderId(Number(order.id))}
+                            className="min-h-[118px] rounded-[22px] bg-red-950 p-3 text-left shadow-[0_16px_34px_rgba(127,29,29,0.28)] ring-1 ring-red-900 transition active:scale-[0.98]"
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <p className="text-lg font-black text-white">Table {order.table_number}</p>
+                                <p className="mt-1 text-[11px] font-semibold text-red-100/80">{itemCount} item(s)</p>
+                              </div>
+                              <span className="rounded-full bg-white/12 px-2.5 py-1 text-[10px] font-black text-white ring-1 ring-white/15">
+                                {getKitchenStatusLabel(status)}
+                              </span>
+                            </div>
+                            <div className="mt-4 flex items-end justify-between gap-2">
+                              <p className="text-[10px] font-black uppercase tracking-[0.14em] text-red-100/65">Total</p>
+                              <p className="text-base font-black text-white">Rs. {total}</p>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+        ) : (
+        <div className="rounded-[28px] border border-slate-200/80 bg-white p-4 shadow-[0_12px_34px_rgba(15,23,42,0.06)] space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900">Live Bills</h3>
+            </div>
+            <div className="flex items-center gap-2">
+              {pendingPaymentOrders.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowPaymentSyncQueue(true)}
+                  className="rounded-full bg-amber-50 px-3 py-1 text-[11px] font-bold text-amber-700 ring-1 ring-amber-200"
+                >
+                  Sync Queue ({pendingPaymentOrders.length})
+                </button>
+              )}
+              <span className="rounded-full bg-blue-50 px-3 py-1 text-[11px] font-semibold text-blue-700">
+                {activeOrders.length} Active
+              </span>
+            </div>
+          </div>
+
+          {activeOrders.length === 0 ? (
+            <div className="rounded-[20px] border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+              No active order records yet.
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-3">
+              {activeOrders.map((order) => {
+                const orderTotal =
+                  order.order_items?.reduce(
+                    (sum, item) =>
+                      sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
+                    0
+                  ) || 0;
+                const displayStatus = getOrderDisplayStatus(order);
+                const itemPreview = (order.order_items || []).slice(0, 3);
+                const moreCount = Math.max((order.order_items || []).length - 3, 0);
+                const isPendingPaymentSync = order.sync_status === "pending_payment";
+                const isLockedOrder = displayStatus === "ready" || isPendingPaymentSync;
+
+                const statusClass =
+                  isPendingPaymentSync
+                    ? "bg-amber-100 text-amber-700"
+                    : displayStatus === "ready"
+                      ? "bg-emerald-100 text-emerald-700"
+                      : "bg-slate-100 text-slate-700";
+
+                return (
+                  <div
+                    key={order.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => openOrderReport(order)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        openOrderReport(order);
+                      }
+                    }}
+                    className="min-h-[196px] rounded-[22px] bg-slate-50/90 p-3 shadow-[0_8px_24px_rgba(15,23,42,0.06)] ring-1 ring-slate-200/80 transition active:scale-[0.99]"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-[14px] font-bold leading-none text-slate-900">
+                          Table {order.table_number}
+                        </p>
+                        <p className="mt-1 text-[10px] text-slate-500">
+                          {new Date(order.created_at).toLocaleTimeString([], {
+                            hour: "numeric",
+                            minute: "2-digit",
+                          })}
+                        </p>
+                      </div>
+
+                      <span className={`shrink-0 rounded-full px-2.5 py-1 text-[9px] font-bold ${statusClass}`}>
+                        {isPendingPaymentSync ? "Sync" : getKitchenStatusLabel(displayStatus)}
+                      </span>
+                    </div>
+
+                    <div className="mt-3 rounded-[16px] bg-white px-2.5 py-2 shadow-[inset_0_0_0_1px_rgba(226,232,240,0.9)]">
+                      {itemPreview.length === 0 ? (
+                        <p className="text-[10px] text-slate-500">No items</p>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {itemPreview.map((item) => (
+                            <div key={item.id} className="flex items-center justify-between gap-2">
+                              <p className="truncate text-[10px] font-semibold text-slate-800">
+                                {item.item_name} x {item.quantity}
+                              </p>
+                              <span className="shrink-0 text-[10px] font-semibold text-slate-500">
+                                Rs. {Number(item.quantity || 0) * Number(item.unit_price || 0)}
+                              </span>
+                            </div>
+                          ))}
+                          {moreCount > 0 && (
+                            <p className="text-[9px] font-medium text-slate-500">+{moreCount} more item(s)</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="mt-3 flex items-end justify-between gap-2">
+                      <div>
+                        <p className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-400">Total</p>
+                        <p className="mt-1 text-[20px] font-bold leading-none text-slate-900">Rs. {orderTotal}</p>
+                      </div>
+                    </div>
+
+                    <div className="mt-2 min-h-[16px]">
+                      {isPendingPaymentSync ? (
+                        <p className="text-[9px] font-semibold text-amber-700">
+                          Payment pending sync — tap bill to view customer bill
+                        </p>
+                      ) : isLockedOrder ? (
+                        <p className="text-[9px] font-semibold text-slate-500">
+                          Ready: edit/cancel locked
+                        </p>
+                      ) : order.remarks ? (
+                        <p className="truncate text-[9px] font-medium text-amber-700">Remark: {order.remarks}</p>
+                      ) : (
+                        <p className="text-[9px] text-slate-400">Tap bill to view customer bill</p>
+                      )}
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-3 gap-2">
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openOrderReport(order, "kot");
+                        }}
+                        className="rounded-[12px] bg-white py-2 text-[10px] font-black text-slate-800 ring-1 ring-slate-200"
+                      >
+                        KOT
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedPaidOrder({
+                            ...order,
+                            payment_method: order.payment_method || null,
+                            paid_at: order.paid_at || null,
+                          });
+                          setShowHeaderMenu(false);
+                        }}
+                        className="rounded-[12px] bg-blue-50 py-2 text-[10px] font-black text-blue-700 ring-1 ring-blue-100"
+                      >
+                        Bill
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedPaidOrder({
+                            ...order,
+                            payment_method: order.payment_method || null,
+                            paid_at: order.paid_at || null,
+                          });
+                          setShowHeaderMenu(false);
+                        }}
+                        className={`rounded-[12px] py-2 text-[10px] font-black text-white shadow-sm ${
+                          isPendingPaymentSync ? "bg-amber-600" : "bg-slate-900"
+                        }`}
+                      >
+                        {isPendingPaymentSync ? "Sync" : "Pay"}
+                      </button>
+                    </div>
+
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleEditOrder(order);
+                        }}
+                        disabled={editingOrderLoading || isLockedOrder}
+                        className={`rounded-[12px] py-2 text-[10px] font-semibold ${
+                          editingOrderLoading || isLockedOrder
+                            ? "bg-slate-200 text-slate-400"
+                            : "bg-white text-slate-700 ring-1 ring-slate-200"
+                        }`}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleCancelOrder(order.id);
+                        }}
+                        disabled={isLockedOrder}
+                        className={`rounded-[12px] py-2 text-[10px] font-semibold ${
+                          isLockedOrder
+                            ? "bg-slate-200 text-slate-400"
+                            : "bg-rose-50 text-rose-600 ring-1 ring-rose-100"
+                        }`}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        )}
+
+        {showPaymentSyncQueue && pendingPaymentOrders.length > 0 && (
+          <div className="fixed inset-0 z-[9998] flex items-end justify-center bg-slate-950/50 px-3 pb-3 sm:items-center sm:pb-0">
+            <div className="w-full max-w-lg rounded-[28px] bg-white p-4 shadow-[0_24px_90px_rgba(15,23,42,0.35)]">
+              <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3">
+                <div>
+                  <h3 className="text-base font-black text-slate-900">Payment Sync Queue</h3>
+                  <p className="mt-1 text-xs text-slate-500">Payments waiting for server sync</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowPaymentSyncQueue(false)}
+                  className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-600"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="mt-3 max-h-[60vh] space-y-3 overflow-y-auto pr-1">
+                {pendingPaymentOrders.map((order) => {
+                  const total = getOrderTotal(order);
+                  const isRetrying = retryingPaymentSyncOrderId === order.id;
+
+                  return (
+                    <div
+                      key={`payment-sync-modal-${order.id}`}
+                      className="rounded-[20px] border border-amber-200 bg-amber-50/70 p-3"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-black text-slate-900">Table {order.table_number}</p>
+                          <p className="mt-1 text-[11px] font-medium text-slate-500">
+                            {order.payment_method ? order.payment_method.toUpperCase() : "PAYMENT"} • {order.paid_at ? new Date(order.paid_at).toLocaleString() : "Pending sync"}
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-sm font-black text-slate-900">Rs. {total}</p>
+                          <span className="mt-1 inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-bold text-amber-700">
+                            Pending sync
+                          </span>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={!isOnline || isRetrying}
+                        onClick={() => retryPendingPaymentSync(order)}
+                        className="mt-3 w-full rounded-2xl bg-blue-600 py-2.5 text-xs font-bold text-white shadow-sm disabled:bg-slate-300 disabled:text-slate-500"
+                      >
+                        {!isOnline ? "Connect internet to retry" : isRetrying ? "Syncing..." : "Retry payment sync"}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+      </>
+    );
+  }
+
+
+function renderKitchenView() {
+  return (
+    <div className="space-y-3 pb-4">
+      {renderKitchenStatusCards()}
+    </div>
+  );
+}
+
+function renderBillingView() {
+
+    return (
+      <div className="space-y-4 pb-4">
+        {sectionTitle(
+          "Billing",
+          "Unpaid tables, unpaid amount, payment method, mark as paid",
+          "💳"
+        )}
+
+        <div className="grid grid-cols-2 gap-3">
+          {statCard("Unpaid Tables", unpaidTablesCount, "🪑", "bg-amber-50 border border-amber-200")}
+          {statCard("Unpaid Amount", `Rs. ${unpaidAmount}`, "⏳", "bg-rose-50 border border-rose-200")}
+        </div>
+
+        <div className="rounded-[30px] border border-white/70 bg-white/85 p-4 shadow-[0_18px_55px_rgba(15,23,42,0.08)] ring-1 ring-slate-900/5 backdrop-blur-xl space-y-4">
+          <div>
+            <label className="mb-2 block text-sm font-semibold text-slate-700">
+              Search Table Number
+            </label>
+            <input
+              type="text"
+              value={tableSearch}
+              onChange={(e) => setTableSearch(e.target.value)}
+              placeholder="Enter table number"
+              className="w-full rounded-2xl border border-slate-200 px-4 py-3"
+            />
+          </div>
+
+          <div className="space-y-4">
+            {filteredTableOrders.length === 0 && (
+              <p className="text-sm text-slate-500">No unpaid table orders found.</p>
+            )}
+
+            {filteredTableOrders.map((table) => {
+              const selectedPaymentMethod =
+                tablePaymentMethods[table.table_number] || "cash";
+              const paymentBreakdown = getPaymentBreakdown(Number(table.total || 0), table.table_number);
+              const tablePendingPaymentOrders = orders.filter(
+                (order) =>
+                  String(order.table_number || "").trim() === table.table_number &&
+                  order.sync_status === "pending_payment"
+              );
+              const tableHasPendingPaymentSync = tablePendingPaymentOrders.length > 0;
+              const tableNormalUnpaidOrders = orders.filter(
+                (order) =>
+                  String(order.table_number || "").trim() === table.table_number &&
+                  order.is_paid !== true &&
+                  order.sync_status !== "pending_payment"
+              );
+              const tableOnlyPendingPaymentSync =
+                tableHasPendingPaymentSync && tableNormalUnpaidOrders.length === 0;
+
+              return (
+                <div
+                  key={table.table_number}
+                  className="rounded-[22px] border border-slate-200 bg-slate-50 p-4 space-y-4"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h3 className="text-base font-bold text-slate-900">
+                          Table {table.table_number}
+                        </h3>
+                        <span
+                          className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                            tableHasPendingPaymentSync
+                              ? "bg-blue-100 text-blue-700"
+                              : "bg-amber-100 text-amber-700"
+                          }`}
+                        >
+                          {tableHasPendingPaymentSync ? "Pending Sync" : "Unpaid"}
+                        </span>
+                      </div>
+
+                      <p className="mt-1 text-xs text-slate-500">
+                        Unpaid Orders: {table.unpaid_orders_count}
+                        {tableHasPendingPaymentSync ? ` • Pending Sync: ${tablePendingPaymentOrders.length}` : ""}
+                      </p>
+                    </div>
+
+                    <div className="flex shrink-0 flex-col items-end gap-2">
+                      <div className="rounded-2xl bg-white px-3 py-2 text-right shadow-sm">
+                        <p className="text-xs text-slate-500">Table Total</p>
+                        <p className="font-bold text-slate-900">Rs. {table.total}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => openChangeTableModal(table.table_number)}
+                        disabled={markingPaidTable === table.table_number || tableOnlyPendingPaymentSync}
+                        className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 shadow-sm disabled:opacity-50"
+                      >
+                        Change Table
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    {table.items.map((item) => (
+                      <div
+                        key={item.item_name}
+                        className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-3 py-3"
+                      >
+                        <p className="text-sm font-medium text-slate-800">
+                          {item.item_name} x {item.quantity}
+                        </p>
+                        <p className="text-sm font-semibold text-slate-900">Rs. {item.total}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  {table.remarks.length > 0 && (
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3">
+                      <p className="mb-2 text-xs font-semibold text-slate-600">Remarks</p>
+                      <div className="space-y-1">
+                        {table.remarks.map((remark, index) => (
+                          <p
+                            key={`${table.table_number}-remark-${index}`}
+                            className="whitespace-pre-wrap text-sm text-slate-800"
+                          >
+                            • {remark}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    <label className="block text-sm font-semibold text-slate-700">
+                      Payment Method
+                    </label>
+
+                    <div className="grid grid-cols-4 gap-2">
+                      <button
+                        type="button"
+                        disabled={markingPaidTable === table.table_number}
+                        onClick={() => {
+                          if (markingPaidTable === table.table_number) return;
+                          setTablePaymentMethods((prev) => ({
+                            ...prev,
+                            [table.table_number]: "cash",
+                          }));
+                        }}
+                        className={`${paymentButtonClass(table.table_number, "cash")} disabled:opacity-60`}
+                      >
+                        Cash
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={markingPaidTable === table.table_number}
+                        onClick={() => {
+                          if (markingPaidTable === table.table_number) return;
+                          setTablePaymentMethods((prev) => ({
+                            ...prev,
+                            [table.table_number]: "qr",
+                          }));
+                        }}
+                        className={`${paymentButtonClass(table.table_number, "qr")} disabled:opacity-60`}
+                      >
+                        QR
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={markingPaidTable === table.table_number}
+                        onClick={() => {
+                          if (markingPaidTable === table.table_number) return;
+                          setTablePaymentMethods((prev) => ({
+                            ...prev,
+                            [table.table_number]: "card",
+                          }));
+                        }}
+                        className={`${paymentButtonClass(table.table_number, "card")} disabled:opacity-60`}
+                      >
+                        Card
+                      </button>
+                    </div>
+                  </div>
+
+                  {(
+                    <div className="space-y-3 rounded-[22px] border border-slate-200 bg-white p-3">
+                      {enableDiscount && (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="text-sm font-black text-slate-800">Discount</p>
+                            <p className="text-xs font-bold text-rose-600">- Rs. {paymentBreakdown.discount_amount}</p>
+                          </div>
+                          <div className="grid grid-cols-4 gap-2">
+                            {["0", "5", "10"].map((percent) => (
+                              <button
+                                key={`${table.table_number}-discount-${percent}`}
+                                type="button"
+                                disabled={markingPaidTable === table.table_number}
+                                onClick={() =>
+                                  setTableDiscountPercents((prev) => ({
+                                    ...prev,
+                                    [table.table_number]: percent,
+                                  }))
+                                }
+                                className={`rounded-2xl px-3 py-2.5 text-xs font-black transition disabled:opacity-60 ${
+                                  String(tableDiscountPercents[table.table_number] || "0") === percent
+                                    ? "bg-rose-600 text-white shadow-sm"
+                                    : "bg-slate-100 text-slate-700"
+                                }`}
+                              >
+                                {percent}%
+                              </button>
+                            ))}
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              value={tableDiscountPercents[table.table_number] || "0"}
+                              onChange={(e) =>
+                                setTableDiscountPercents((prev) => ({
+                                  ...prev,
+                                  [table.table_number]: e.target.value,
+                                }))
+                              }
+                              disabled={markingPaidTable === table.table_number}
+                              className="rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-center text-xs font-black text-slate-900 disabled:opacity-60"
+                              placeholder="Custom"
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="space-y-2 border-t border-dashed border-slate-200 pt-3">
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="font-bold text-slate-600">Subtotal</span>
+                          <span className="font-black text-slate-900">Rs. {paymentBreakdown.subtotal}</span>
+                        </div>
+                        {enableDiscount && (
+                          <div className="flex items-center justify-between text-sm">
+                            <span className="font-bold text-slate-600">Discount</span>
+                            <span className="font-black text-rose-600">- Rs. {paymentBreakdown.discount_amount}</span>
+                          </div>
+                        )}
+                        {enableTax && (
+                          <div className="flex items-center justify-between text-sm">
+                            <span className="font-bold text-slate-600">Tax ({paymentBreakdown.tax_percent}%)</span>
+                            <span className="font-black text-slate-900">Rs. {paymentBreakdown.tax_amount}</span>
+                          </div>
+                        )}
+                        <div className="flex items-center justify-between rounded-2xl bg-slate-900 px-3 py-3 text-white">
+                          <span className="text-sm font-black">Grand Total</span>
+                          <span className="text-lg font-black">Rs. {paymentBreakdown.grand_total}</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (tableOnlyPendingPaymentSync) {
+                        setShowPaymentSyncQueue(true);
+                        return;
+                      }
+                      markGroupedTableAsPaid(table.table_number, selectedPaymentMethod);
+                    }}
+                    disabled={markingPaidTable === table.table_number}
+                    className="w-full rounded-2xl bg-blue-600 py-3 text-sm font-semibold text-white shadow-[0_10px_25px_rgba(37,99,235,0.28)]"
+                  >
+                    {markingPaidTable === table.table_number
+                      ? "Marking..."
+                      : tableOnlyPendingPaymentSync
+                        ? "Open Sync Queue"
+                        : tableHasPendingPaymentSync
+                          ? "Pay Remaining Orders"
+                          : "Mark as Paid"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderPaymentHistoryView() {
+    return (
+      <div className="manage-subpage-slide space-y-4 pb-4 pt-5">
+        <button type="button" onClick={() => changeView("manage")} className="inline-flex items-center rounded-full bg-white px-3.5 py-2 text-xs font-black text-slate-700 shadow-sm ring-1 ring-slate-200 active:scale-[0.98]">← Back Manage</button>
+        {sectionTitle(
+          "Payment History",
+          "Paid orders list with total, method, paid time, remarks",
+          "🧾"
+        )}
+
+        <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm">
+          {paidOrders.length === 0 ? (
+            <p className="text-sm text-slate-500">No paid orders yet.</p>
+          ) : (
+            <div className="grid grid-cols-2 gap-3">
+              {paidOrders.map((order) => {
+                const orderTotal = getOrderTotal(order);
+
+                return (
+                  <button
+                    key={order.id}
+                    type="button"
+                    onClick={() => openPaidOrderBill(order)}
+                    className="rounded-[18px] border border-slate-200 bg-slate-50 p-3 text-left space-y-2 transition hover:border-blue-300 hover:bg-blue-50"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-bold text-slate-900">
+                          Table {order.table_number}
+                        </p>
+                        <p className="text-[11px] text-slate-500">Table {order.table_number}</p>
+                      </div>
+
+                      <span className="shrink-0 rounded-full bg-green-100 px-2 py-1 text-[10px] font-semibold text-green-700">
+                        Paid
+                      </span>
+                    </div>
+
+                    <div className="space-y-1 text-xs text-slate-700">
+                      {order.order_items?.length ? (
+                        order.order_items.slice(0, 3).map((item) => (
+                          <p key={item.id} className="truncate">
+                            {item.item_name} x {item.quantity}
+                          </p>
+                        ))
+                      ) : (
+                        <p>No items</p>
+                      )}
+
+                      {order.order_items && order.order_items.length > 3 && (
+                        <p className="text-[11px] text-slate-500">
+                          +{order.order_items.length - 3} more
+                        </p>
+                      )}
+                    </div>
+
+                    {order.remarks && (
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 p-2">
+                        <p className="mb-1 text-[10px] font-semibold text-slate-600">Remarks</p>
+                        <p className="line-clamp-2 text-[11px] text-slate-800">
+                          {order.remarks}
+                        </p>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-2 border-t border-slate-200 pt-2">
+                      <div className="rounded-xl bg-white p-2">
+                        <p className="text-[10px] text-slate-500">Total</p>
+                        <p className="text-xs font-bold text-slate-900">Rs. {orderTotal}</p>
+                      </div>
+
+                      <div className="rounded-xl bg-white p-2">
+                        <p className="text-[10px] text-slate-500">Method</p>
+                        <p className="text-xs font-bold text-slate-900">
+                          {formatPaymentMethod(order.payment_method)}
+                        </p>
+                      </div>
+
+                      <div className="col-span-2 rounded-xl bg-white p-2">
+                        <p className="text-[10px] text-slate-500">Paid Time</p>
+                        <p className="text-[11px] font-semibold text-slate-900">
+                          {order.paid_at ? new Date(order.paid_at).toLocaleString() : "-"}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl bg-slate-900 px-3 py-2 text-center text-[11px] font-semibold text-white">
+                      Tap to view customer bill
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+
+
+  function renderMenuItemsPopup() {
+    const openMenuAddPage = () => {
+      cancelEditMenuItem();
+      resetNewMenuItemForm();
+      setMenuItemWorkMode("add");
+      setShowNewItemCategoryPicker(false);
+      scrollMainContentToTop();
+    };
+
+    const openMenuEditPage = async (menu: MenuItem) => {
+      await startEditMenuItem(menu);
+      setMenuItemWorkMode("edit");
+      setShowNewItemCategoryPicker(false);
+      scrollMainContentToTop();
+    };
+
+    const backToManage = () => {
+      setPopupView(null);
+      setMenuItemWorkMode("list");
+      cancelEditMenuItem();
+      setShowHeaderMenu(false);
+      scrollMainContentToTop();
+    };
+
+    const backToItems = () => {
+      setMenuItemWorkMode("list");
+      cancelEditMenuItem();
+      setShowNewItemCategoryPicker(false);
+      scrollMainContentToTop();
+    };
+
+    const manageBackButtonClass = "inline-flex items-center rounded-full bg-white px-3.5 py-2 text-xs font-black text-slate-700 shadow-sm ring-1 ring-slate-200 active:scale-[0.98]";
+    const manageSubpageHeaderClass = "sticky top-0 z-20 -mx-3 border-b border-slate-200/70 bg-slate-50/95 px-3 pb-3 pt-5 backdrop-blur-xl";
+
+    const renderBackToManageButton = () => (
+      <button type="button" onClick={backToManage} className={manageBackButtonClass}>
+        ← Back Manage
+      </button>
+    );
+
+    const renderBackToItemsButton = () => (
+      <button type="button" onClick={backToItems} className={manageBackButtonClass}>
+        ← Back Items
+      </button>
+    );
+
+    const renderMenuCategoryPicker = (value: string, onSelect: (category: string) => void) => (
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => setShowNewItemCategoryPicker((current) => !current)}
+          className="flex h-13 w-full max-w-[245px] items-center justify-between rounded-[18px] border border-slate-200 bg-white px-4 text-left text-sm font-bold text-slate-900 shadow-sm outline-none transition active:scale-[0.99]"
+        >
+          <span className="min-w-0 truncate">{value || "Uncategorized"}</span>
+          <span className="ml-3 text-xs font-black text-slate-400">▾</span>
+        </button>
+
+        {showNewItemCategoryPicker && (
+          <div className="absolute left-0 top-[58px] z-40 w-full max-w-[285px] overflow-hidden rounded-[22px] border border-slate-200 bg-white p-2 shadow-[0_18px_55px_rgba(15,23,42,0.16)]">
+            <div className="max-h-48 space-y-1 overflow-y-auto pr-1">
+              {["Uncategorized", ...menuCategoryOptions].map((category) => (
+                <button
+                  key={`manage-category-picker-${category}`}
+                  type="button"
+                  onClick={() => {
+                    onSelect(category);
+                    setShowNewItemCategoryPicker(false);
+                  }}
+                  className={`flex w-full items-center justify-between rounded-2xl px-3 py-2.5 text-left text-sm font-bold ${value === category ? "bg-red-50 text-red-700" : "text-slate-700 hover:bg-slate-50"}`}
+                >
+                  <span className="min-w-0 truncate">{category}</span>
+                  {value === category ? <span className="text-xs">✓</span> : null}
+                </button>
+              ))}
+            </div>
+
+            <div className="mt-2 border-t border-slate-100 pt-2">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={takeOrderCategoryInput}
+                  onChange={(e) => setTakeOrderCategoryInput(e.target.value)}
+                  placeholder="Add category"
+                  className="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-semibold text-slate-900 outline-none placeholder:text-slate-400 focus:border-slate-400 focus:ring-4 focus:ring-slate-50"
+                />
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const categoryToSelect = normalizeMenuCategory(takeOrderCategoryInput);
+                    await addTakeOrderCategory();
+                    if (categoryToSelect) {
+                      onSelect(categoryToSelect);
+                      setShowNewItemCategoryPicker(false);
+                    }
+                  }}
+                  className="shrink-0 rounded-2xl bg-red-600 px-3 py-2.5 text-xs font-black text-white shadow-sm active:scale-[0.98]"
+                >
+                  + Add
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+
+    const renderAddItemForm = () => (
+      <form onSubmit={handleAddMenuItem} className="space-y-5 pb-8 lg:space-y-7 lg:pb-0">
+        <div className="hidden items-center justify-between border-b border-slate-100 pb-5 lg:flex">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Menu setup</p>
+            <h3 className="mt-1 text-2xl font-black tracking-tight text-slate-950">Create Dish</h3>
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={backToItems}
+              className="rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-black text-slate-700 shadow-sm transition hover:bg-slate-50 active:scale-[0.98]"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={savingNewMenuItem || !isOnline}
+              className={`rounded-xl px-6 py-3 text-sm font-black text-white shadow-[0_14px_30px_rgba(239,0,12,0.18)] transition active:scale-[0.98] ${savingNewMenuItem || !isOnline ? "bg-slate-400" : "bg-red-600 hover:bg-red-700"}`}
+            >
+              {savingNewMenuItem ? "Saving..." : "Save Dish"}
+            </button>
+          </div>
+        </div>
+
+        <div className="grid gap-5 lg:grid-cols-12">
+          <div className="lg:col-span-4">
+            <label className="mb-2 block text-sm font-semibold text-slate-700">Type</label>
+            <div className="grid grid-cols-2 gap-2 lg:h-[46px]">
+              <button
+                type="button"
+                onClick={() => setNewItemHasVariants(false)}
+                className={`rounded-xl px-4 py-3 text-sm font-black transition active:scale-[0.98] ${!newItemHasVariants ? "bg-slate-950 text-white shadow-sm" : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}
+              >
+                Single
+              </button>
+              <button
+                type="button"
+                onClick={() => setNewItemHasVariants(true)}
+                className={`rounded-xl px-4 py-3 text-sm font-black transition active:scale-[0.98] ${newItemHasVariants ? "bg-red-600 text-white shadow-sm" : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}
+              >
+                Variant
+              </button>
+            </div>
+          </div>
+
+          <div className="lg:col-span-5">
+            <label className="mb-2 block text-sm font-semibold text-slate-700">Dish Name <span className="text-red-500">*</span></label>
+            <input
+              type="text"
+              value={newItemName}
+              onChange={(e) => setNewItemName(e.target.value)}
+              placeholder="Enter dish name"
+              className="h-[46px] w-full rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-900 outline-none placeholder:text-slate-400 focus:border-slate-400 focus:ring-4 focus:ring-slate-50"
+            />
+          </div>
+
+          <div className="lg:col-span-3">
+            <label className="mb-2 block text-sm font-semibold text-slate-700">Category <span className="text-red-500">*</span></label>
+            <div className="[&_button]:h-[46px] [&_button]:max-w-none [&_button]:rounded-xl">
+              {renderMenuCategoryPicker(newItemCategory, setNewItemCategory)}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid gap-5 lg:grid-cols-12">
+          <div className="lg:col-span-9">
+            <label className="mb-2 block text-sm font-semibold text-slate-700">Dish Photo</label>
+            <label className="flex min-h-[46px] cursor-pointer items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm transition hover:bg-slate-50">
+              {selectedImagePreview ? (
+                <img src={selectedImagePreview} alt="Menu preview" className="h-12 w-12 shrink-0 rounded-xl object-cover ring-1 ring-slate-200" />
+              ) : (
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-xs font-black text-slate-400 ring-1 ring-slate-200">↥</span>
+              )}
+              <span className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-500">
+                {selectedImage?.name || "Click here to upload your image"}
+              </span>
+              <input type="file" accept="image/*" onChange={handleSelectedMenuImageChange} className="hidden" />
+            </label>
+          </div>
+
+          <div className="lg:col-span-3">
+            <label className="mb-2 block text-sm font-semibold text-slate-700">Status</label>
+            <div className="flex h-[46px] items-center rounded-xl border border-emerald-100 bg-emerald-50 px-4 text-sm font-black text-emerald-700">
+              Available
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:p-5">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-black text-slate-950">Default Price</p>
+              <p className="mt-1 hidden text-xs font-semibold text-slate-500 lg:block">Set normal price or add variants for different sizes.</p>
+            </div>
+            {newItemHasVariants ? (
+              <button type="button" onClick={addNewVariantRow} className="rounded-xl bg-slate-100 px-4 py-2.5 text-xs font-black text-slate-800 transition hover:bg-slate-200 active:scale-[0.98]">
+                + Add Variant
+              </button>
+            ) : null}
+          </div>
+
+          {!newItemHasVariants ? (
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div>
+                <label className="mb-2 block text-sm font-semibold text-slate-700">Actual Price <span className="text-red-500">*</span></label>
+                <div className="flex h-[46px] items-center rounded-xl border border-slate-200 bg-white px-4 focus-within:border-red-300 focus-within:ring-4 focus-within:ring-red-50">
+                  <span className="mr-2 text-xs font-black text-slate-400">Rs</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={newItemPrice}
+                    onChange={(e) => setNewItemPrice(e.target.value)}
+                    placeholder="0"
+                    className="h-full min-w-0 flex-1 bg-transparent text-sm font-semibold text-slate-900 outline-none placeholder:text-slate-400"
+                  />
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {newItemVariants.map((variant, index) => (
+                <div key={`new-variant-${index}`} className="grid grid-cols-[1fr_110px_42px] gap-3 lg:grid-cols-[1fr_180px_46px]">
+                  <input
+                    type="text"
+                    value={variant.variant_name}
+                    onChange={(e) => updateNewVariantRow(index, "variant_name", e.target.value)}
+                    placeholder="Variant name"
+                    className="h-[46px] rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-900 outline-none placeholder:text-slate-400 focus:border-slate-400 focus:ring-4 focus:ring-slate-50"
+                  />
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={variant.price}
+                    onChange={(e) => updateNewVariantRow(index, "price", e.target.value)}
+                    placeholder="Price"
+                    className="h-[46px] rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-900 outline-none placeholder:text-slate-400 focus:border-slate-400 focus:ring-4 focus:ring-slate-50"
+                  />
+                  <button type="button" onClick={() => removeNewVariantRow(index)} className="h-[46px] rounded-xl bg-rose-50 text-sm font-black text-rose-600 ring-1 ring-rose-100 transition active:scale-[0.98]">×</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="hidden rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-900 lg:block">
+          <span className="mr-2 rounded-lg bg-emerald-100 px-2 py-1 text-xs font-black text-emerald-700">New</span>
+          Add-ons and stock consumption can be configured later from Inventory.
+        </div>
+
+        <button
+          type="submit"
+          disabled={savingNewMenuItem || !isOnline}
+          className={`w-full rounded-2xl px-4 py-3.5 text-sm font-black text-white shadow-sm transition active:scale-[0.98] lg:hidden ${savingNewMenuItem || !isOnline ? "bg-slate-400" : "bg-red-600"}`}
+        >
+          {savingNewMenuItem ? "Saving..." : "Save Item"}
+        </button>
+      </form>
+    );
+
+
+    const renderEditItemForm = () => (
+      <div className="space-y-4 pb-8">
+        <div>
+          <label className="mb-2 block text-sm font-semibold text-slate-700">Item Name</label>
+          <input value={editingItemName} onChange={(e) => setEditingItemName(e.target.value)} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 outline-none focus:border-slate-400 focus:ring-4 focus:ring-slate-50" />
+        </div>
+
+        <div>
+          <label className="mb-2 block text-sm font-semibold text-slate-700">Category</label>
+          {renderMenuCategoryPicker(editingItemCategory, setEditingItemCategory)}
+        </div>
+
+        <div>
+          <label className="mb-2 block text-sm font-semibold text-slate-700">Item Image</label>
+          <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+            {editingImagePreview || editingImageUrl ? (
+              <img src={editingImagePreview || editingImageUrl || ""} alt="Menu preview" className="h-16 w-16 shrink-0 rounded-2xl object-cover ring-1 ring-slate-200" />
+            ) : (
+              <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-slate-100 text-[10px] font-black text-slate-400 ring-1 ring-slate-200">No image</div>
+            )}
+            <input type="file" accept="image/*" onChange={handleEditingMenuImageChange} className="min-w-0 flex-1 text-xs font-semibold text-slate-600 file:mr-3 file:rounded-xl file:border-0 file:bg-slate-950 file:px-3 file:py-2 file:text-xs file:font-black file:text-white" />
+          </div>
+        </div>
+
+        <div>
+          <label className="mb-2 block text-sm font-semibold text-slate-700">Item Type</label>
+          <div className="grid grid-cols-2 gap-2">
+            <button type="button" onClick={() => setEditingItemHasVariants(false)} className={`rounded-2xl px-4 py-3 text-sm font-black ${!editingItemHasVariants ? "bg-slate-950 text-white" : "border border-slate-200 bg-white text-slate-700"}`}>Single Item</button>
+            <button type="button" onClick={() => setEditingItemHasVariants(true)} className={`rounded-2xl px-4 py-3 text-sm font-black ${editingItemHasVariants ? "bg-red-600 text-white" : "border border-slate-200 bg-white text-slate-700"}`}>Variant Item</button>
+          </div>
+        </div>
+
+        {!editingItemHasVariants ? (
+          <div>
+            <label className="mb-2 block text-sm font-semibold text-slate-700">Price</label>
+            <input type="number" min="0" step="0.01" value={editingItemPrice} onChange={(e) => setEditingItemPrice(e.target.value)} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 outline-none focus:border-slate-400 focus:ring-4 focus:ring-slate-50" />
+          </div>
+        ) : (
+          <div className="space-y-3 rounded-[24px] border border-slate-200 bg-slate-50/50 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-bold text-slate-900">Variants</p>
+                <p className="text-xs text-slate-500">Existing variants edit gara</p>
+              </div>
+              <button type="button" onClick={addEditingVariantRow} className="rounded-xl bg-red-600 px-3 py-2 text-xs font-bold text-white">+ Variant</button>
+            </div>
+            {editingItemVariants.map((variant, index) => (
+              <div key={`edit-variant-${index}`} className="grid grid-cols-[1fr_96px_38px] gap-2">
+                <input type="text" value={variant.variant_name} onChange={(e) => updateEditingVariantRow(index, "variant_name", e.target.value)} placeholder="Variant" className="rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm font-semibold outline-none" />
+                <input type="number" min="0" step="0.01" value={variant.price} onChange={(e) => updateEditingVariantRow(index, "price", e.target.value)} placeholder="Price" className="rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm font-semibold outline-none" />
+                <button type="button" onClick={() => removeEditingVariantRow(index)} className="rounded-2xl bg-rose-100 text-sm font-bold text-rose-600">×</button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={() => editingMenuId && saveEditMenuItem(editingMenuId)}
+          disabled={!editingMenuId || !isOnline}
+          className={`w-full rounded-2xl px-4 py-3.5 text-sm font-black text-white shadow-sm ${!editingMenuId || !isOnline ? "bg-slate-400" : "bg-red-600"}`}
+        >
+          Save Changes
+        </button>
+      </div>
+    );
+
+    if (menuManageMode === "items" && menuItemWorkMode !== "list") {
+      return (
+        <div className="manage-subpage-slide min-h-full bg-slate-50 px-3 pb-6 pt-5 text-slate-950 lg:bg-white lg:px-8 lg:py-7">
+          <div className="lg:hidden">
+            <div className={manageSubpageHeaderClass}>
+              {renderBackToItemsButton()}
+              <h2 className="mt-3 text-xl font-black text-slate-950">{menuItemWorkMode === "add" ? "Add Menu Item" : "Edit Menu Item"}</h2>
+            </div>
+          </div>
+          <div className="mx-auto mt-4 max-w-md rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm lg:mt-0 lg:max-w-[1180px] lg:rounded-none lg:border-0 lg:p-0 lg:shadow-none">
+            {menuItemWorkMode === "add" ? renderAddItemForm() : renderEditItemForm()}
+          </div>
+        </div>
+      );
+    }
+
+    if (menuManageMode === "categories") {
+      return (
+        <div className="manage-subpage-slide min-h-full bg-slate-50 px-3 pb-6 pt-5 text-slate-950">
+          <div className={manageSubpageHeaderClass}>
+            {renderBackToManageButton()}
+          </div>
+          <div className="mt-4 rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="grid grid-cols-[1fr_auto] gap-2">
+              <input value={takeOrderCategoryInput} onChange={(e) => setTakeOrderCategoryInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addTakeOrderCategory(); } }} placeholder="Example: Momo, Drinks" className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-slate-400 focus:ring-4 focus:ring-slate-50" />
+              <button type="button" onClick={addTakeOrderCategory} className="rounded-2xl bg-red-600 px-4 py-3 text-sm font-black text-white">Add</button>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {menuCategoryOptions.map((category) => (
+                <span key={`category-page-${category}`} className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-bold text-slate-700">
+                  {category}
+                  <span className="rounded-full bg-white px-1.5 py-0.5 text-[10px] text-slate-500">{categoryItemCountMap[category] || 0}</span>
+                  <button type="button" onClick={() => deleteTakeOrderCategory(category)} className="ml-1 text-rose-500">×</button>
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (menuManageMode === "csv") {
+      return (
+        <div className="manage-subpage-slide min-h-full bg-slate-50 px-3 pb-6 pt-5 text-slate-950">
+          <div className={manageSubpageHeaderClass}>
+            {renderBackToManageButton()}
+          </div>
+          <div className="mt-4 rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button" onClick={downloadMenuCsvTemplate} className="rounded-2xl border border-slate-200 bg-white px-3 py-3 text-xs font-black text-slate-900">Download Template</button>
+              <button type="button" onClick={() => csvMenuFileInputRef.current?.click()} disabled={savingDraftMenuItems || savingNewMenuItem} className={`rounded-2xl px-3 py-3 text-xs font-black text-white ${savingDraftMenuItems || savingNewMenuItem ? "bg-slate-400" : "bg-red-600"}`}>Upload CSV</button>
+            </div>
+            <input ref={csvMenuFileInputRef} type="file" accept=".csv,text/csv" onChange={handleMenuCsvUpload} className="hidden" />
+            {draftMenuItems.length > 0 ? (
+              <div className="mt-4 space-y-2 rounded-[22px] border border-emerald-100 bg-emerald-50/70 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-black text-emerald-900">Draft Menu List</p>
+                    <p className="text-xs text-emerald-700">{draftMenuItems.length} CSV items ready.</p>
+                  </div>
+                  <button type="button" onClick={saveAllDraftMenuItems} disabled={savingDraftMenuItems || !isOnline} className={`rounded-2xl px-4 py-2.5 text-xs font-black text-white ${savingDraftMenuItems || !isOnline ? "bg-slate-400" : "bg-emerald-600"}`}>{savingDraftMenuItems ? "Saving..." : `Save All (${draftMenuItems.length})`}</button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <>
+      <div className="manage-subpage-slide relative min-h-full bg-slate-50 px-3 pb-20 pt-5 text-slate-950 lg:hidden">
+        <div className={manageSubpageHeaderClass}>
+          {renderBackToManageButton()}
+
+          <div className="mt-3 flex gap-2 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {manageCategoryPills.map((category) => {
+              const active = manageMenuSelectedCategory === category;
+              const label = category === "all" ? "All" : category;
+              return (
+                <button
+                  key={`manage-menu-category-${category}`}
+                  type="button"
+                  onClick={() => setManageMenuSelectedCategory(category)}
+                  className={`shrink-0 rounded-full px-4 py-2 text-xs font-black transition active:scale-[0.98] ${active ? "bg-red-600 text-white shadow-sm" : "border border-slate-200 bg-white text-slate-600"}`}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="mt-3 space-y-2.5">
+          {visibleManageMenuItems.length === 0 ? (
+            <div className="rounded-[24px] border border-dashed border-slate-200 bg-white p-6 text-center text-sm font-semibold text-slate-500">
+              No menu items in this category.
+            </div>
+          ) : (
+            visibleManageMenuItems.map((menu) => (
+              <div key={`manage-menu-card-${menu.id}`} className="flex items-center gap-3 rounded-[22px] border border-slate-100 bg-white p-2.5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
+                {menu.image_url ? (
+                  <img src={menu.image_url} alt={menu.item_name} className="h-16 w-16 shrink-0 rounded-[18px] object-cover ring-1 ring-slate-200" />
+                ) : (
+                  <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-[18px] bg-slate-950 text-sm font-black text-white ring-1 ring-slate-200">
+                    {String(menu.item_name || "M").trim().charAt(0).toUpperCase() || "M"}
+                  </div>
+                )}
+
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[14px] font-black leading-tight text-slate-950">{menu.item_name}</p>
+                  <p className="mt-1 truncate text-[11px] font-semibold text-slate-400">{menu.category || "Uncategorized"}</p>
+                  <div className="mt-1 flex items-center gap-2">
+                    <p className="text-[12px] font-black text-red-600">{getMenuItemPriceRange(menu.id)}</p>
+                    {getMenuVariantCount(menu.id) > 0 ? <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-black text-slate-500">{getMenuVariantCount(menu.id)} variants</span> : null}
+                  </div>
+                </div>
+
+                <div className="flex shrink-0 flex-col gap-1.5">
+                  <button type="button" onClick={() => openMenuEditPage(menu)} className="flex h-9 w-9 items-center justify-center rounded-2xl border border-slate-200 bg-white text-[14px] shadow-sm active:scale-[0.96]" aria-label={`Edit ${menu.item_name}`}>✎</button>
+                  <button type="button" onClick={() => deleteMenuItem(menu.id)} className="flex h-9 w-9 items-center justify-center rounded-2xl bg-rose-50 text-[14px] text-rose-600 ring-1 ring-rose-100 active:scale-[0.96]" aria-label={`Delete ${menu.item_name}`}>⌫</button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+      </div>
+      <div className="relative hidden min-h-full bg-[#f8fafc] px-7 py-6 text-slate-950 lg:block">
+        <div className="mb-6 flex items-center justify-between gap-4">
+          <div>
+            <h2 className="text-2xl font-black tracking-tight text-slate-950">Menu Items</h2>
+            <p className="mt-1 text-sm font-semibold text-slate-500">Manage dishes, prices, categories and variants.</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="flex h-11 w-[300px] items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 shadow-sm">
+              <span className="text-slate-400">⌕</span>
+              <input
+                type="text"
+                value={plusMenuSearch}
+                onChange={(event) => setPlusMenuSearch(event.target.value)}
+                placeholder="Search"
+                className="h-full w-full bg-transparent text-sm font-semibold text-slate-800 outline-none placeholder:text-slate-400"
+              />
+            </div>
+
+          </div>
+        </div>
+
+        <div className="mb-5 grid grid-cols-3 gap-4">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-black text-slate-600">Total</p>
+              <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">{visibleManageMenuItems.length} shown</span>
+            </div>
+            <p className="mt-4 text-3xl font-black text-slate-950">{menuItems.length}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-black text-slate-600">Categories</p>
+              <span className="rounded-full bg-sky-50 px-3 py-1 text-xs font-black text-sky-700">Active</span>
+            </div>
+            <p className="mt-4 text-3xl font-black text-slate-950">{menuCategoryOptions.length}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-black text-slate-600">Variants</p>
+              <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-black text-amber-700">Options</span>
+            </div>
+            <p className="mt-4 text-3xl font-black text-slate-950">{menuItemVariants.length}</p>
+          </div>
+        </div>
+
+        <div className="mb-4 flex items-center gap-2 overflow-x-auto pb-1">
+          {manageCategoryPills.map((category) => {
+            const active = manageMenuSelectedCategory === category;
+            const label = category === "all" ? "All" : category;
+            return (
+              <button
+                key={`desktop-manage-menu-category-${category}`}
+                type="button"
+                onClick={() => setManageMenuSelectedCategory(category)}
+                className={`shrink-0 rounded-xl px-4 py-2.5 text-xs font-black transition ${active ? "bg-red-600 text-white shadow-sm" : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+
+        {menuManageMode === "items" && (
+          <button
+            type="button"
+            onClick={openMenuAddPage}
+            className="fixed bottom-8 right-8 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-red-600 text-3xl font-black leading-none text-white shadow-[0_18px_45px_rgba(220,38,38,0.35)] transition hover:bg-red-700 active:scale-95"
+            aria-label="Add menu item"
+            title="Add menu item"
+          >
+            +
+          </button>
+        )}
+
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="grid grid-cols-[70px_1.7fr_1fr_1fr_1fr_120px_110px] bg-slate-50 px-5 py-4 text-xs font-black uppercase tracking-wide text-slate-500">
+            <span>SN</span>
+            <span>Dish Name</span>
+            <span>Price</span>
+            <span>Category</span>
+            <span>Variants</span>
+            <span>Status</span>
+            <span className="text-right">Action</span>
+          </div>
+
+          {visibleManageMenuItems.length === 0 ? (
+            <div className="flex min-h-[340px] flex-col items-center justify-center px-6 py-12 text-center">
+              <div className="flex h-20 w-20 items-center justify-center rounded-full bg-slate-100 text-3xl shadow-inner">🍽️</div>
+              <h3 className="mt-5 text-xl font-black text-slate-950">No menu items found</h3>
+              <p className="mt-2 text-sm font-semibold text-slate-500">Add a dish or change category filter.</p>
+            </div>
+          ) : (
+            searchedVisibleManageMenuItems.map((menu, index) => (
+              <div key={`desktop-manage-menu-row-${menu.id}`} className="grid grid-cols-[70px_1.7fr_1fr_1fr_1fr_120px_110px] items-center border-t border-slate-100 px-5 py-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50/80">
+                <span className="text-slate-500">{index + 1}</span>
+                <div className="flex min-w-0 items-center gap-3">
+                  {menu.image_url ? (
+                    <img src={menu.image_url} alt={menu.item_name} className="h-12 w-12 shrink-0 rounded-xl object-cover ring-1 ring-slate-200" />
+                  ) : (
+                    <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-sm font-black text-white ring-1 ring-slate-200">
+                      {String(menu.item_name || "M").trim().charAt(0).toUpperCase() || "M"}
+                    </div>
+                  )}
+                  <span className="truncate font-black text-slate-950">{menu.item_name}</span>
+                </div>
+                <span className="font-black text-emerald-600">{getMenuItemPriceRange(menu.id)}</span>
+                <span className="truncate text-slate-700">{menu.category || "Uncategorized"}</span>
+                <span className="text-slate-500">{getMenuVariantCount(menu.id) > 0 ? `${getMenuVariantCount(menu.id)} variants` : "-"}</span>
+                <span>
+                  <span className="inline-flex rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">Active</span>
+                </span>
+                <div className="flex justify-end gap-2">
+                  <button type="button" onClick={() => openMenuEditPage(menu)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-100">Edit</button>
+                  <button type="button" onClick={() => deleteMenuItem(menu.id)} className="rounded-xl bg-rose-50 px-3 py-2 text-xs font-black text-rose-600 ring-1 ring-rose-100 hover:bg-rose-100">Delete</button>
+                </div>
+                </div>
+              ))
+          )}
+        </div>
+      </div>
+      </>
+    );
+  }
+
+  function renderInventoryPopup() {
+    const closeInventoryToManage = () => {
+      setPopupView(null);
+      setDesktopInventoryContentOpen(false);
+      setDesktopInventoryExpanded(false);
+      setShowInventoryMoreMenu(false);
+      setShowArchivedInventoryView(false);
+      setShowAddInventoryItemForm(false);
+      setShowHeaderMenu(false);
+      setMiniView("manage");
+      scrollMainContentToTop();
+    };
+
+    if (!inventoryEnabled) {
+      return (
+        <div className="manage-subpage-slide fixed inset-0 z-[80] flex flex-col overflow-hidden overscroll-none bg-[#eef4ff] px-3 text-slate-900 lg:static lg:z-auto lg:h-auto lg:min-h-full lg:overflow-visible lg:bg-transparent lg:px-0">
+          <div className="shrink-0 touch-none select-none -mx-3 border-b border-slate-200/70 bg-[#eef4ff]/95 px-3 pb-3 pt-3 backdrop-blur-xl">
+            <div className="rounded-[26px] bg-gradient-to-br from-[#082b66] via-[#062559] to-[#041c44] p-3 text-white shadow-[0_16px_40px_rgba(2,12,27,0.25)]">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPopupView(null);
+                    setShowHeaderMenu(false);
+                    scrollMainContentToTop();
+                  }}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white/10 text-xl font-black text-white ring-1 ring-white/10 lg:hidden"
+                  aria-label="Back"
+                >
+                  ←
+                </button>
+
+                <div className="min-w-0 flex-1">
+                  <h2 className="truncate text-[18px] font-black leading-tight">Inventory</h2>
+                  <p className="mt-0.5 truncate text-[11px] font-medium text-white/65">
+                    Inventory module is off
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={savingInventoryEnabled || !isOnline}
+                  onClick={toggleInventoryEnabled}
+                  className={`relative h-9 w-[58px] shrink-0 rounded-full p-1 transition active:scale-[0.98] ${
+                    inventoryEnabled ? "bg-emerald-500" : "bg-white/20"
+                  } ${savingInventoryEnabled || !isOnline ? "opacity-50" : ""}`}
+                  aria-label={inventoryEnabled ? "Disable inventory deduction" : "Enable inventory deduction"}
+                  title={inventoryEnabled ? "Inventory deduction ON" : "Inventory deduction OFF"}
+                >
+                  <span
+                    className={`block h-7 w-7 rounded-full bg-white shadow-md transition-transform ${
+                      inventoryEnabled ? "translate-x-[22px]" : "translate-x-0"
+                    }`}
+                  />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPopupView(null);
+                    setShowHeaderMenu(false);
+                    scrollMainContentToTop();
+                  }}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white text-[22px] font-semibold leading-none text-slate-900 shadow-sm lg:hidden"
+                  aria-label="Close"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex min-h-0 flex-1 items-center justify-center px-3 py-8">
+            <div className="w-full max-w-sm rounded-[30px] border border-slate-200 bg-white/90 p-6 text-center shadow-[0_24px_70px_rgba(15,23,42,0.12)] backdrop-blur-xl">
+              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-[24px] bg-slate-100 text-3xl">
+                📦
+              </div>
+              <h3 className="mt-4 text-xl font-black text-slate-950">Inventory Disabled</h3>
+              <p className="mt-2 text-sm font-semibold leading-6 text-slate-500">
+                
+              </p>
+              <p className="mt-3 rounded-2xl bg-slate-50 px-4 py-3 text-xs font-bold leading-5 text-slate-500">
+                माथिको switch ON गरेपछि मात्रै inventory navigation र calculation खुल्छ।
+              </p>
+              {!isOnline ? (
+                <p className="mt-3 text-xs font-black text-rose-600">Inventory enable गर्न internet चाहिन्छ।</p>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const {
+      lowStockItems,
+      visibleInventoryItems,
+      inventorySearchText,
+      totalStockValue,
+      purchaseEntryCount,
+      totalSupplierPurchase,
+      totalSupplierPaid,
+      totalSupplierDue,
+      visibleSuppliers,
+      purchaseOnlyTransactions,
+      summaryListItems,
+      selectedInventoryDetailItem,
+      selectedInventoryLinkedMenus,
+      selectedInventoryPurchaseHistory,
+      selectedInventoryStockValue,
+    } = inventoryViewData;
+
+    const {
+      visibleCostInsightBills,
+      costInsightTotalSales,
+      costInsightTotalCost,
+      costInsightTotalProfit,
+    } = costInsightViewData;
+
+    const summaryCards = [
+      {
+        key: "total",
+        label: "Total Items",
+        value: inventoryItems.length,
+        tone: "border-slate-200 bg-white text-slate-900",
+        sub: "All stock items",
+      },
+      {
+        key: "low",
+        label: "Low Stock",
+        value: lowStockItems.length,
+        tone: "border-rose-200 bg-rose-50 text-rose-700",
+        sub: "Need attention",
+      },
+      {
+        key: "value",
+        label: "Stock Value",
+        value: `Rs. ${formatMoney(totalStockValue)}`,
+        tone: "border-emerald-200 bg-emerald-50 text-emerald-700",
+        sub: "Current stock worth",
+      },
+      {
+        key: "purchase",
+        label: "Purchase Entries",
+        value: purchaseEntryCount,
+        tone: "border-blue-200 bg-blue-50 text-blue-700",
+        sub: "Restock records",
+      },
+      {
+        key: "archived",
+        label: "Archived",
+        value: archivedInventoryItems.length,
+        tone: "border-slate-200 bg-slate-50 text-slate-700",
+        sub: "Hidden but restorable",
+      },
+    ];
+
+    const inventoryShellClass =
+      "rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_18px_50px_rgba(15,23,42,0.06)]";
+
+    const renderInventoryCards = () => {
+      if (loadingInventory) {
+        return (
+          <div className="rounded-[22px] border border-dashed border-slate-200 bg-white px-4 py-10 text-center text-sm font-semibold text-slate-500">
+            Loading stock items...
+          </div>
+        );
+      }
+
+      if (visibleInventoryItems.length === 0) {
+        return (
+          <div className="rounded-[22px] border border-dashed border-slate-200 bg-white px-4 py-10 text-center shadow-sm">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-xl">📦</div>
+            <p className="mt-3 text-sm font-black text-slate-800">
+              {inventorySearchText ? "Search match bhetena." : inventoryStockFilter === "low" ? "Low stock item chaina." : "Stock item chaina."}
+            </p>
+            <p className="mt-1 text-xs font-medium text-slate-500">
+              {inventorySearchText ? "Keyword clear garera feri hera." : inventoryStockFilter === "low" ? "Aile sabai stock OK cha." : "+ Add bata inventory start gara."}
+            </p>
+          </div>
+        );
+      }
+
+      return (
+        <div className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
+          {visibleInventoryItems.map((item, index) => {
+            const currentStock = Number(item.current_stock || 0);
+            const lowLevel = Number(item.low_stock_threshold || 0);
+            const isLow = lowLevel > 0 && currentStock <= lowLevel;
+            const stockValue = currentStock * Number(item.cost_per_unit || 0);
+
+            return (
+              <div
+                key={`inventory-${item.id}`}
+                className={`p-4 ${index !== 0 ? "border-t border-slate-100" : ""}`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <p className="truncate text-[15px] font-black leading-tight text-slate-950">{item.item_name}</p>
+                      <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-black text-slate-600 ring-1 ring-slate-200">{item.category || "Other"}</span>
+                      <span
+                        className={`shrink-0 rounded-full px-2 py-0.5 text-[9px] font-black uppercase tracking-wide ${
+                          item.item_type === "raw"
+                            ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100"
+                            : "bg-blue-50 text-blue-700 ring-1 ring-blue-100"
+                        }`}
+                      >
+                        {item.item_type === "raw" ? "Raw" : "Direct"}
+                      </span>
+                      {isLow ? (
+                        <span className="shrink-0 rounded-full bg-rose-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-wide text-rose-700 ring-1 ring-rose-100">
+                          Low
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">
+                      Stock: <span className="text-slate-900">{formatMoney(currentStock)} {item.unit}</span>
+                      <span className="mx-1.5 text-slate-300">•</span>
+                      Low: {formatMoney(lowLevel)} {item.unit}
+                    </p>
+                  </div>
+
+                  <div className="shrink-0 text-right">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Value</p>
+                    <p className="text-sm font-black text-slate-950">Rs. {formatMoney(stockValue)}</p>
+                  </div>
+                </div>
+
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                  <div className="rounded-2xl bg-slate-50 px-3 py-2 ring-1 ring-slate-100">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Rate</p>
+                    <p className="mt-0.5 font-black text-slate-900">Rs. {formatMoney(item.cost_per_unit ?? 0)} / {item.unit}</p>
+                  </div>
+                  <div className="rounded-2xl bg-slate-50 px-3 py-2 ring-1 ring-slate-100">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Type</p>
+                    <p className="mt-0.5 font-black text-slate-900">{item.item_type === "raw" ? "Recipe ingredient" : "Direct sell"}</p>
+                  </div>
+                </div>
+
+                {editingInventoryId === item.id ? (
+                  <form onSubmit={updateInventoryItem} className="mt-4 rounded-[22px] border border-amber-200 bg-amber-50/40 p-3 shadow-sm">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-black text-slate-950">Edit this stock item</p>
+                        <p className="mt-0.5 text-[11px] font-semibold text-slate-500">Same row bhitra update gara. Context harाउँदैन.</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={cancelInventoryEdit}
+                        className="shrink-0 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-black text-slate-700 active:scale-[0.98]"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+
+                    <div className="space-y-3">
+                      <input
+                        type="text"
+                        value={editingInventoryItemName}
+                        onChange={(e) => setEditingInventoryItemName(e.target.value)}
+                        placeholder="Item name"
+                        className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 outline-none placeholder:text-slate-400 focus:border-amber-300 focus:ring-4 focus:ring-amber-50"
+                      />
+
+                      <select
+                        value={editingInventoryCategory}
+                        onChange={(e) => setEditingInventoryCategory(e.target.value)}
+                        className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-900 outline-none focus:border-amber-300 focus:ring-4 focus:ring-amber-50"
+                      >
+                        {getInventoryCategoryOptions().map((category) => (
+                          <option key={`inline-edit-category-${item.id}-${category}`} value={category}>
+                            {category}
+                          </option>
+                        ))}
+                      </select>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <select
+                          value={editingInventoryItemType}
+                          onChange={(e) => setEditingInventoryItemType(e.target.value as "raw" | "direct")}
+                          className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-900 outline-none focus:border-amber-300 focus:ring-4 focus:ring-amber-50"
+                        >
+                          <option value="raw">Raw</option>
+                          <option value="direct">Direct</option>
+                        </select>
+                        <select
+                          value={editingInventoryUnit}
+                          onChange={(e) => setEditingInventoryUnit(e.target.value)}
+                          className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-900 outline-none focus:border-amber-300 focus:ring-4 focus:ring-amber-50"
+                        >
+                          {INVENTORY_UNIT_OPTIONS.map((unit) => (
+                            <option key={`inline-edit-unit-${item.id}-${unit}`} value={unit}>
+                              {unit}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2 rounded-2xl border border-slate-200 bg-white p-2">
+                        <div>
+                          <p className="mb-1 text-[10px] font-black uppercase tracking-wide text-slate-400">Qty</p>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={editingInventoryStock}
+                            onChange={(e) => setEditingInventoryStock(e.target.value)}
+                            placeholder="0"
+                            className="w-full rounded-xl border border-slate-200 bg-white px-2 py-2.5 text-sm font-semibold text-slate-900 outline-none focus:border-amber-300 focus:ring-2 focus:ring-amber-50"
+                          />
+                        </div>
+                        <div>
+                          <p className="mb-1 text-[10px] font-black uppercase tracking-wide text-slate-400">Rate</p>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={editingInventoryCost}
+                            onChange={(e) => setEditingInventoryCost(e.target.value)}
+                            placeholder="0"
+                            className="w-full rounded-xl border border-slate-200 bg-white px-2 py-2.5 text-sm font-semibold text-slate-900 outline-none focus:border-amber-300 focus:ring-2 focus:ring-amber-50"
+                          />
+                        </div>
+                        <div>
+                          <p className="mb-1 text-[10px] font-black uppercase tracking-wide text-slate-400">Low</p>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={editingInventoryLowStock}
+                            onChange={(e) => setEditingInventoryLowStock(e.target.value)}
+                            placeholder="0"
+                            className="w-full rounded-xl border border-slate-200 bg-white px-2 py-2.5 text-sm font-semibold text-slate-900 outline-none focus:border-amber-300 focus:ring-2 focus:ring-amber-50"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-[0.8fr_1.2fr] gap-2">
+                        <button
+                          type="button"
+                          onClick={cancelInventoryEdit}
+                          className="rounded-2xl bg-white px-4 py-3 text-xs font-black text-slate-800 ring-1 ring-slate-200 active:scale-[0.98]"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={savingInventory || !isOnline}
+                          className={`rounded-2xl px-4 py-3 text-xs font-black text-white shadow-sm active:scale-[0.98] ${savingInventory || !isOnline ? "bg-slate-400" : "bg-amber-600"}`}
+                        >
+                          {savingInventory ? "Updating..." : "Save Changes"}
+                        </button>
+                      </div>
+                    </div>
+                  </form>
+                ) : null}
+
+                <div className="mt-3 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInventoryTab("restock");
+                      setRestockInventoryItemId(String(item.id));
+                      scrollMainContentToTop();
+                    }}
+                    className="flex-1 rounded-2xl bg-red-600 px-4 py-3 text-xs font-black text-white shadow-sm active:scale-[0.98]"
+                  >
+                    + Buy Stock
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      startInventoryEdit(item);
+                    }}
+                    className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black text-slate-700 active:scale-[0.98]"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => deleteInventoryItem(item.id)}
+                    className="rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-xs font-black text-rose-700 active:scale-[0.98]"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      );
+    };
+
+        const renderArchivedInventoryCards = () => {
+      if (archivedInventoryItems.length === 0) {
+        return (
+          <div className="rounded-[22px] border border-dashed border-slate-200 bg-slate-50 px-4 py-7 text-center">
+            <p className="text-sm font-bold text-slate-700">No archived item.</p>
+          
+          </div>
+        );
+      }
+
+      return (
+        <div className="space-y-3">
+          {archivedInventoryItems.map((item) => (
+            <div
+              key={`archived-inventory-${item.id}`}
+              className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="truncate text-sm font-black text-slate-900">{item.item_name}</p>
+                    <span className="rounded-full bg-slate-50 px-2.5 py-1 text-[10px] font-black text-slate-600 ring-1 ring-slate-200">{item.category || "Other"}</span>
+                    <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black text-slate-600 ring-1 ring-slate-200">
+                      ARCHIVED
+                    </span>
+                    <span
+                      className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${
+                        item.item_type === "raw"
+                          ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100"
+                          : "bg-blue-50 text-blue-700 ring-1 ring-blue-100"
+                      }`}
+                    >
+                      {item.item_type === "raw" ? "Raw" : "Direct"}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs font-semibold text-slate-600">
+                    Last stock: {item.current_stock} {item.unit}
+                  </p>
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Restore गरेपछि Stock Items मा फेरि देखिन्छ. पुरानो history सुरक्षित रहन्छ.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={restoringInventoryItemId === item.id || !isOnline}
+                  onClick={() => restoreInventoryItem(item.id)}
+                  className={`rounded-2xl px-4 py-2 text-xs font-black shadow-sm active:scale-[0.98] ${
+                    restoringInventoryItemId === item.id || !isOnline
+                      ? "bg-slate-200 text-slate-500"
+                      : "bg-emerald-600 text-white"
+                  }`}
+                >
+                  {restoringInventoryItemId === item.id ? "Restoring..." : "Restore"}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      );
+    };
+
+    return (
+      <div className="manage-subpage-slide fixed inset-0 z-[80] flex flex-col overflow-hidden overscroll-none bg-[#eef4ff] px-3 text-slate-900 lg:static lg:z-auto lg:h-auto lg:min-h-full lg:overflow-visible lg:bg-transparent lg:px-0">
+        {false && !showAddInventoryItemForm && inventoryTab !== "recipes" && inventoryTab !== "measuringUnits" && inventoryTab !== "stockGroups" && inventoryTab !== "restock" && inventoryTab !== "csvSetup" ? (
+        <div className="shrink-0 touch-none select-none -mx-3 border-b border-slate-200/70 bg-[#eef4ff]/95 px-3 pb-3 pt-3 backdrop-blur-xl">
+          <div className="rounded-[26px] bg-gradient-to-br from-[#082b66] via-[#062559] to-[#041c44] p-3 text-white shadow-[0_16px_40px_rgba(2,12,27,0.25)]">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setPopupView(null);
+                  setShowHeaderMenu(false);
+                  scrollMainContentToTop();
+                }}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white/10 text-xl font-black text-white ring-1 ring-white/10 lg:hidden"
+                aria-label="Back"
+              >
+                ←
+              </button>
+
+              <div className="min-w-0 flex-1">
+                <h2 className="truncate text-[18px] font-black leading-tight">Inventory</h2>
+                <p className="mt-0.5 truncate text-[11px] font-medium text-white/65">
+                  
+                </p>
+              </div>
+
+              <button
+                type="button"
+                disabled={savingInventoryEnabled || !isOnline}
+                onClick={toggleInventoryEnabled}
+                className={`relative h-9 w-[58px] shrink-0 rounded-full p-1 transition active:scale-[0.98] ${
+                  inventoryEnabled ? "bg-emerald-500" : "bg-white/20"
+                } ${savingInventoryEnabled || !isOnline ? "opacity-50" : ""}`}
+                aria-label={inventoryEnabled ? "Disable inventory deduction" : "Enable inventory deduction"}
+                title={inventoryEnabled ? "Inventory deduction ON" : "Inventory deduction OFF"}
+              >
+                <span
+                  className={`block h-7 w-7 rounded-full bg-white shadow-md transition-transform ${
+                    inventoryEnabled ? "translate-x-[22px]" : "translate-x-0"
+                  }`}
+                />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setPopupView(null);
+                  setShowHeaderMenu(false);
+                  scrollMainContentToTop();
+                }}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white text-[22px] font-semibold leading-none text-slate-900 shadow-sm lg:hidden"
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+
+
+            <div className="relative mt-3 lg:hidden">
+              <div className="grid grid-cols-4 gap-1.5">
+                {[
+                  { key: "recipes", label: "Stock/Recipe", icon: "📦" },
+                  { key: "restock", label: "Buy", icon: "🛒" },
+                  { key: "costInsight", label: "Cost", icon: "📊" },
+                ].map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => {
+                      setShowInventoryMoreMenu(false);
+                      setShowArchivedInventoryView(false);
+                      setInventoryTab(tab.key as "items" | "recipes" | "measuringUnits" | "stockGroups" | "restock" | "costInsight");
+                      if (tab.key === "recipes") setInventoryRecipePanel("menuRecipe");
+                      scrollMainContentToTop();
+                    }}
+                    className={`rounded-2xl px-1 py-2 text-center transition active:scale-[0.98] ${
+                      inventoryTab === tab.key
+                        ? "bg-white text-slate-900 shadow-sm"
+                        : "bg-white/10 text-white/75 ring-1 ring-white/10"
+                    }`}
+                  >
+                    <span className="block text-[15px] leading-none">{tab.icon}</span>
+                    <span className="mt-1 block truncate text-[9px] font-black">{tab.label}</span>
+                  </button>
+                ))}
+
+                <button
+                  type="button"
+                  onClick={() => setShowInventoryMoreMenu((prev) => !prev)}
+                  className={`rounded-2xl px-1 py-2 text-center transition active:scale-[0.98] ${
+                    inventoryTab === "suppliers" || inventoryTab === "history" || showInventoryMoreMenu
+                      ? "bg-white text-slate-900 shadow-sm"
+                      : "bg-white/10 text-white/75 ring-1 ring-white/10"
+                  }`}
+                >
+                  <span className="block text-[15px] leading-none">⋯</span>
+                  <span className="mt-1 block truncate text-[9px] font-black">More</span>
+                </button>
+              </div>
+
+              {showInventoryMoreMenu ? (
+                <div className="absolute right-0 top-[54px] z-[9999] w-56 overflow-hidden rounded-[22px] border border-slate-200 bg-white p-2 text-slate-900 opacity-100 shadow-[0_22px_60px_rgba(2,12,27,0.32)]" style={{ backgroundColor: "#ffffff" }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInventoryTab("suppliers");
+                      setShowArchivedInventoryView(false);
+                      setShowInventoryMoreMenu(false);
+                      scrollMainContentToTop();
+                    }}
+                    className="flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left text-xs font-black hover:bg-slate-50 active:scale-[0.98]"
+                  >
+                    <span className="text-base">🚚</span>
+                    <span>
+                      Supplier
+                      <span className="block text-[10px] font-semibold text-slate-500">Supplier list and dues</span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInventoryTab("history");
+                      setShowArchivedInventoryView(false);
+                      setShowInventoryMoreMenu(false);
+                      scrollMainContentToTop();
+                    }}
+                    className="flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left text-xs font-black hover:bg-slate-50 active:scale-[0.98]"
+                  >
+                    <span className="text-base">🧾</span>
+                    <span>
+                      History
+                      <span className="block text-[10px] font-semibold text-slate-500">Stock movement and deductions</span>
+                    </span>
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+        ) : null}
+
+        <div className={showAddInventoryItemForm || inventoryTab === "recipes" || inventoryTab === "restock" ? "min-h-0 flex-1 overflow-hidden overscroll-none pb-0 pt-0 touch-pan-y" : "min-h-0 flex-1 overflow-y-auto overscroll-contain pb-5 pt-4 touch-pan-y"}>
+          <div className={inventoryTab === "recipes" ? "h-full min-h-0" : "space-y-4"}>
+          {!isOnline ? (
+            <div className="rounded-[24px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">
+              Inventory section online mode maa matra kaam garcha.
+            </div>
+          ) : null}
+
+          {inventoryTab === "measuringUnits" ? (() => {
+            const stockUnitCodes = Array.from(new Set(inventoryItems.map((item) => String(item.unit || "").trim()).filter(Boolean)));
+            const deletedUnitSet = new Set(deletedMeasuringUnitCodes.map((code) => String(code).toLowerCase()));
+            const mergedUnits = [...customMeasuringUnits, ...DEFAULT_MEASURING_UNITS, ...stockUnitCodes.map((code) => ({ name: code.toUpperCase(), code }))]
+              .reduce<{ name: string; code: string }[]>((acc, unit) => {
+                const code = String(unit.code || "").trim().toLowerCase();
+                if (!code || deletedUnitSet.has(code) || acc.some((item) => item.code.toLowerCase() === code)) return acc;
+                acc.push({ name: String(unit.name || code).trim(), code: String(unit.code).trim() });
+                return acc;
+              }, []);
+            const search = measuringUnitSearch.trim().toLowerCase();
+            const visibleUnits = mergedUnits.filter((unit) => !search || `${unit.name} ${unit.code}`.toLowerCase().includes(search));
+            const getUnitUsedCount = (code: string) => inventoryUnitUsageCountByCode.get(String(code).toLowerCase()) || 0;
+            const resetUnitForm = () => {
+              setNewMeasuringUnitName("");
+              setNewMeasuringUnitCode("");
+              setEditingMeasuringUnitCode(null);
+              setShowAddMeasuringUnitForm(false);
+            };
+            const saveUnit = () => {
+              const name = newMeasuringUnitName.trim();
+              const code = newMeasuringUnitCode.trim();
+              if (!name || !code) return;
+              const duplicate = mergedUnits.some((unit) => unit.code.toLowerCase() === code.toLowerCase() && unit.code.toLowerCase() !== String(editingMeasuringUnitCode || "").toLowerCase());
+              if (duplicate) return;
+              setCustomMeasuringUnits((prev) => {
+                const oldCode = String(editingMeasuringUnitCode || "").toLowerCase();
+                const withoutOld = editingMeasuringUnitCode ? prev.filter((unit) => unit.code.toLowerCase() !== oldCode) : prev;
+                const withoutNewDuplicate = withoutOld.filter((unit) => unit.code.toLowerCase() !== code.toLowerCase());
+                return [...withoutNewDuplicate, { name, code }];
+              });
+              if (editingMeasuringUnitCode) {
+                const oldCode = editingMeasuringUnitCode.toLowerCase();
+                const newCode = code.toLowerCase();
+                setDeletedMeasuringUnitCodes((prev) => {
+                  const cleaned = prev.filter((item) => item !== newCode);
+                  return oldCode !== newCode ? Array.from(new Set([...cleaned, oldCode])) : cleaned;
+                });
+              } else {
+                setDeletedMeasuringUnitCodes((prev) => prev.filter((item) => item !== code.toLowerCase()));
+              }
+              resetUnitForm();
+            };
+            const editUnit = (unit: { name: string; code: string }) => {
+              setNewMeasuringUnitName(unit.name);
+              setNewMeasuringUnitCode(unit.code);
+              setEditingMeasuringUnitCode(unit.code);
+              setShowAddMeasuringUnitForm(true);
+            };
+            const deleteUnit = (code: string) => {
+              const normalizedCode = String(code).toLowerCase();
+              if (getUnitUsedCount(code) > 0) return;
+              setCustomMeasuringUnits((prev) => prev.filter((unit) => unit.code.toLowerCase() !== normalizedCode));
+              setDeletedMeasuringUnitCodes((prev) => Array.from(new Set([...prev, normalizedCode])));
+              if (editingMeasuringUnitCode?.toLowerCase() === normalizedCode) resetUnitForm();
+            };
+
+            return (
+              <div className="space-y-4 pb-24 pt-1">
+                <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={closeInventoryToManage}
+                        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white text-2xl font-black text-red-600 shadow-sm active:scale-[0.98]"
+                        aria-label="Back"
+                      >
+                        ‹
+                      </button>
+                      <div className="min-w-0">
+                        <h3 className="truncate text-xl font-black leading-tight text-slate-950">Measuring Units</h3>
+                        <p className="mt-0.5 text-xs font-semibold text-slate-500">Unit master only • {mergedUnits.length} units</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => { resetUnitForm(); setShowAddMeasuringUnitForm(true); }}
+                      className="rounded-2xl bg-red-600 px-4 py-3 text-xs font-black text-white shadow-sm active:scale-[0.98]"
+                    >
+                      + Add
+                    </button>
+                  </div>
+
+                  <input
+                    value={measuringUnitSearch}
+                    onChange={(event) => setMeasuringUnitSearch(event.target.value)}
+                    placeholder="Search unit..."
+                    className="mt-4 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:border-slate-400"
+                  />
+                </div>
+
+                {showAddMeasuringUnitForm ? (
+                  <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm">
+                    <h4 className="text-sm font-black text-slate-950">{editingMeasuringUnitCode ? "Edit Unit" : "Add Unit"}</h4>
+                    <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <input
+                        value={newMeasuringUnitName}
+                        onChange={(event) => setNewMeasuringUnitName(event.target.value)}
+                        placeholder="Unit name, e.g. Kilogram"
+                        className="h-12 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-900 outline-none focus:border-slate-400"
+                      />
+                      <input
+                        value={newMeasuringUnitCode}
+                        onChange={(event) => setNewMeasuringUnitCode(event.target.value)}
+                        placeholder="Short code, e.g. kg"
+                        className="h-12 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-900 outline-none focus:border-slate-400"
+                      />
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-3">
+                      <button type="button" onClick={resetUnitForm} className="h-12 rounded-2xl border border-slate-200 bg-white text-sm font-black text-slate-700 active:scale-[0.98]">Cancel</button>
+                      <button type="button" onClick={saveUnit} className="h-12 rounded-2xl bg-red-600 text-sm font-black text-white active:scale-[0.98]">Save Unit</button>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="space-y-3">
+                  {visibleUnits.map((unit) => {
+                    const usedCount = getUnitUsedCount(unit.code);
+                    const isDefault = DEFAULT_MEASURING_UNITS.some((item) => item.code.toLowerCase() === unit.code.toLowerCase());
+                    const isCustom = customMeasuringUnits.some((item) => item.code.toLowerCase() === unit.code.toLowerCase());
+                    return (
+                      <div key={`measuring-unit-${unit.code}`} className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="truncate text-sm font-black text-slate-950">{unit.name}</p>
+                              <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black text-slate-700 ring-1 ring-slate-200">{unit.code}</span>
+                              {isDefault ? <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[10px] font-black text-blue-700 ring-1 ring-blue-100">Default</span> : null}
+                            </div>
+                            <p className="mt-1 text-xs font-semibold text-slate-500">Used in {usedCount} stock item{usedCount === 1 ? "" : "s"}</p>
+                          </div>
+                          <div className="flex shrink-0 gap-2">
+                            <button type="button" onClick={() => editUnit(unit)} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 active:scale-[0.98]">Edit</button>
+                            <button
+                              type="button"
+                              disabled={usedCount > 0}
+                              onClick={() => deleteUnit(unit.code)}
+                              className={`rounded-2xl px-3 py-2 text-xs font-black active:scale-[0.98] ${usedCount > 0 ? "bg-slate-100 text-slate-400" : "bg-rose-50 text-rose-700 ring-1 ring-rose-100"}`}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {visibleUnits.length === 0 ? (
+                    <div className="rounded-[22px] border border-dashed border-slate-200 bg-white px-4 py-8 text-center">
+                      <p className="text-sm font-black text-slate-800">No unit found.</p>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            );
+          })() : null}
+
+          {inventoryTab === "stockGroups" ? (() => {
+            const usedGroupNames = Array.from(new Set(inventoryItems.map((item) => String(item.category || "Other").trim()).filter(Boolean)));
+            const deletedGroupSet = new Set(deletedStockGroupNames.map((name) => String(name).toLowerCase()));
+            const mergedGroups = [...customStockGroups, ...DEFAULT_STOCK_GROUPS, ...usedGroupNames.map((name) => ({ name, note: "Existing stock item group" }))]
+              .reduce<{ name: string; note?: string }[]>((acc, group) => {
+                const name = String(group.name || "").trim();
+                const key = name.toLowerCase();
+                if (!name || deletedGroupSet.has(key) || acc.some((item) => item.name.toLowerCase() === key)) return acc;
+                acc.push({ name, note: String(group.note || "").trim() });
+                return acc;
+              }, []);
+            const search = stockGroupSearch.trim().toLowerCase();
+            const visibleGroups = mergedGroups.filter((group) => !search || `${group.name} ${group.note || ""}`.toLowerCase().includes(search));
+            const getGroupUsedCount = (name: string) => inventoryGroupUsageCountByName.get(String(name).toLowerCase()) || 0;
+            const resetGroupForm = () => {
+              setNewStockGroupName("");
+              setNewStockGroupNote("");
+              setEditingStockGroupName(null);
+              setShowAddStockGroupForm(false);
+            };
+            const saveGroup = () => {
+              const name = newStockGroupName.trim();
+              const note = newStockGroupNote.trim();
+              if (!name) return;
+              const duplicate = mergedGroups.some((group) => group.name.toLowerCase() === name.toLowerCase() && group.name.toLowerCase() !== String(editingStockGroupName || "").toLowerCase());
+              if (duplicate) return;
+              setCustomStockGroups((prev) => {
+                const oldName = String(editingStockGroupName || "").toLowerCase();
+                const withoutOld = editingStockGroupName ? prev.filter((group) => group.name.toLowerCase() !== oldName) : prev;
+                const withoutNewDuplicate = withoutOld.filter((group) => group.name.toLowerCase() !== name.toLowerCase());
+                return [...withoutNewDuplicate, { name, note }];
+              });
+              if (editingStockGroupName) {
+                const oldName = editingStockGroupName.toLowerCase();
+                const newName = name.toLowerCase();
+                setDeletedStockGroupNames((prev) => {
+                  const cleaned = prev.filter((item) => item !== newName);
+                  return oldName !== newName ? Array.from(new Set([...cleaned, oldName])) : cleaned;
+                });
+              } else {
+                setDeletedStockGroupNames((prev) => prev.filter((item) => item !== name.toLowerCase()));
+              }
+              resetGroupForm();
+            };
+            const editGroup = (group: { name: string; note?: string }) => {
+              setNewStockGroupName(group.name);
+              setNewStockGroupNote(group.note || "");
+              setEditingStockGroupName(group.name);
+              setShowAddStockGroupForm(true);
+            };
+            const deleteGroup = (name: string) => {
+              const normalizedName = String(name).toLowerCase();
+              if (getGroupUsedCount(name) > 0) return;
+              setCustomStockGroups((prev) => prev.filter((group) => group.name.toLowerCase() !== normalizedName));
+              setDeletedStockGroupNames((prev) => Array.from(new Set([...prev, normalizedName])));
+              if (editingStockGroupName?.toLowerCase() === normalizedName) resetGroupForm();
+            };
+
+            return (
+              <div className="space-y-4 pb-24 pt-1">
+                <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={closeInventoryToManage}
+                        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white text-2xl font-black text-red-600 shadow-sm active:scale-[0.98]"
+                        aria-label="Back"
+                      >
+                        ‹
+                      </button>
+                      <div className="min-w-0">
+                        <h3 className="truncate text-xl font-black leading-tight text-slate-950">Stock Groups</h3>
+                        <p className="mt-0.5 text-xs font-semibold text-slate-500">Group master only • {mergedGroups.length} groups</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => { resetGroupForm(); setShowAddStockGroupForm(true); }}
+                      className="rounded-2xl bg-red-600 px-4 py-3 text-xs font-black text-white shadow-sm active:scale-[0.98]"
+                    >
+                      + Add
+                    </button>
+                  </div>
+
+                  <input
+                    value={stockGroupSearch}
+                    onChange={(event) => setStockGroupSearch(event.target.value)}
+                    placeholder="Search stock group..."
+                    className="mt-4 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:border-slate-400"
+                  />
+                </div>
+
+                {showAddStockGroupForm ? (
+                  <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm">
+                    <h4 className="text-sm font-black text-slate-950">{editingStockGroupName ? "Edit Group" : "Add Group"}</h4>
+                    <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <input
+                        value={newStockGroupName}
+                        onChange={(event) => setNewStockGroupName(event.target.value)}
+                        placeholder="Group name, e.g. Meat"
+                        className="h-12 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-900 outline-none focus:border-slate-400"
+                      />
+                      <input
+                        value={newStockGroupNote}
+                        onChange={(event) => setNewStockGroupNote(event.target.value)}
+                        placeholder="Short note optional"
+                        className="h-12 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-900 outline-none focus:border-slate-400"
+                      />
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-3">
+                      <button type="button" onClick={resetGroupForm} className="h-12 rounded-2xl border border-slate-200 bg-white text-sm font-black text-slate-700 active:scale-[0.98]">Cancel</button>
+                      <button type="button" onClick={saveGroup} className="h-12 rounded-2xl bg-red-600 text-sm font-black text-white active:scale-[0.98]">Save Group</button>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="space-y-3">
+                  {visibleGroups.map((group) => {
+                    const usedCount = getGroupUsedCount(group.name);
+                    const isDefault = DEFAULT_STOCK_GROUPS.some((item) => item.name.toLowerCase() === group.name.toLowerCase());
+                    return (
+                      <div key={`stock-group-${group.name}`} className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="truncate text-sm font-black text-slate-950">{group.name}</p>
+                              {isDefault ? <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[10px] font-black text-blue-700 ring-1 ring-blue-100">Default</span> : null}
+                            </div>
+                            {group.note ? <p className="mt-1 text-xs font-semibold text-slate-500">{group.note}</p> : null}
+                            <p className="mt-1 text-xs font-semibold text-slate-500">Used in {usedCount} stock item{usedCount === 1 ? "" : "s"}</p>
+                          </div>
+                          <div className="flex shrink-0 gap-2">
+                            <button type="button" onClick={() => editGroup(group)} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 active:scale-[0.98]">Edit</button>
+                            <button
+                              type="button"
+                              disabled={usedCount > 0}
+                              onClick={() => deleteGroup(group.name)}
+                              className={`rounded-2xl px-3 py-2 text-xs font-black active:scale-[0.98] ${usedCount > 0 ? "bg-slate-100 text-slate-400" : "bg-rose-50 text-rose-700 ring-1 ring-rose-100"}`}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {visibleGroups.length === 0 ? (
+                    <div className="rounded-[22px] border border-dashed border-slate-200 bg-white px-4 py-8 text-center">
+                      <p className="text-sm font-black text-slate-800">No stock group found.</p>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            );
+          })() : null}
+
+          {inventoryTab === "csvSetup" ? (
+            <div className="space-y-4 pb-4">
+              <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setInventoryTab("items")}
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white text-2xl font-black text-red-600 shadow-sm active:scale-[0.98]"
+                    aria-label="Back to Stock Items"
+                  >
+                    ‹
+                  </button>
+                  <div className="min-w-0">
+                    <h3 className="truncate text-xl font-black leading-tight text-slate-950">CSV Import / Export</h3>
+                    <p className="mt-0.5 text-xs font-semibold text-slate-500">Bulk stock, recipe and purchase setup</p>
+                  </div>
+                </div>
+              </div>
+              <div className="rounded-[26px] border border-emerald-200 bg-emerald-50/70 p-4 shadow-sm space-y-3">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <div className="rounded-2xl border border-emerald-200 bg-white p-3">
+                  <p className="text-xs font-black text-slate-900">1. Stock सामान</p>
+                  
+                  <div className="mt-3 flex gap-2">
+                    <button type="button" onClick={downloadInventoryItemsCsvTemplate} className="rounded-xl border border-emerald-200 bg-white px-3 py-2 text-[11px] font-black text-emerald-700">Template</button>
+                    <button type="button" disabled={savingInventory || !isOnline} onClick={() => csvInventoryItemsFileInputRef.current?.click()} className={`rounded-xl px-3 py-2 text-[11px] font-black text-white ${savingInventory || !isOnline ? "bg-slate-400" : "bg-emerald-600"}`}>Upload</button>
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-blue-200 bg-white p-3">
+                  <p className="text-xs font-black text-slate-900">2. Deduction Rule</p>
+                
+                  <div className="mt-3 flex gap-2">
+                    <button type="button" onClick={downloadInventoryLinksCsvTemplate} className="rounded-xl border border-blue-200 bg-white px-3 py-2 text-[11px] font-black text-blue-700">Template</button>
+                    <button type="button" disabled={savingInventory || !isOnline} onClick={() => csvInventoryLinksFileInputRef.current?.click()} className={`rounded-xl px-3 py-2 text-[11px] font-black text-white ${savingInventory || !isOnline ? "bg-slate-400" : "bg-blue-600"}`}>Upload</button>
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-amber-200 bg-white p-3">
+                  <p className="text-xs font-black text-slate-900">3. Buy / Purchase</p>
+             
+                  <div className="mt-3 flex gap-2">
+                    <button type="button" onClick={downloadInventoryPurchaseCsvTemplate} className="rounded-xl border border-amber-200 bg-white px-3 py-2 text-[11px] font-black text-amber-700">Template</button>
+                    <button type="button" disabled={savingInventory || !isOnline} onClick={() => csvInventoryPurchaseFileInputRef.current?.click()} className={`rounded-xl px-3 py-2 text-[11px] font-black text-white ${savingInventory || !isOnline ? "bg-slate-400" : "bg-amber-600"}`}>Upload</button>
+                  </div>
+                </div>
+              </div>
+              <input ref={csvInventoryItemsFileInputRef} type="file" accept=".csv,text/csv" onChange={handleInventoryItemsCsvUpload} className="hidden" />
+              <input ref={csvInventoryLinksFileInputRef} type="file" accept=".csv,text/csv" onChange={handleInventoryLinksCsvUpload} className="hidden" />
+              <input ref={csvInventoryPurchaseFileInputRef} type="file" accept=".csv,text/csv" onChange={handleInventoryPurchaseCsvUpload} className="hidden" />
+              </div>
+            </div>
+          ) : null}
+
+          {inventoryTab === "costInsight" && !showArchivedInventoryView ? (
+            <div className="space-y-4 pb-4">
+              <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={closeInventoryToManage}
+                      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white text-2xl font-black text-red-600 shadow-sm active:scale-[0.98]"
+                    >
+                      ‹
+                    </button>
+                    <div className="min-w-0">
+                      <h3 className="truncate text-xl font-black leading-tight text-slate-950">Cost Insight</h3>
+                     
+                    </div>
+                  </div>
+                  <span className="rounded-full bg-amber-50 px-3 py-1 text-[10px] font-black text-amber-700 ring-1 ring-amber-100">Locked</span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-[24px] border border-blue-100 bg-blue-50 p-4">
+                  <p className="text-[10px] font-black uppercase tracking-wide text-blue-600">Total Sales</p>
+                  <p className="mt-1 text-lg font-black text-slate-950">Rs. {formatMoney(costInsightTotalSales)}</p>
+                </div>
+                <div className="rounded-[24px] border border-rose-100 bg-rose-50 p-4">
+                  <p className="text-[10px] font-black uppercase tracking-wide text-rose-600">Inventory Cost</p>
+                  <p className="mt-1 text-lg font-black text-slate-950">Rs. {formatMoney(costInsightTotalCost)}</p>
+                </div>
+                <div className="col-span-2 rounded-[24px] border border-emerald-100 bg-emerald-50 p-4">
+                  <p className="text-[10px] font-black uppercase tracking-wide text-emerald-700">Locked Profit</p>
+                  <p className="mt-1 text-2xl font-black text-slate-950">Rs. {formatMoney(costInsightTotalProfit)}</p>
+                 
+                </div>
+              </div>
+
+              <div className="rounded-[24px] border border-slate-200 bg-white p-3 shadow-sm">
+                <input
+                  value={costInsightSearch}
+                  onChange={(event) => setCostInsightSearch(event.target.value)}
+                  placeholder="Table number search..."
+                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:border-slate-400"
+                />
+              </div>
+
+              {visibleCostInsightBills.length === 0 ? (
+                <div className="rounded-[24px] border border-dashed border-slate-200 bg-white px-4 py-10 text-center shadow-sm">
+                  <p className="text-sm font-black text-slate-800">Aaja ko cost bill bhetena.</p>
+                  <p className="mt-1 text-xs font-medium text-slate-500">Order, recipe link ra cost_per_unit setup छ कि छैन check गर।</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-3">
+                  {visibleCostInsightBills.map((bill) => (
+                    <button
+                      key={`cost-bill-${bill.order_ids[0] || bill.table_number}`}
+                      type="button"
+                      onClick={() => setSelectedCostInsightBill(bill)}
+                      className="rounded-[22px] border border-slate-200 bg-white p-3 text-left shadow-sm active:scale-[0.98]"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">Table</p>
+                          <p className="text-xl font-black text-slate-950">{bill.table_number}</p>
+                        </div>
+                        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-black text-slate-600">{bill.orders[0]?.paid_at || bill.orders[0]?.created_at ? new Date(bill.orders[0]?.paid_at || bill.orders[0]?.created_at || "").toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Bill"}</span>
+                      </div>
+                      <div className="mt-3 space-y-1 text-[11px] font-bold text-slate-600">
+                        <div className="flex justify-between gap-2"><span>Selling</span><span className="text-slate-950">{bill.cost_locked ? `Rs. ${formatMoney(bill.selling)}` : "Processing..."}</span></div>
+                        <div className="flex justify-between gap-2"><span>Cost</span><span className="text-rose-600">{bill.cost_locked ? `Rs. ${formatMoney(bill.cost)}` : "Processing..."}</span></div>
+                        <div className="flex justify-between gap-2 border-t border-slate-100 pt-1"><span>Profit</span><span className="text-emerald-700">{bill.cost_locked ? `Rs. ${formatMoney(bill.profit)}` : "Processing..."}</span></div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : null}
+
+          {showArchivedInventoryView ? (
+            <div className="space-y-4 pb-4">
+              <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setShowArchivedInventoryView(false)}
+                      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white text-2xl font-black text-red-600 shadow-sm active:scale-[0.98]"
+                    >
+                      ‹
+                    </button>
+                    <div className="min-w-0">
+                      <h3 className="truncate text-xl font-black leading-tight text-slate-950">Archived Items</h3>
+                      <p className="mt-0.5 text-xs font-semibold text-slate-500">{archivedInventoryItems.length} hidden stock items</p>
+                    </div>
+                  </div>
+                  <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-black text-slate-700 ring-1 ring-slate-200">Restore only</span>
+                </div>
+              </div>
+              {renderArchivedInventoryCards()}
+            </div>
+          ) : null}
+
+          {inventoryTab === "items" && !showArchivedInventoryView ? (
+            showAddInventoryItemForm ? (
+              <div className="-mx-3 flex h-full max-h-full min-h-0 flex-col overflow-hidden overscroll-none bg-white px-5 pb-4 pt-4 text-slate-950 sm:mx-0 sm:h-full sm:max-h-full sm:min-h-0 sm:rounded-[30px] sm:border sm:border-slate-200 sm:px-6 sm:shadow-sm">
+                <form onSubmit={saveInventoryItemOrAdjustment} className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                  <div className="flex shrink-0 items-center gap-4 pb-5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowNewInventoryCategoryPicker(false);
+                        setShowInlineInventoryCategoryForm(false);
+                        setInlineInventoryCategoryName("");
+                        setShowAddInventoryItemForm(false);
+                      }}
+                      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white text-3xl font-light leading-none text-red-600 shadow-sm active:scale-[0.98]"
+                      aria-label="Back"
+                    >
+                      ‹
+                    </button>
+                    <h3 className="text-[26px] font-black tracking-[-0.03em] text-slate-950">Add Stock Item</h3>
+                  </div>
+
+                  <div className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain pb-6 pr-1">
+                    <div className="space-y-2.5">
+                      <label className="text-[17px] font-black text-slate-950">Item Name <span className="text-red-600">*</span></label>
+                      <input
+                        type="text"
+                        value={newInventoryItemName}
+                        onChange={(e) => setNewInventoryItemName(e.target.value)}
+                        placeholder="Enter item name"
+                        className="h-[58px] w-full rounded-2xl border border-slate-200 bg-white px-4 text-[15px] font-semibold text-slate-900 outline-none placeholder:text-slate-400 focus:border-slate-400 focus:ring-4 focus:ring-slate-50"
+                      />
+                    </div>
+
+                    <div className="space-y-2.5">
+                      <label className="text-[17px] font-black text-slate-950">Unit <span className="text-red-600">*</span></label>
+                      <select
+                        value={newInventoryUnit}
+                        onChange={(e) => setNewInventoryUnit(e.target.value)}
+                        className="h-[58px] w-full rounded-2xl border border-slate-200 bg-white px-4 text-[15px] font-black text-slate-900 outline-none focus:border-slate-400 focus:ring-4 focus:ring-slate-50"
+                      >
+                        {INVENTORY_UNIT_OPTIONS.map((unit) => (
+                          <option key={`new-unit-${unit}`} value={unit}>{unit}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="space-y-2.5">
+                      <label className="text-[17px] font-black text-slate-950">Cost / Unit</label>
+                      <div className="flex h-[58px] overflow-hidden rounded-2xl border border-slate-200 bg-white focus-within:border-red-300 focus-within:ring-4 focus-within:ring-red-50">
+                        <span className="flex items-center px-4 text-[15px] font-black text-slate-400">Rs</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={newInventoryCost}
+                          onChange={(e) => setNewInventoryCost(e.target.value)}
+                          placeholder="00.00"
+                          className="w-full bg-transparent px-2 text-[15px] font-semibold text-slate-900 outline-none placeholder:text-slate-400"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-2.5">
+                      <label className="text-[17px] font-black text-slate-950">Category</label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowNewInventoryCategoryPicker((prev) => !prev);
+                          setShowInlineInventoryCategoryForm(false);
+                          setInlineInventoryCategoryName("");
+                        }}
+                        className="flex h-[58px] w-full items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 text-left text-[15px] font-black text-slate-900 outline-none active:scale-[0.99]"
+                      >
+                        <span className="truncate">{newInventoryCategory || "Select category"}</span>
+                        <span className="shrink-0 text-slate-400">{showNewInventoryCategoryPicker ? "⌃" : "⌄"}</span>
+                      </button>
+
+                      {showNewInventoryCategoryPicker ? (
+                        <div className="rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
+                          <div className="max-h-52 space-y-1 overflow-y-auto overscroll-contain">
+                            {getInventoryCategoryOptions().map((category) => (
+                              <button
+                                key={`new-inventory-category-${category}`}
+                                type="button"
+                                onClick={() => {
+                                  setNewInventoryCategory(category);
+                                  setShowNewInventoryCategoryPicker(false);
+                                  setShowInlineInventoryCategoryForm(false);
+                                  setInlineInventoryCategoryName("");
+                                }}
+                                className={`flex w-full items-center justify-between rounded-xl px-3 py-3 text-left text-sm font-black active:bg-slate-50 ${newInventoryCategory.toLowerCase() === category.toLowerCase() ? "bg-red-50 text-red-700" : "text-slate-900"}`}
+                              >
+                                <span>{category}</span>
+                                {newInventoryCategory.toLowerCase() === category.toLowerCase() ? <span>✓</span> : null}
+                              </button>
+                            ))}
+                          </div>
+
+                          {!showInlineInventoryCategoryForm ? (
+                            <button
+                              type="button"
+                              onClick={() => setShowInlineInventoryCategoryForm(true)}
+                              className="mt-2 flex h-12 w-full items-center justify-center rounded-xl bg-slate-950 text-sm font-black text-white active:scale-[0.98]"
+                            >
+                              + Add Category
+                            </button>
+                          ) : (
+                            <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-2">
+                              <input
+                                value={inlineInventoryCategoryName}
+                                onChange={(event) => setInlineInventoryCategoryName(event.target.value)}
+                                placeholder="New category name"
+                                className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-900 outline-none focus:border-slate-400"
+                                autoFocus
+                              />
+                              <div className="mt-2 grid grid-cols-2 gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setShowInlineInventoryCategoryForm(false);
+                                    setInlineInventoryCategoryName("");
+                                  }}
+                                  className="h-11 rounded-lg bg-white text-sm font-black text-slate-700 ring-1 ring-slate-200 active:scale-[0.98]"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={saveInlineInventoryCategory}
+                                  className="h-11 rounded-lg bg-red-600 text-sm font-black text-white active:scale-[0.98]"
+                                >
+                                  Save
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="space-y-2.5">
+                      <label className="text-[17px] font-black text-slate-950">Opening Stock</label>
+                      <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                        <div className="grid grid-cols-3 gap-3">
+                          <div className="space-y-2">
+                            <label className="text-sm font-black text-slate-950">Quantity</label>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={newInventoryStock}
+                              onChange={(e) => setNewInventoryStock(e.target.value)}
+                              placeholder="0.00"
+                              className="h-[54px] w-full rounded-2xl border border-slate-200 bg-white px-3 text-[14px] font-semibold text-slate-900 outline-none placeholder:text-slate-400 focus:border-slate-400 focus:ring-4 focus:ring-slate-50"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-sm font-black text-slate-950">Rate</label>
+                            <div className="flex h-[54px] overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
+                              <span className="flex items-center px-2 text-[13px] font-black text-slate-400">Rs</span>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={newInventoryCost}
+                                readOnly
+                                placeholder="0.00"
+                                className="w-full bg-transparent px-1 text-[14px] font-semibold text-slate-900 outline-none placeholder:text-slate-400"
+                              />
+                            </div>
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-sm font-black text-slate-950">Value</label>
+                            <div className="flex h-[54px] overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
+                              <span className="flex items-center px-2 text-[13px] font-black text-slate-400">Rs</span>
+                              <input
+                                type="text"
+                                value={(() => {
+                                  const quantity = Number(newInventoryStock || 0);
+                                  const rate = Number(newInventoryCost || 0);
+                                  const value = quantity * rate;
+                                  return value > 0 ? value.toFixed(2) : "0";
+                                })()}
+                                readOnly
+                                className="w-full bg-transparent px-1 text-[14px] font-semibold text-slate-900 outline-none"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2.5">
+                      <label className="text-[17px] font-black text-slate-950">Low Stock Alert</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={newInventoryLowStock}
+                        onChange={(e) => setNewInventoryLowStock(e.target.value)}
+                        placeholder="Example: 5"
+                        className="h-[58px] w-full rounded-2xl border border-slate-200 bg-white px-4 text-[15px] font-semibold text-slate-900 outline-none placeholder:text-slate-400 focus:border-slate-400 focus:ring-4 focus:ring-slate-50"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid shrink-0 grid-cols-[0.8fr_1.2fr] gap-3 border-t border-slate-100 bg-white pt-4">
+                    <button
+                      type="button"
+                      onClick={closeInventoryToManage}
+                      className="h-[58px] rounded-2xl bg-white px-4 text-[15px] font-black text-slate-800 ring-1 ring-slate-200 active:scale-[0.98]"
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={savingInventory}
+                      className={`h-[58px] rounded-2xl px-4 text-[15px] font-black text-white shadow-sm active:scale-[0.98] ${savingInventory ? "bg-slate-400" : "bg-red-600"}`}
+                    >
+                      {savingInventory ? "Saving..." : "Save Stock Item"}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            ) : (
+              <div className="space-y-4 pb-4">
+                <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={closeInventoryToManage}
+                        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white text-2xl font-black text-red-600 shadow-sm active:scale-[0.98]"
+                      >
+                        ‹
+                      </button>
+                      <div className="min-w-0">
+                        <h3 className="truncate text-xl font-black leading-tight text-slate-950">Stock Items</h3>
+                        <p className="mt-0.5 text-xs font-semibold text-slate-500">
+                          {inventoryItems.length} active • {lowStockItems.length} low
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex shrink-0 items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowInventorySearch((prev) => {
+                            if (prev) setInventorySearchQuery("");
+                            return !prev;
+                          });
+                        }}
+                        className={`flex h-11 w-11 items-center justify-center rounded-2xl border text-lg font-black shadow-sm active:scale-[0.98] ${
+                          showInventorySearch ? "border-red-200 bg-red-50 text-red-600" : "border-slate-200 bg-white text-slate-700"
+                        }`}
+                        aria-label="Search stock"
+                      >
+                        ⌕
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowAddInventoryItemForm(true)}
+                        className="rounded-2xl bg-red-600 px-4 py-3 text-xs font-black text-white shadow-sm active:scale-[0.98]"
+                      >
+                        + Add
+                      </button>
+                    </div>
+                  </div>
+
+                  {showInventorySearch ? (
+                    <input
+                      value={inventorySearchQuery}
+                      onChange={(event) => setInventorySearchQuery(event.target.value)}
+                      placeholder="Search stock items..."
+                      className="mt-3 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:border-slate-400"
+                    />
+                  ) : null}
+
+                  <div className="mt-4 grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setInventoryTab("items");
+                        setShowArchivedInventoryView(true);
+                        scrollMainContentToTop();
+                      }}
+                      className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-left shadow-sm active:scale-[0.98]"
+                    >
+                      <span className="block text-[11px] font-black text-slate-950">Archived Items</span>
+                      <span className="mt-0.5 block text-[10px] font-bold text-slate-500">{archivedInventoryItems.length} hidden items</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setInventoryTab("csvSetup");
+                        setShowArchivedInventoryView(false);
+                        scrollMainContentToTop();
+                      }}
+                      className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-left shadow-sm active:scale-[0.98]"
+                    >
+                      <span className="block text-[11px] font-black text-slate-950">CSV Import / Export</span>
+                      <span className="mt-0.5 block text-[10px] font-bold text-slate-500">Templates and bulk upload</span>
+                    </button>
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-2 gap-2 rounded-2xl bg-slate-100 p-1">
+                    <button type="button" onClick={() => setInventoryStockFilter("all")} className={`rounded-xl px-3 py-2.5 text-xs font-black transition ${inventoryStockFilter === "all" ? "bg-white text-slate-950 shadow-sm" : "text-slate-500"}`}>All</button>
+                    <button type="button" onClick={() => setInventoryStockFilter("low")} className={`rounded-xl px-3 py-2.5 text-xs font-black transition ${inventoryStockFilter === "low" ? "bg-white text-rose-700 shadow-sm" : "text-slate-500"}`}>Low Stock</button>
+                  </div>
+
+                  <div className="-mx-1 mt-3 overflow-x-auto pb-1">
+                    <div className="flex min-w-max gap-2 px-1">
+                      {["all", ...getInventoryCategoryOptions()].map((category) => {
+                        const active = inventoryCategoryFilter === category;
+                        return (
+                          <button
+                            key={`inventory-category-filter-${category}`}
+                            type="button"
+                            onClick={() => setInventoryCategoryFilter(category)}
+                            className={`rounded-full px-3 py-2 text-[11px] font-black transition active:scale-[0.98] ${
+                              active ? "bg-red-600 text-white shadow-sm" : "bg-white text-slate-700 ring-1 ring-slate-200"
+                            }`}
+                          >
+                            {category === "all" ? "All Categories" : category}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+                {renderInventoryCards()}
+              </div>
+            )
+          ) : null}
+
+        {inventoryTab === "recipes" ? (() => {
+          const activeMenuId = Number(selectedRecipeMenuId || selectedStockMenuId || recipeViewerMenuId || 0);
+          const activeMenu = menuItemById.get(activeMenuId) || null;
+          const activeMenuVariants = activeMenuId ? getVariantsForMenuItem(activeMenuId) : [];
+          const activeVariantId = Number(selectedRecipeVariantId || selectedStockVariantId || recipeViewerVariantId || 0) || null;
+          const activeRawLinks = activeMenuId ? getRecipeLinksForMenuItem(activeMenuId, activeVariantId) : [];
+          const activeDirectLinks = activeMenuId ? getDirectLinksForMenuItem(activeMenuId, activeVariantId) : [];
+          const recipeCategories = [
+            "all",
+            ...Array.from(new Set(menuItems.map((item) => String(item.category || "Uncategorized").trim() || "Uncategorized"))),
+          ];
+          const recipeFilteredMenuItems = inventoryRecipeCategory === "all"
+            ? menuItems
+            : menuItems.filter((item) => String(item.category || "Uncategorized").trim() === inventoryRecipeCategory);
+          const getMenuRecipeStatusCount = (menuId: number) => {
+            return recipeStatusCountByMenuId.get(Number(menuId)) || 0;
+          };
+
+          const openRecipeDetail = (menuId: number) => {
+            setSelectedRecipeMenuId(String(menuId));
+            setSelectedStockMenuId(String(menuId));
+            setRecipeViewerMenuId(String(menuId));
+            setSelectedRecipeVariantId("");
+            setSelectedStockVariantId("");
+            setRecipeViewerVariantId("");
+            setSelectedRecipeInventoryId("");
+            setSelectedStockInventoryId("");
+            setRecipeQuantityUsed("");
+            setStockQuantityPerSale("");
+            setEditingRecipeId(null);
+            setEditingRecipeVariantId("");
+            setEditingStockLinkId(null);
+            setEditingStockVariantId("");
+            setShowRecipeMaterialForm(false);
+            resetRawBuilderRows();
+            resetDirectBuilderRows();
+          };
+
+          const closeRecipeDetail = () => {
+            setSelectedRecipeMenuId("");
+            setSelectedStockMenuId("");
+            setRecipeViewerMenuId("");
+            setSelectedRecipeVariantId("");
+            setSelectedStockVariantId("");
+            setRecipeViewerVariantId("");
+            setSelectedRecipeInventoryId("");
+            setSelectedStockInventoryId("");
+            setRecipeQuantityUsed("");
+            setStockQuantityPerSale("");
+            cancelRecipeEdit();
+            cancelDirectStockEdit();
+            setShowRecipeMaterialForm(false);
+            resetRawBuilderRows();
+            resetDirectBuilderRows();
+          };
+
+          const handleBuilderVariantChange = (value: string) => {
+            setSelectedRecipeVariantId(value);
+            setSelectedStockVariantId(value);
+            setRecipeViewerVariantId(value);
+            setSelectedRecipeInventoryId("");
+            setSelectedStockInventoryId("");
+            setRecipeQuantityUsed("");
+            setStockQuantityPerSale("");
+            setEditingRecipeId(null);
+            setEditingRecipeVariantId("");
+            setEditingStockLinkId(null);
+            setEditingStockVariantId("");
+            setShowRecipeMaterialForm(false);
+            resetRawBuilderRows();
+            resetDirectBuilderRows();
+          };
+
+          const materialListCount = activeRawLinks.length + activeDirectLinks.length;
+          const addRecipeSelectedMenu = selectedRecipeMenuId
+            ? menuItemById.get(Number(selectedRecipeMenuId)) || null
+            : null;
+          const addRecipeMenuResults = menuItems
+            .filter((item) => {
+              const query = addRecipeMenuSearch.trim().toLowerCase();
+              if (!query) return true;
+              return `${item.item_name} ${item.category || ""}`.toLowerCase().includes(query);
+            })
+            .slice(0, 30);
+          const addRecipeStockResults = inventoryItems
+            .filter((item) => item.is_active !== false)
+            .filter((item) => {
+              const query = addRecipeStockSearch.trim().toLowerCase();
+              if (!query) return true;
+              return `${item.item_name} ${item.category || ""} ${item.unit || ""}`.toLowerCase().includes(query);
+            })
+            .slice(0, 40);
+          const getInventoryItemById = (inventoryId: string | number) =>
+            inventoryItemById.get(Number(inventoryId)) || null;
+          const getRecipeRowAmount = (row: RecipeBuilderRow) => {
+            const item = getInventoryItemById(row.inventoryId);
+            return Number(row.quantity || 0) * Number(item?.cost_per_unit || 0);
+          };
+
+          return (
+            <div className="flex h-full max-h-full min-h-0 flex-col overflow-hidden overflow-x-hidden bg-white text-slate-950">
+              <div className="shrink-0 border-b border-slate-100 bg-white px-4 pb-3 pt-3">
+                <div className="mb-3 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (inventoryRecipePanel === "addRecipe") {
+                        setInventoryRecipePanel("menuRecipe");
+                        setQuickRecipeReturnToMenu(false);
+                        setAddRecipeMenuPickerOpen(false);
+                        setAddRecipeStockPickerRowId(null);
+                        return;
+                      }
+                      setInventoryRecipePanel("menuRecipe");
+                      setQuickRecipeReturnToMenu(false);
+                      setAddRecipeMenuPickerOpen(false);
+                      setAddRecipeStockPickerRowId(null);
+                      closeInventoryToManage();
+                    }}
+                    className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-lg font-black text-slate-900 active:scale-[0.98]"
+                    aria-label="Back"
+                  >
+                    ←
+                  </button>
+                  <div className="min-w-0">
+                    <p className="truncate text-base font-black text-slate-950">Recipe</p>
+                    <p className="text-xs font-bold text-slate-500">Add and view menu materials</p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2 rounded-xl bg-slate-100 p-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInventoryRecipePanel("addRecipe");
+                      setQuickRecipeReturnToMenu(false);
+                      setAddRecipeMenuPickerOpen(false);
+                      setAddRecipeStockPickerRowId(null);
+                    }}
+                    className={`h-11 rounded-lg text-sm font-black transition active:scale-[0.98] ${inventoryRecipePanel === "addRecipe" ? "bg-slate-950 text-white shadow-sm" : "text-slate-700"}`}
+                  >
+                    Add Recipe
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInventoryRecipePanel("menuRecipe");
+                      setAddRecipeMenuPickerOpen(false);
+                      setAddRecipeStockPickerRowId(null);
+                    }}
+                    className={`h-11 rounded-lg text-sm font-black transition active:scale-[0.98] ${inventoryRecipePanel === "menuRecipe" ? "bg-slate-950 text-white shadow-sm" : "text-slate-700"}`}
+                  >
+                    Menu Recipe
+                  </button>
+                </div>
+              </div>
+
+              {inventoryRecipePanel === "addRecipe" ? (
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    saveRecipeLink();
+                  }}
+                  className="flex min-h-0 flex-1 flex-col overflow-hidden overflow-x-hidden"
+                >
+                  <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden overscroll-contain px-4 py-4 pb-5">
+                    <div className="space-y-2">
+                      {quickRecipeReturnToMenu && addRecipeSelectedMenu ? (
+                        <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                          <p className="text-[11px] font-black uppercase tracking-[0.14em] text-slate-500">Menu Item</p>
+                          <p className="mt-1 truncate text-base font-black text-slate-950">{addRecipeSelectedMenu.item_name}</p>
+                        </div>
+                      ) : (
+                        <>
+                          <label className="text-sm font-black text-slate-950">Menu Item</label>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAddRecipeMenuPickerOpen((prev) => !prev);
+                              setAddRecipeStockPickerRowId(null);
+                            }}
+                            className="flex h-13 min-h-[52px] w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 text-left text-base font-black text-slate-950 shadow-sm active:scale-[0.99]"
+                          >
+                            <span className="min-w-0 truncate">
+                              {addRecipeSelectedMenu ? addRecipeSelectedMenu.item_name : "Select menu item"}
+                            </span>
+                            <span className="shrink-0 text-slate-400">{addRecipeMenuPickerOpen ? "⌃" : "⌄"}</span>
+                          </button>
+                        </>
+                      )}
+
+                      {!quickRecipeReturnToMenu && addRecipeMenuPickerOpen ? (
+                        <div className="rounded-xl border border-slate-200 bg-white p-2">
+                          <input
+                            value={addRecipeMenuSearch}
+                            onChange={(event) => setAddRecipeMenuSearch(event.target.value)}
+                            placeholder="Search menu item..."
+                            className="h-11 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-bold text-slate-900 outline-none focus:border-slate-400"
+                          />
+                          <div className="mt-2 max-h-48 space-y-1 overflow-y-auto overflow-x-hidden">
+                            {addRecipeMenuResults.map((item) => (
+                              <button
+                                key={`add-recipe-menu-${item.id}`}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedRecipeMenuId(String(item.id));
+                                  setRecipeViewerMenuId(String(item.id));
+                                  setSelectedRecipeVariantId("");
+                                  setRecipeViewerVariantId("");
+                                  setAddRecipeMenuPickerOpen(false);
+                                  setAddRecipeMenuSearch("");
+                                }}
+                                className="flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left active:bg-slate-50"
+                              >
+                                <span className="min-w-0 truncate text-sm font-black text-slate-950">{item.item_name}</span>
+                                <span className="shrink-0 text-[10px] font-bold text-slate-500">{item.category || "Uncategorized"}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {addRecipeSelectedMenu && getVariantsForMenuItem(addRecipeSelectedMenu.id).length > 0 ? (
+                      <div className="space-y-2">
+                        <label className="text-sm font-black text-slate-950">Variant</label>
+                        <select
+                          value={selectedRecipeVariantId}
+                          onChange={(event) => {
+                            setSelectedRecipeVariantId(event.target.value);
+                            setRecipeViewerVariantId(event.target.value);
+                          }}
+                          className="h-12 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-black text-slate-900 outline-none focus:border-slate-400"
+                        >
+                          <option value="">Select variant</option>
+                          {getVariantsForMenuItem(addRecipeSelectedMenu.id).map((variant) => (
+                            <option key={`add-recipe-variant-${variant.id}`} value={variant.id}>
+                              {variant.variant_name} — Rs. {formatMoney(variant.price)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    ) : null}
+
+                    <div className="space-y-2">
+                      <p className="text-sm font-black text-slate-950">Stock Items</p>
+
+                      <div className="space-y-2">
+                        {rawBuilderRows.map((row, rowIndex) => {
+                          const selectedStock = getInventoryItemById(row.inventoryId);
+                          const rowAmount = getRecipeRowAmount(row);
+                          return (
+                            <div key={row.rowId} className="w-full overflow-hidden rounded-xl border border-slate-200 bg-white p-3">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setAddRecipeStockPickerRowId((current) => current === row.rowId ? null : row.rowId);
+                                  setAddRecipeMenuPickerOpen(false);
+                                  setAddRecipeStockSearch("");
+                                }}
+                                className="flex min-h-[48px] w-full items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 text-left active:scale-[0.99]"
+                              >
+                                <span className="min-w-0 truncate text-sm font-black text-slate-950">
+                                  {selectedStock ? selectedStock.item_name : `Select material ${rowIndex + 1}`}
+                                </span>
+                                <span className="shrink-0 text-xs font-black text-slate-400">{addRecipeStockPickerRowId === row.rowId ? "⌃" : "⌄"}</span>
+                              </button>
+
+                              {addRecipeStockPickerRowId === row.rowId ? (
+                                <div className="mt-2 rounded-xl border border-slate-100 bg-white p-2">
+                                  <input
+                                    value={addRecipeStockSearch}
+                                    onChange={(event) => setAddRecipeStockSearch(event.target.value)}
+                                    placeholder="Search stock item..."
+                                    className="h-10 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-bold text-slate-900 outline-none focus:border-slate-400"
+                                  />
+                                  <div className="mt-2 max-h-44 space-y-1 overflow-y-auto overflow-x-hidden">
+                                    {addRecipeStockResults.map((item) => (
+                                      <button
+                                        key={`add-recipe-stock-${row.rowId}-${item.id}`}
+                                        type="button"
+                                        onClick={() => {
+                                          updateRawBuilderRow(row.rowId, {
+                                            inventoryId: String(item.id),
+                                            category: item.category || "Other",
+                                          });
+                                          setAddRecipeStockPickerRowId(null);
+                                          setAddRecipeStockSearch("");
+                                        }}
+                                        className="flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left active:bg-slate-50"
+                                      >
+                                        <span className="min-w-0 truncate text-sm font-black text-slate-950">{item.item_name}</span>
+                                        <span className="shrink-0 text-[10px] font-bold text-slate-500">{item.unit} • Rs. {formatMoney(item.cost_per_unit || 0)}</span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : null}
+
+                              <div className="mt-3 grid grid-cols-1 gap-2">
+                                <div className="space-y-1">
+                                  <label className="text-sm font-black text-slate-600">Unit</label>
+                                  <div className="flex h-11 items-center rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm font-black text-slate-900">
+                                    {selectedStock?.unit || "-"}
+                                  </div>
+                                </div>
+
+                                <div className="space-y-1">
+                                  <label className="text-sm font-black text-slate-600">Quantity</label>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    value={row.quantity}
+                                    onChange={(event) => updateRawBuilderRow(row.rowId, { quantity: event.target.value })}
+                                    placeholder="0.00"
+                                    className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-900 outline-none placeholder:text-slate-400 focus:border-slate-400"
+                                  />
+                                </div>
+
+                                <div className="space-y-1">
+                                  <label className="text-sm font-black text-slate-600">Amount</label>
+                                  <div className="flex h-11 items-center rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm font-black text-slate-900">
+                                    Rs. {formatMoney(rowAmount)}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {rawBuilderRows.length > 1 ? (
+                                <button
+                                  type="button"
+                                  onClick={() => removeRawBuilderRow(row.rowId)}
+                                  className="mt-3 h-9 w-full rounded-xl bg-slate-100 text-xs font-black text-slate-700 active:scale-[0.98]"
+                                >
+                                  Remove Row
+                                </button>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={addRawBuilderRow}
+                        className="h-11 w-full rounded-xl border border-dashed border-slate-300 bg-white text-sm font-black text-slate-800 active:scale-[0.98]"
+                      >
+                        + Add Row
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid shrink-0 grid-cols-[0.8fr_1.2fr] gap-3 border-t border-slate-100 bg-white px-4 py-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setInventoryRecipePanel("menuRecipe");
+                        setQuickRecipeReturnToMenu(false);
+                        setAddRecipeMenuPickerOpen(false);
+                        setAddRecipeStockPickerRowId(null);
+                      }}
+                      className="h-13 min-h-[54px] rounded-xl bg-white px-4 text-sm font-black text-slate-800 ring-1 ring-slate-200 active:scale-[0.98]"
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={savingInventory || !isOnline}
+                      className={`h-13 min-h-[54px] rounded-xl px-4 text-sm font-black text-white shadow-sm active:scale-[0.98] ${savingInventory || !isOnline ? "bg-slate-400" : "bg-red-600"}`}
+                    >
+                      {savingInventory ? "Saving..." : "Save Recipe"}
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-4 py-4">
+{!activeMenu ? (
+                <div className="overflow-hidden rounded-xl border border-slate-200 bg-white p-3 space-y-3">
+                  <div className="-mx-1 overflow-x-auto pb-1">
+                    <div className="flex min-w-max gap-2 px-1">
+                      {recipeCategories.map((category) => {
+                        const active = inventoryRecipeCategory === category;
+                        return (
+                          <button
+                            key={`inventory-recipe-category-${category}`}
+                            type="button"
+                            onClick={() => setInventoryRecipeCategory(category)}
+                            className={`rounded-full px-3 py-2 text-[11px] font-black transition active:scale-[0.98] ${active ? "bg-red-600 text-white shadow-sm" : "bg-white text-slate-900 ring-1 ring-slate-200"}`}
+                          >
+                            {category === "all" ? "All" : category}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    {recipeFilteredMenuItems.length === 0 ? (
+                      <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-xs font-black text-slate-900">
+                        No menu item
+                      </div>
+                    ) : null}
+
+                    {recipeFilteredMenuItems.map((item) => {
+                      const recipeCount = getMenuRecipeStatusCount(item.id);
+                      return (
+                        <button
+                          key={`recipe-menu-row-${item.id}`}
+                          type="button"
+                          onClick={() => {
+                            if (recipeCount === 0) {
+                              setSelectedRecipeMenuId(String(item.id));
+                              setSelectedStockMenuId(String(item.id));
+                              setRecipeViewerMenuId(String(item.id));
+                              setSelectedRecipeVariantId("");
+                              setSelectedStockVariantId("");
+                              setRecipeViewerVariantId("");
+                              setShowRecipeMaterialForm(false);
+                              setQuickRecipeReturnToMenu(true);
+                              setInventoryRecipePanel("addRecipe");
+                              setAddRecipeMenuPickerOpen(false);
+                              setAddRecipeMenuSearch("");
+                              setAddRecipeStockPickerRowId(null);
+                              resetRawBuilderRows();
+                              resetDirectBuilderRows();
+                              return;
+                            }
+                            setQuickRecipeReturnToMenu(false);
+                            openRecipeDetail(item.id);
+                          }}
+                          className="flex w-full items-center justify-between gap-3 rounded-2xl border border-slate-100 bg-white px-3 py-3 text-left shadow-sm transition active:scale-[0.99]"
+                        >
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-black text-slate-950">{item.item_name}</p>
+                            <p className="mt-0.5 truncate text-[11px] font-semibold text-slate-500">{item.category || "Uncategorized"}</p>
+                          </div>
+                          <span className={`shrink-0 rounded-full px-3 py-1 text-[10px] font-black ${recipeCount > 0 ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100" : "bg-slate-100 text-slate-600 ring-1 ring-slate-200"}`}>
+                            {recipeCount > 0 ? "Recipe set" : "Not set"}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="overflow-hidden rounded-xl border border-slate-200 bg-white p-3 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={closeRecipeDetail}
+                      className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white text-lg font-black text-slate-900 ring-1 ring-slate-200 active:scale-[0.98]"
+                    >
+                      ←
+                    </button>
+                    <div className="min-w-0 flex-1 rounded-2xl bg-slate-50 px-3 py-2 ring-1 ring-slate-200">
+                      <p className="truncate text-sm font-black text-slate-950">{activeMenu.item_name}</p>
+                      <p className="mt-0.5 truncate text-[11px] font-bold text-slate-600">{activeMenu.category || "Uncategorized"} • {materialListCount > 0 ? "Recipe set" : "Not set"}</p>
+                    </div>
+                  </div>
+
+                  {activeMenuVariants.length > 0 ? (
+                    <select
+                      value={activeVariantId == null ? "" : String(activeVariantId)}
+                      onChange={(e) => handleBuilderVariantChange(e.target.value)}
+                      className="h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-900 shadow-sm outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-50"
+                    >
+                      <option value="">Select variant</option>
+                      {activeMenuVariants.map((variant) => (
+                        <option key={`builder-variant-${variant.id}`} value={variant.id}>
+                          {variant.variant_name} — Rs. {formatMoney(variant.price)}
+                        </option>
+                      ))}
+                    </select>
+                  ) : null}
+
+                  {activeMenuVariants.length > 0 && !activeVariantId ? (
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-black text-slate-900">
+                      Select variant first
+                    </div>
+                  ) : (
+                    <>
+                      <div className="space-y-2">
+                        {materialListCount === 0 ? (
+                          <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-xs font-black text-slate-900">
+                            Material not set
+                          </div>
+                        ) : null}
+
+                        {activeRawLinks.map((link) => (
+                          <div key={`raw-detail-${link.id}`} className="flex items-center justify-between gap-3 rounded-2xl border border-slate-100 bg-slate-50 px-3 py-2.5">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-black text-slate-950">{getInventoryItemNameById(link.inventory_item_id)}</p>
+                              <p className="mt-0.5 text-[11px] font-bold text-slate-500">Raw • {Number(link.quantity_used || 0)} {getInventoryItemUnitById(link.inventory_item_id)}</p>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-1.5">
+                              <button type="button" onClick={() => { startRecipeEdit(link); setShowRecipeMaterialForm(true); }} className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-white text-xs font-black text-slate-700 shadow-sm">✎</button>
+                              <button type="button" onClick={() => deleteRecipeLink(link.id)} className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-white text-sm font-black text-slate-900 shadow-sm">×</button>
+                            </div>
+                          </div>
+                        ))}
+
+                        {activeDirectLinks.map((link) => (
+                          <div key={`direct-detail-${link.id}`} className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50/60 px-3 py-2.5">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-black text-slate-950">{getInventoryItemNameById(link.inventory_item_id)}</p>
+                              <p className="mt-0.5 text-[11px] font-bold text-slate-500">Direct • {Number(link.quantity_per_sale || 0)} {getInventoryItemUnitById(link.inventory_item_id)}</p>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-1.5">
+                              <button type="button" onClick={() => { startDirectStockEdit(link); setShowRecipeMaterialForm(true); }} className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-white text-xs font-black text-slate-700 shadow-sm">✎</button>
+                              <button type="button" onClick={() => deleteStockLink(link.id)} className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-white text-sm font-black text-slate-900 shadow-sm">×</button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {!showRecipeMaterialForm ? (
+                        <button
+                          type="button"
+                          onClick={() => { setShowRecipeMaterialForm(true); resetRawBuilderRows(); resetDirectBuilderRows(); }}
+                          className="h-11 w-full rounded-2xl bg-red-600 text-xs font-black text-white shadow-[0_12px_25px_rgba(220,38,38,0.22)] active:scale-[0.98]"
+                        >
+                          + Add Material
+                        </button>
+                      ) : (
+                        <div className="space-y-3 rounded-[24px] border border-slate-200 bg-slate-50/50 p-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="text-xs font-black text-slate-950">Add Materials</p>
+                            <button
+                              type="button"
+                              onClick={() => { cancelRecipeEdit(); cancelDirectStockEdit(); setShowRecipeMaterialForm(false); resetRawBuilderRows(); resetDirectBuilderRows(); }}
+                              className="rounded-xl bg-white px-3 py-2 text-[11px] font-black text-slate-900 shadow-sm ring-1 ring-slate-200"
+                            >
+                              Close
+                            </button>
+                          </div>
+
+                          <div className="space-y-2 rounded-2xl bg-white p-2.5 ring-1 ring-slate-200">
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-[11px] font-black text-slate-900">Raw Materials</p>
+                              {editingRecipeId ? (
+                                <button type="button" onClick={() => { cancelRecipeEdit(); resetRawBuilderRows(); }} className="rounded-lg bg-red-50 px-2 py-1 text-[10px] font-black text-slate-900">Cancel edit</button>
+                              ) : null}
+                            </div>
+
+                            {rawBuilderRows.map((row, index) => {
+                              const selectedIds = rawBuilderRows
+                                .filter((entry) => entry.rowId !== row.rowId && entry.inventoryId)
+                                .map((entry) => entry.inventoryId);
+                              return (
+                                <div key={row.rowId} className="grid grid-cols-[105px_1fr_82px_30px] gap-2">
+                                  <select
+                                    value={row.category || "all"}
+                                    onChange={(e) => updateRawBuilderRow(row.rowId, { category: e.target.value, inventoryId: "" })}
+                                    className="h-10 min-w-0 rounded-xl border border-slate-200 bg-white px-2 text-[11px] font-bold text-slate-900 outline-none focus:border-red-300 focus:ring-2 focus:ring-red-50"
+                                  >
+                                    <option value="all">All</option>
+                                    {getInventoryCategoryOptions().map((category) => (
+                                      <option key={`raw-builder-category-${row.rowId}-${category}`} value={category}>
+                                        {category}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <select
+                                    value={row.inventoryId}
+                                    onChange={(e) => updateRawBuilderRow(row.rowId, { inventoryId: e.target.value })}
+                                    className="h-10 min-w-0 rounded-xl border border-slate-200 bg-white px-2 text-xs font-bold text-slate-900 outline-none focus:border-red-300 focus:ring-2 focus:ring-red-50"
+                                  >
+                                    <option value="">Raw item</option>
+                                    {inventoryItems
+                                      .filter((item) => item.item_type === "raw")
+                                      .filter((item) => !row.category || row.category === "all" || (item.category || "Other") === row.category)
+                                      .map((item) => (
+                                      <option key={`raw-builder-option-${row.rowId}-${item.id}`} value={item.id} disabled={selectedIds.includes(String(item.id))}>
+                                        {item.item_name} • {item.category || "Other"} ({item.unit})
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    value={row.quantity}
+                                    onChange={(e) => updateRawBuilderRow(row.rowId, { quantity: e.target.value })}
+                                    placeholder="Qty"
+                                    className="h-10 rounded-xl border border-slate-200 bg-white px-2 text-xs font-bold text-slate-900 outline-none placeholder:text-slate-400 focus:border-red-300 focus:ring-2 focus:ring-red-50"
+                                  />
+                                  {rawBuilderRows.length > 1 ? (
+                                    <button type="button" onClick={() => removeRawBuilderRow(row.rowId)} className="h-10 rounded-xl bg-red-50 text-xs font-black text-slate-900">×</button>
+                                  ) : (
+                                    <span className="h-10" />
+                                  )}
+                                </div>
+                              );
+                            })}
+
+                            {!editingRecipeId ? (
+                              <button type="button" onClick={addRawBuilderRow} className="h-9 w-full rounded-xl bg-red-50 text-[11px] font-black text-slate-900 ring-1 ring-slate-200">+ Raw</button>
+                            ) : null}
+
+                            <button
+                              type="button"
+                              disabled={savingInventory || !isOnline}
+                              onClick={saveRecipeLink}
+                              className={`h-10 w-full rounded-xl text-xs font-black text-white active:scale-[0.98] ${savingInventory || !isOnline ? "bg-slate-400" : "bg-red-600"}`}
+                            >
+                              {savingInventory ? "Saving..." : editingRecipeId ? "Update Raw" : "Save Raw"}
+                            </button>
+                          </div>
+
+                          <div className="space-y-2 rounded-2xl bg-white p-2.5 ring-1 ring-slate-200">
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-[11px] font-black text-slate-900">Direct Materials</p>
+                              {editingStockLinkId ? (
+                                <button type="button" onClick={() => { cancelDirectStockEdit(); resetDirectBuilderRows(); }} className="rounded-lg bg-red-50 px-2 py-1 text-[10px] font-black text-slate-900">Cancel edit</button>
+                              ) : null}
+                            </div>
+
+                            {directBuilderRows.map((row) => {
+                              const selectedIds = directBuilderRows
+                                .filter((entry) => entry.rowId !== row.rowId && entry.inventoryId)
+                                .map((entry) => entry.inventoryId);
+                              return (
+                                <div key={row.rowId} className="grid grid-cols-[105px_1fr_82px_30px] gap-2">
+                                  <select
+                                    value={row.category || "all"}
+                                    onChange={(e) => updateDirectBuilderRow(row.rowId, { category: e.target.value, inventoryId: "" })}
+                                    className="h-10 min-w-0 rounded-xl border border-slate-200 bg-white px-2 text-[11px] font-bold text-slate-900 outline-none focus:border-red-300 focus:ring-2 focus:ring-red-50"
+                                  >
+                                    <option value="all">All</option>
+                                    {getInventoryCategoryOptions().map((category) => (
+                                      <option key={`direct-builder-category-${row.rowId}-${category}`} value={category}>
+                                        {category}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <select
+                                    value={row.inventoryId}
+                                    onChange={(e) => updateDirectBuilderRow(row.rowId, { inventoryId: e.target.value })}
+                                    className="h-10 min-w-0 rounded-xl border border-slate-200 bg-white px-2 text-xs font-bold text-slate-900 outline-none focus:border-red-300 focus:ring-2 focus:ring-red-50"
+                                  >
+                                    <option value="">Direct item</option>
+                                    {inventoryItems
+                                      .filter((item) => item.item_type === "direct")
+                                      .filter((item) => !row.category || row.category === "all" || (item.category || "Other") === row.category)
+                                      .map((item) => (
+                                      <option key={`direct-builder-option-${row.rowId}-${item.id}`} value={item.id} disabled={selectedIds.includes(String(item.id))}>
+                                        {item.item_name} • {item.category || "Other"} ({item.unit})
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    value={row.quantity}
+                                    onChange={(e) => updateDirectBuilderRow(row.rowId, { quantity: e.target.value })}
+                                    placeholder="Qty"
+                                    className="h-10 rounded-xl border border-slate-200 bg-white px-2 text-xs font-bold text-slate-900 outline-none placeholder:text-slate-400 focus:border-red-300 focus:ring-2 focus:ring-red-50"
+                                  />
+                                  {directBuilderRows.length > 1 ? (
+                                    <button type="button" onClick={() => removeDirectBuilderRow(row.rowId)} className="h-10 rounded-xl bg-red-50 text-xs font-black text-slate-900">×</button>
+                                  ) : (
+                                    <span className="h-10" />
+                                  )}
+                                </div>
+                              );
+                            })}
+
+                            {!editingStockLinkId ? (
+                              <button type="button" onClick={addDirectBuilderRow} className="h-9 w-full rounded-xl bg-red-50 text-[11px] font-black text-slate-900 ring-1 ring-slate-200">+ Direct</button>
+                            ) : null}
+
+                            <button
+                              type="button"
+                              disabled={savingInventory || !isOnline}
+                              onClick={saveDirectStockLink}
+                              className={`h-10 w-full rounded-xl text-xs font-black text-white active:scale-[0.98] ${savingInventory || !isOnline ? "bg-slate-400" : "bg-slate-900"}`}
+                            >
+                              {savingInventory ? "Saving..." : editingStockLinkId ? "Update Direct" : "Save Direct"}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+              )}
+            </div>
+          );
+        })() : null}
+
+        {inventoryTab === "restock" ? (() => {
+          const selectedRestockItem = inventoryItemById.get(Number(restockInventoryItemId));
+          const effectiveRestockRate = restockCostPerUnit === "" ? Number(selectedRestockItem?.cost_per_unit || 0) : Number(restockCostPerUnit || 0);
+          const hasRestockQty = restockQuantity !== "" && Number(restockQuantity) > 0;
+          const hasRestockRate = effectiveRestockRate > 0;
+          const restockTotalValue = hasRestockQty && hasRestockRate ? Number(restockQuantity) * effectiveRestockRate : 0;
+          const restockDueValue = hasRestockQty && hasRestockRate ? Math.max(restockTotalValue - Number(restockPaidAmount || 0), 0) : 0;
+          return (
+            <div className="flex h-full min-h-0 flex-col overflow-hidden bg-white text-slate-950 sm:rounded-[30px] sm:border sm:border-slate-200 sm:shadow-sm">
+              <div className="shrink-0 border-b border-slate-100 bg-white px-4 py-4 sm:px-5">
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={closeInventoryToManage}
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white text-2xl font-black text-red-600 shadow-sm active:scale-[0.98]"
+                    aria-label="Back"
+                  >
+                    ‹
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    <h3 className="truncate text-[24px] font-black tracking-[-0.03em] text-slate-950">Buy / Restock</h3>
+                    <p className="mt-0.5 truncate text-xs font-semibold text-slate-500">Purchase stock or manual stock correction</p>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 gap-3">
+                  <div className="rounded-[24px] border border-blue-100 bg-blue-50 px-4 py-3 shadow-sm">
+                    <p className="text-[10px] font-black uppercase tracking-wide text-blue-700">Total Purchase</p>
+                    <p className="mt-1 text-lg font-black text-blue-700">Rs. {formatMoney(totalSupplierPurchase)}</p>
+                  </div>
+                  <div className="rounded-[24px] border border-rose-100 bg-rose-50 px-4 py-3 shadow-sm">
+                    <p className="text-[10px] font-black uppercase tracking-wide text-rose-700">Total Due</p>
+                    <p className="mt-1 text-lg font-black text-rose-700">Rs. {formatMoney(totalSupplierDue)}</p>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 gap-2 rounded-[20px] bg-slate-100 p-1">
+                  <button
+                    type="button"
+                    onClick={() => setRestockPanel("buy")}
+                    className={`h-11 rounded-[16px] text-sm font-black transition active:scale-[0.98] ${restockPanel === "buy" ? "bg-white text-slate-950 shadow-sm" : "text-slate-500"}`}
+                  >
+                    Buy Stock
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRestockPanel("adjustment")}
+                    className={`h-11 rounded-[16px] text-sm font-black transition active:scale-[0.98] ${restockPanel === "adjustment" ? "bg-white text-slate-950 shadow-sm" : "text-slate-500"}`}
+                  >
+                    Adjustment
+                  </button>
+                </div>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 pb-28 sm:px-5">
+                {restockPanel === "buy" ? (
+                  <form onSubmit={restockInventoryItem} className="space-y-4">
+                    <div className="space-y-2">
+                      <label className="text-sm font-black text-slate-900">Supplier</label>
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto]">
+                        <div className="relative">
+                          <select value={restockSupplierId} onChange={(e) => setRestockSupplierId(e.target.value)} className="h-14 w-full appearance-none rounded-2xl border border-slate-200 bg-white px-4 pr-10 text-sm font-semibold text-slate-900 shadow-sm outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-100">
+                            <option value="">Select supplier (optional)</option>
+                            {suppliers.map((supplier) => (
+                              <option key={`restock-supplier-${supplier.id}`} value={supplier.id}>{supplier.name}{supplier.phone ? ` (${supplier.phone})` : ""}</option>
+                            ))}
+                          </select>
+                          <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-lg font-black text-slate-400">⌄</span>
+                        </div>
+                        <button type="button" onClick={() => setInventoryTab("suppliers")} className="h-14 rounded-2xl border border-slate-200 bg-slate-950 px-4 text-xs font-black text-white shadow-sm transition active:scale-[0.98]">+ Supplier</button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-black text-slate-900">Stock Item <span className="text-rose-500">*</span></label>
+                      <div className="relative">
+                        <select value={restockInventoryItemId} onChange={(e) => {
+                            const nextId = e.target.value;
+                            setRestockInventoryItemId(nextId);
+                            const item = inventoryItemById.get(Number(nextId));
+                            setRestockCostPerUnit(item?.cost_per_unit == null ? "" : String(item.cost_per_unit));
+                          }} className="h-14 w-full appearance-none rounded-2xl border border-slate-200 bg-white px-4 pr-10 text-sm font-semibold text-slate-900 shadow-sm outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-100">
+                          <option value="">Select stock item</option>
+                          {inventoryItems.map((item) => (
+                            <option key={`restock-item-${item.id}`} value={item.id}>{item.item_name} ({item.current_stock} {item.unit})</option>
+                          ))}
+                        </select>
+                        <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-lg font-black text-slate-400">⌄</span>
+                      </div>
+                    </div>
+
+                    <div className="rounded-[24px] border border-slate-200 bg-slate-50/70 p-3 shadow-inner">
+                      <div className="grid grid-cols-3 gap-2">
+                        <div className="space-y-2">
+                          <label className="text-xs font-black text-slate-900">Quantity</label>
+                          <input type="number" min="0" step="0.01" value={restockQuantity} onChange={(e) => setRestockQuantity(e.target.value)} placeholder="0.00" className="h-14 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-900 shadow-sm outline-none placeholder:text-slate-300 focus:border-slate-400 focus:ring-4 focus:ring-slate-100" />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-xs font-black text-slate-900">Rate</label>
+                          <div className="relative">
+                            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs font-black text-slate-400">Rs</span>
+                            <input type="number" min="0" step="0.01" value={restockCostPerUnit} onChange={(e) => setRestockCostPerUnit(e.target.value)} placeholder="0.00" className="h-14 w-full rounded-2xl border border-slate-200 bg-white pl-8 pr-3 text-sm font-bold text-slate-900 shadow-sm outline-none placeholder:text-slate-300 focus:border-slate-400 focus:ring-4 focus:ring-slate-100" />
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-xs font-black text-slate-900">Value</label>
+                          <div className="flex h-14 items-center rounded-2xl border border-slate-200 bg-white px-3 text-sm font-black text-slate-900 shadow-sm">{hasRestockQty && hasRestockRate ? `Rs. ${formatMoney(restockTotalValue)}` : "—"}</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-[24px] border border-slate-200 bg-white p-3 shadow-sm">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-2">
+                          <label className="text-xs font-black text-slate-900">Paid</label>
+                          <div className="relative">
+                            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs font-black text-slate-400">Rs</span>
+                            <input type="number" min="0" step="0.01" value={restockPaidAmount} onChange={(e) => setRestockPaidAmount(e.target.value)} placeholder="0.00" className="h-14 w-full rounded-2xl border border-slate-200 bg-white pl-8 pr-3 text-sm font-bold text-slate-900 outline-none placeholder:text-slate-300 focus:border-slate-400 focus:ring-4 focus:ring-slate-100" />
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-xs font-black text-slate-900">Due</label>
+                          <div className="flex h-14 items-center rounded-2xl border border-rose-100 bg-rose-50 px-3 text-sm font-black text-rose-700">{hasRestockQty && hasRestockRate ? `Rs. ${formatMoney(restockDueValue)}` : "—"}</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-black text-slate-900">Note</label>
+                      <input type="text" value={restockNotes} onChange={(e) => setRestockNotes(e.target.value)} placeholder="Note (optional)" className="h-14 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-900 shadow-sm outline-none placeholder:text-slate-300 focus:border-slate-400 focus:ring-4 focus:ring-slate-100" />
+                    </div>
+
+                    <div className="fixed inset-x-0 bottom-0 z-[90] border-t border-slate-100 bg-white/95 px-4 py-4 backdrop-blur sm:sticky sm:-mx-5 sm:-mb-5">
+                      <div className="mx-auto grid max-w-2xl grid-cols-[0.72fr_1.28fr] gap-3">
+                        <button type="button" onClick={() => { setRestockInventoryItemId(""); setRestockQuantity(""); setRestockCostPerUnit(""); setRestockSupplierId(""); setRestockPaidAmount(""); setRestockNotes(""); }} className="h-14 rounded-2xl border border-slate-200 bg-white text-sm font-black text-slate-700 shadow-sm transition active:scale-[0.98]">Clear</button>
+                        <button type="submit" disabled={savingInventory || !isOnline} className={`h-14 rounded-2xl text-sm font-black text-white shadow-[0_16px_35px_rgba(217,119,6,0.25)] transition active:scale-[0.98] ${savingInventory || !isOnline ? "bg-slate-400 shadow-none" : "bg-amber-600"}`}>{savingInventory ? "Saving..." : "Save Purchase"}</button>
+                      </div>
+                    </div>
+                  </form>
+                ) : (
+                  <form onSubmit={adjustInventoryStock} className="space-y-4">
+                    <div className="rounded-[24px] border border-rose-100 bg-rose-50 px-4 py-3 shadow-sm">
+                      <p className="text-[10px] font-black uppercase tracking-wide text-rose-700">Manual Adjustment</p>
+                      <p className="mt-1 text-xs font-bold leading-5 text-rose-700">Purchase होइन। Damage, wastage, expired, lost वा count correction को लागि मात्र।</p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-black text-slate-900">Stock Item <span className="text-rose-500">*</span></label>
+                      <div className="relative">
+                        <select value={adjustmentInventoryItemId} onChange={(e) => setAdjustmentInventoryItemId(e.target.value)} className="h-14 w-full appearance-none rounded-2xl border border-slate-200 bg-white px-4 pr-10 text-sm font-semibold text-slate-900 shadow-sm outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-100">
+                          <option value="">Select stock item</option>
+                          {inventoryItems.map((item) => (
+                            <option key={`adjustment-item-${item.id}`} value={item.id}>{item.item_name} ({item.current_stock} {item.unit})</option>
+                          ))}
+                        </select>
+                        <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-lg font-black text-slate-400">⌄</span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <button type="button" onClick={() => setAdjustmentMode("add")} className={`h-14 rounded-2xl text-sm font-black transition active:scale-[0.98] ${adjustmentMode === "add" ? "bg-emerald-600 text-white shadow-[0_14px_30px_rgba(5,150,105,0.22)]" : "border border-slate-200 bg-white text-slate-700 shadow-sm"}`}>+ Add Stock</button>
+                      <button type="button" onClick={() => setAdjustmentMode("minus")} className={`h-14 rounded-2xl text-sm font-black transition active:scale-[0.98] ${adjustmentMode === "minus" ? "bg-rose-600 text-white shadow-[0_14px_30px_rgba(225,29,72,0.22)]" : "border border-slate-200 bg-white text-slate-700 shadow-sm"}`}>− Remove Stock</button>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-black text-slate-900">Quantity <span className="text-rose-500">*</span></label>
+                      <input type="number" min="0" step="0.01" value={adjustmentQuantity} onChange={(e) => setAdjustmentQuantity(e.target.value)} placeholder="0.00" className="h-14 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-900 shadow-sm outline-none placeholder:text-slate-300 focus:border-slate-400 focus:ring-4 focus:ring-slate-100" />
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-sm font-black text-slate-900">Reason</label>
+                      <select value={adjustmentReason} onChange={(e) => setAdjustmentReason(e.target.value)} className="h-14 w-full appearance-none rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-900 shadow-sm outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-100">
+                        <option value="">Select reason</option>
+                        <option value="Damaged">Damaged</option>
+                        <option value="Wastage">Wastage</option>
+                        <option value="Expired">Expired</option>
+                        <option value="Lost">Lost</option>
+                        <option value="Count Correction">Count Correction</option>
+                        <option value="Other">Other</option>
+                      </select>
+                    </div>
+
+                    <div className="fixed inset-x-0 bottom-0 z-[90] border-t border-slate-100 bg-white/95 px-4 py-4 backdrop-blur sm:sticky sm:-mx-5 sm:-mb-5">
+                      <div className="mx-auto grid max-w-2xl grid-cols-[0.72fr_1.28fr] gap-3">
+                        <button type="button" onClick={() => { setAdjustmentInventoryItemId(""); setAdjustmentQuantity(""); setAdjustmentMode("minus"); setAdjustmentReason(""); }} className="h-14 rounded-2xl border border-slate-200 bg-white text-sm font-black text-slate-700 shadow-sm transition active:scale-[0.98]">Clear</button>
+                        <button type="submit" disabled={savingInventory || !isOnline} className={`h-14 rounded-2xl text-sm font-black text-white transition active:scale-[0.98] ${savingInventory || !isOnline ? "bg-slate-400" : adjustmentMode === "minus" ? "bg-rose-600 shadow-[0_14px_30px_rgba(225,29,72,0.22)]" : "bg-emerald-600 shadow-[0_14px_30px_rgba(5,150,105,0.22)]"}`}>{savingInventory ? "Saving..." : "Save Adjustment"}</button>
+                      </div>
+                    </div>
+                  </form>
+                )}
+
+              </div>
+            </div>
+          );
+        })() : null}
+
+        {inventoryTab === "suppliers" ? (
+          <div className="space-y-4 pb-4">
+            <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={closeInventoryToManage}
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white text-2xl font-black text-red-600 shadow-sm active:scale-[0.98]"
+                  aria-label="Back"
+                >
+                  ‹
+                </button>
+                <div className="min-w-0">
+                  <h3 className="truncate text-xl font-black leading-tight text-slate-950">Suppliers</h3>
+                  <p className="mt-0.5 text-xs font-semibold text-slate-500">Vendor records and credit due</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="rounded-[24px] border border-slate-200 bg-white px-4 py-3 shadow-sm">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Suppliers</p>
+                <p className="mt-1 text-lg font-black text-slate-900">{suppliers.length}</p>
+                <p className="mt-1 text-[11px] text-slate-500">Registered suppliers</p>
+              </div>
+              <div className="rounded-[24px] border border-blue-200 bg-blue-50 px-4 py-3 shadow-sm">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-blue-700">Total Purchase</p>
+                <p className="mt-1 text-lg font-black text-blue-700">Rs. {formatMoney(totalSupplierPurchase)}</p>
+                <p className="mt-1 text-[11px] text-blue-600">From all suppliers</p>
+              </div>
+              <div className="rounded-[24px] border border-emerald-200 bg-emerald-50 px-4 py-3 shadow-sm">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">Cash Paid</p>
+                <p className="mt-1 text-lg font-black text-emerald-700">Rs. {formatMoney(totalSupplierPaid)}</p>
+                <p className="mt-1 text-[11px] text-emerald-600">Purchase + payment</p>
+              </div>
+              <div className="rounded-[24px] border border-rose-200 bg-rose-50 px-4 py-3 shadow-sm">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-rose-700">Credit Due</p>
+                <p className="mt-1 text-lg font-black text-rose-700">Rs. {formatMoney(totalSupplierDue)}</p>
+                <p className="mt-1 text-[11px] text-rose-600">Remaining to pay</p>
+              </div>
+            </div>
+
+            <div className={inventoryShellClass + " space-y-4"}>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">Suppliers</h3>
+                
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <input
+                    type="text"
+                    value={supplierSearch}
+                    onChange={(e) => setSupplierSearch(e.target.value)}
+                    placeholder="Search supplier"
+                    className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowAddSupplierForm((prev) => !prev)}
+                    className="rounded-2xl bg-slate-900 px-4 py-2.5 text-xs font-bold text-white"
+                  >
+                    {showAddSupplierForm ? "Close" : "+ Add Supplier"}
+                  </button>
+                </div>
+              </div>
+
+              {showAddSupplierForm ? (
+                <form onSubmit={saveSupplier} className="rounded-[22px] border border-slate-200 bg-slate-50 p-4 space-y-3">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <input type="text" value={newSupplierName} onChange={(e) => setNewSupplierName(e.target.value)} placeholder="Supplier name" className="w-full rounded-2xl border border-slate-200/80 bg-white/90 px-4 py-3 font-semibold text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-blue-400 focus:ring-4 focus:ring-blue-100" />
+                    <input type="text" value={newSupplierPhone} onChange={(e) => setNewSupplierPhone(e.target.value)} placeholder="Phone number" className="w-full rounded-2xl border border-slate-200/80 bg-white/90 px-4 py-3 font-semibold text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-blue-400 focus:ring-4 focus:ring-blue-100" />
+                  </div>
+                  <input type="text" value={newSupplierNote} onChange={(e) => setNewSupplierNote(e.target.value)} placeholder="Note / address (optional)" className="w-full rounded-2xl border border-slate-200/80 bg-white/90 px-4 py-3 font-semibold text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-blue-400 focus:ring-4 focus:ring-blue-100" />
+                  <button type="submit" disabled={savingInventory || !isOnline} className={`w-full rounded-2xl px-4 py-3 text-sm font-bold text-white ${savingInventory || !isOnline ? "bg-slate-400" : "bg-slate-900"}`}>
+                    {savingInventory ? "Saving..." : "Save Supplier"}
+                  </button>
+                </form>
+              ) : null}
+
+              <div className="space-y-3">
+                {loadingSuppliers ? (
+                  <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+                    Loading suppliers...
+                  </div>
+                ) : visibleSuppliers.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+                    No supplier.
+                  </div>
+                ) : (
+                  visibleSuppliers.map((supplier) => {
+                    const totals = getSupplierTotals(supplier.id);
+                    const recentPurchaseCount = totals.purchaseCount;
+                    return (
+                      <div key={`supplier-${supplier.id}`} className="rounded-[22px] border border-slate-200 bg-slate-50 p-4 shadow-sm">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-bold text-slate-900">{supplier.name}</p>
+                            <p className="mt-1 text-xs text-slate-500">{supplier.phone || "No phone number"}</p>
+                            {supplier.note ? <p className="mt-1 text-xs text-slate-500">{supplier.note}</p> : null}
+                            <p className="mt-2 text-[11px] text-slate-500">{recentPurchaseCount} purchase records</p>
+                          </div>
+                          <div className="min-w-[118px] space-y-1 text-right text-xs">
+                            <p className="font-semibold text-slate-600">Purchase: <span className="font-black text-slate-900">Rs. {formatMoney(totals.totalPurchase)}</span></p>
+                            <p className="font-semibold text-emerald-600">Cash Paid: <span className="font-black text-emerald-700">Rs. {formatMoney(totals.cashPaid)}</span></p>
+                            <p className="font-semibold text-rose-600">Credit: <span className="font-black text-rose-700">Rs. {formatMoney(totals.creditLeft)}</span></p>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {inventoryTab === "history" ? (
+          <div className="space-y-4 pb-4">
+            <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={closeInventoryToManage}
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white text-2xl font-black text-red-600 shadow-sm active:scale-[0.98]"
+                    aria-label="Back"
+                  >
+                    ‹
+                  </button>
+                  <div className="min-w-0">
+                    <h3 className="truncate text-xl font-black leading-tight text-slate-950">Stock History</h3>
+                    <p className="mt-0.5 text-xs font-semibold text-slate-500">All purchase, sale deduction and adjustment records</p>
+                  </div>
+                </div>
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-[10px] font-bold text-slate-600">
+                  {purchaseTransactions.length} records
+                </span>
+              </div>
+            </div>
+
+            <div className={inventoryShellClass + " space-y-4"}>
+
+            <div className="space-y-2">
+              {purchaseTransactions.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+                  Inventory history chaina.
+                </div>
+              ) : (
+                purchaseTransactions.map((tx) => {
+                  const item = inventoryItemById.get(Number(tx.inventory_item_id));
+                  const txTypeLabel =
+                    tx.transaction_type === "purchase"
+                      ? "Purchase"
+                      : tx.transaction_type === "sale_deduction"
+                        ? "Used in sale"
+                        : tx.transaction_type === "adjustment_minus"
+                          ? "Manual minus"
+                          : tx.transaction_type === "adjustment_add"
+                            ? "Manual plus"
+                            : tx.transaction_type === "waste"
+                              ? "Wastage"
+                              : tx.transaction_type;
+
+                  return (
+                    <div key={`purchase-${tx.id}`} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-semibold text-slate-900">
+                            {item?.item_name || "Inventory item"}
+                          </p>
+                          <p className="mt-1 text-xs text-slate-500">
+                            {new Date(tx.created_at || "").toLocaleString()}
+                          </p>
+                          {tx.note ? <p className="mt-2 text-xs text-slate-600">{tx.note}</p> : null}
+                        </div>
+                        <div className="flex flex-col items-end gap-2">
+                          <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${getInventoryTransactionBadgeClass(tx.transaction_type)}`}>
+                            {txTypeLabel}
+                          </span>
+                          <span className="text-sm font-black text-slate-900">{getInventoryTransactionSignedText(tx)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+          </div>
+        ) : null}
+
+        {inventorySummaryModal ? (
+          <div className="fixed inset-0 z-[10020] flex items-end justify-center bg-slate-900/50 px-3 py-4 sm:items-center">
+            <div className="max-h-[88vh] w-full max-w-2xl overflow-hidden rounded-[28px] bg-white shadow-[0_24px_80px_rgba(15,23,42,0.30)]">
+              <div className="flex items-center justify-between border-b border-slate-200 px-4 py-4">
+                <div>
+                  <h3 className="text-base font-black text-slate-900">
+                    {inventorySummaryModal === "total"
+                      ? "Total Items"
+                      : inventorySummaryModal === "low"
+                        ? "Low Stock Items"
+                        : inventorySummaryModal === "value"
+                          ? "Stock Value"
+                          : "Purchase Entries"}
+                  </h3>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {inventorySummaryModal === "purchase"
+                      ? "Purchase list. Item click garepaxi actions khulcha."
+                      : "Item click garepaxi edit, add stock, adjust ra delete actions khulcha."}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInventorySummaryModal(null);
+                    setInventoryDetailItemId(null);
+                  }}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="max-h-[calc(88vh-84px)] overflow-y-auto p-4">
+                {inventorySummaryModal === "purchase" ? (
+                  purchaseOnlyTransactions.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+                      Purchase entries chaina.
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {purchaseOnlyTransactions.map((tx) => {
+                        const item = inventoryItemById.get(Number(tx.inventory_item_id));
+                        return (
+                          <button
+                            type="button"
+                            key={`purchase-summary-${tx.id}`}
+                            onClick={() => setInventoryDetailItemId(Number(tx.inventory_item_id))}
+                            className="w-full rounded-[22px] border border-slate-200 bg-slate-50 p-4 text-left shadow-sm transition active:scale-[0.99]"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-bold text-slate-900">
+                                  {item?.item_name || getInventoryItemNameById(tx.inventory_item_id)}
+                                </p>
+                                <p className="mt-1 text-xs text-slate-500">
+                                  Qty {Number(tx.quantity || 0)} {item?.unit || getInventoryItemUnitById(tx.inventory_item_id)} • {new Date(tx.created_at || "").toLocaleString()}
+                                </p>
+                                {tx.note ? <p className="mt-1 text-xs text-slate-500">{tx.note}</p> : null}
+                              </div>
+                              <div className="shrink-0 text-right">
+                                <p className="text-xs font-semibold text-slate-500">Stock value</p>
+                                <p className="mt-1 text-sm font-black text-slate-900">
+                                  Rs. {formatMoney(Number(item?.current_stock || 0) * Number(item?.cost_per_unit || 0))}
+                                </p>
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )
+                ) : summaryListItems.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+                    {inventorySummaryModal === "low" ? "Low stock item chaina." : "Inventory item chaina."}
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {summaryListItems.map((item) => {
+                      const isLow = Number(item.current_stock || 0) <= Number(item.low_stock_threshold || 0);
+                      return (
+                        <button
+                          type="button"
+                          key={`summary-item-${item.id}`}
+                          onClick={() => setInventoryDetailItemId(item.id)}
+                          className={`w-full rounded-[22px] border p-4 text-left shadow-sm transition active:scale-[0.99] ${
+                            isLow ? "border-rose-200 bg-rose-50/70" : "border-slate-200 bg-slate-50"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="truncate text-sm font-bold text-slate-900">{item.item_name}</p>
+                                <span
+                                  className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${
+                                    item.item_type === "raw"
+                                      ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100"
+                                      : "bg-blue-50 text-blue-700 ring-1 ring-blue-100"
+                                  }`}
+                                >
+                                  {item.item_type === "raw" ? "Raw" : "Direct"}
+                                </span>
+                                {isLow ? <span className="rounded-full bg-rose-100 px-2.5 py-1 text-[10px] font-bold text-rose-700">Low</span> : null}
+                              </div>
+                              <p className="mt-2 text-xs text-slate-500">
+                                Stock {Number(item.current_stock || 0)} {item.unit} • Threshold {Number(item.low_stock_threshold || 0)} {item.unit}
+                              </p>
+                              <p className="mt-1 text-xs text-slate-500">
+                                Cost/unit Rs. {formatMoney(Number(item.cost_per_unit || 0))}
+                              </p>
+                            </div>
+                            <div className="shrink-0 text-right">
+                              <p className="text-xs font-semibold text-slate-500">Value</p>
+                              <p className="mt-1 text-sm font-black text-slate-900">
+                                Rs. {formatMoney(Number(item.current_stock || 0) * Number(item.cost_per_unit || 0))}
+                              </p>
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {selectedCostInsightBill ? (
+          <div className="fixed inset-0 z-[10035] flex items-end justify-center bg-slate-950/65 px-3 py-4 backdrop-blur-sm sm:items-center">
+            <div className="max-h-[90vh] w-full max-w-2xl overflow-hidden rounded-[34px] bg-white shadow-[0_28px_90px_rgba(2,6,23,0.42)]">
+              <div className="sticky top-0 z-10 border-b border-slate-200 bg-white/95 px-4 py-4 backdrop-blur-xl sm:px-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">DB Locked Cost Insight</p>
+                      <span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${selectedCostInsightBill.cost_locked ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100" : "bg-amber-50 text-amber-700 ring-1 ring-amber-100"}`}>
+                        {selectedCostInsightBill.cost_locked ? "Locked" : "Processing"}
+                      </span>
+                    </div>
+                    <h3 className="mt-1 text-2xl font-black tracking-tight text-slate-950">Table {selectedCostInsightBill.table_number}</h3>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">
+                      {selectedCostInsightBill.order_ids.length} order grouped • {selectedCostInsightBill.itemBreakdowns.length} item rows
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedCostInsightBill(null)}
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-slate-100 text-2xl font-semibold leading-none text-slate-700 hover:bg-slate-200"
+                    aria-label="Close cost insight bill"
+                  >
+                    ×
+                  </button>
+                </div>
+
+                <div className="mt-4 grid grid-cols-3 gap-2">
+                  <div className="rounded-[22px] bg-blue-50 p-3 ring-1 ring-blue-100">
+                    <p className="text-[9px] font-black uppercase tracking-wide text-blue-600">Selling</p>
+                    <p className="mt-1 text-base font-black text-slate-950">{selectedCostInsightBill.cost_locked ? `Rs. ${formatMoney(selectedCostInsightBill.selling)}` : "Processing..."}</p>
+                  </div>
+                  <div className="rounded-[22px] bg-rose-50 p-3 ring-1 ring-rose-100">
+                    <p className="text-[9px] font-black uppercase tracking-wide text-rose-600">Cost</p>
+                    <p className="mt-1 text-base font-black text-slate-950">{selectedCostInsightBill.cost_locked ? `Rs. ${formatMoney(selectedCostInsightBill.cost)}` : "Processing..."}</p>
+                  </div>
+                  <div className="rounded-[22px] bg-emerald-50 p-3 ring-1 ring-emerald-100">
+                    <p className="text-[9px] font-black uppercase tracking-wide text-emerald-700">Profit</p>
+                    <p className="mt-1 text-base font-black text-slate-950">{selectedCostInsightBill.cost_locked ? `Rs. ${formatMoney(selectedCostInsightBill.profit)}` : "Processing..."}</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="max-h-[calc(90vh-190px)] overflow-y-auto px-4 py-4 sm:px-5">
+                {selectedCostInsightBill.itemBreakdowns.length === 0 ? (
+                  <div className="rounded-[28px] border border-amber-200 bg-amber-50 p-4">
+                    <p className="text-sm font-black text-amber-900">Item-wise locked breakdown छैन।</p>
+                    <p className="mt-2 text-xs leading-5 text-amber-700">deduct_inventory_and_lock_cost ले order_cost_snapshot_items मा rows insert गरेको छ कि छैन check गर।</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {selectedCostInsightBill.itemBreakdowns.map((item, index) => {
+                      const costRatio = item.selling > 0 ? item.cost / item.selling : 0;
+                      const isHighCost = costRatio >= 0.7;
+                      const materialCount = item.materials.length;
+
+                      return (
+                        <details
+                          key={`locked-cost-item-${item.key}`}
+                          open={index === 0}
+                         className={`group overflow-hidden rounded-[30px] border-2 bg-white shadow-[0_14px_35px_rgba(15,23,42,0.08)] ${isHighCost ? "border-rose-200 ring-2 ring-rose-50" : "border-slate-200"}`}
+                        >
+                         <summary className="list-none cursor-pointer select-none bg-white p-4 marker:hidden">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <h4 className="text-sm font-black leading-snug text-slate-950">{item.item_name}</h4>
+                                  {isHighCost ? (
+                                    <span className="rounded-full bg-rose-50 px-2 py-0.5 text-[9px] font-black text-rose-700 ring-1 ring-rose-100">High cost</span>
+                                  ) : null}
+                                  {materialCount === 0 ? (
+                                    <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[9px] font-black text-amber-700 ring-1 ring-amber-100">No recipe</span>
+                                  ) : null}
+                                </div>
+                                <p className="mt-1 text-[11px] font-bold text-slate-500">Qty {formatMoney(item.quantity)} × Rs. {formatMoney(item.unit_price)} • {materialCount} materials</p>
+                              </div>
+                              <div className="shrink-0 text-right">
+                                <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">Profit</p>
+                                <p className={`text-base font-black ${item.profit >= 0 ? "text-emerald-700" : "text-rose-700"}`}>Rs. {formatMoney(item.profit)}</p>
+                                <p className="mt-1 text-[10px] font-bold text-slate-400 group-open:hidden">Tap details</p>
+                                <p className="mt-1 hidden text-[10px] font-bold text-slate-400 group-open:block">Hide details</p>
+                              </div>
+                            </div>
+
+                            <div className="mt-3 grid grid-cols-3 gap-2">
+                              <div className="rounded-2xl bg-blue-50 px-3 py-2 ring-1 ring-blue-100">
+                                <p className="text-[9px] font-black uppercase tracking-wide text-blue-600">Selling</p>
+                                <p className="text-sm font-black text-slate-950">Rs. {formatMoney(item.selling)}</p>
+                              </div>
+                              <div className="rounded-2xl bg-rose-50 px-3 py-2 ring-1 ring-rose-100">
+                                <p className="text-[9px] font-black uppercase tracking-wide text-rose-600">Cost</p>
+                                <p className="text-sm font-black text-slate-950">Rs. {formatMoney(item.cost)}</p>
+                              </div>
+                              <div className="rounded-2xl bg-emerald-50 px-3 py-2 ring-1 ring-emerald-100">
+                                <p className="text-[9px] font-black uppercase tracking-wide text-emerald-700">Margin</p>
+                                <p className="text-sm font-black text-slate-950">{item.selling > 0 ? `${formatMoney(((item.selling - item.cost) / item.selling) * 100)}%` : "-"}</p>
+                              </div>
+                            </div>
+                          </summary>
+
+                          <div className="border-t-2 border-slate-100 bg-slate-50 p-4">
+                            <div className="mb-3 flex items-center justify-between gap-3">
+                              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Used inventories</p>
+                              <p className="text-[10px] font-bold text-slate-500">Locked from DB snapshot</p>
+                            </div>
+
+                            {materialCount === 0 ? (
+                              <div className="rounded-2xl bg-amber-50 px-3 py-3 text-xs font-bold text-amber-800 ring-1 ring-amber-100">
+                                Recipe/direct stock link छैन। Production item भए यो fake profit दिन्छ — link गर।
+                              </div>
+                            ) : (
+                              <div className="space-y-2">
+                                {item.materials.map((material, materialIndex) => {
+                                  const materialType = String(material.type || "").toLowerCase();
+                                  return (
+                                    <div key={`locked-material-${item.key}-${material.key || material.item_name}-${materialIndex}`} className="rounded-2xl bg-white px-3 py-3 ring-1 ring-slate-200">
+                                      <div className="flex items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                          <div className="flex flex-wrap items-center gap-2">
+                                            <p className="text-xs font-black leading-5 text-slate-900 break-words">{material.item_name}</p>
+                                            <span className={`rounded-full px-2 py-0.5 text-[8px] font-black ${materialType === "raw" ? "bg-emerald-50 text-emerald-700" : "bg-blue-50 text-blue-700"}`}>
+                                              {materialType === "raw" ? "Raw" : "Direct"}
+                                            </span>
+                                          </div>
+                                          <p className="mt-1 text-[11px] font-semibold text-slate-500">Used {formatMoney(material.quantity)} {material.unit}</p>
+                                        </div>
+                                        <p className="shrink-0 text-sm font-black text-slate-950">Rs. {formatMoney(material.cost)}</p>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        </details>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <div className="mt-4 rounded-[28px] bg-slate-950 p-4 text-white">
+                  <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/50">Locked table summary</p>
+                  <div className="mt-3 space-y-2 text-sm font-bold">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-white/65">Total Selling</span>
+                      <span>{selectedCostInsightBill.cost_locked ? `Rs. ${formatMoney(selectedCostInsightBill.selling)}` : "Processing..."}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-white/65">Inventory Cost</span>
+                      <span>{selectedCostInsightBill.cost_locked ? `Rs. ${formatMoney(selectedCostInsightBill.cost)}` : "Processing..."}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 border-t border-white/10 pt-2 text-base">
+                      <span>Net Profit</span>
+                      <span className="text-emerald-300">{selectedCostInsightBill.cost_locked ? `Rs. ${formatMoney(selectedCostInsightBill.profit)}` : "Processing..."}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {inventoryDeleteDialog ? (
+          <div className="fixed inset-0 z-[10045] flex items-end justify-center bg-slate-950/65 px-3 py-4 backdrop-blur-sm sm:items-center">
+            <div className="w-full max-w-md overflow-hidden rounded-[32px] bg-white shadow-[0_28px_90px_rgba(2,6,23,0.42)]">
+              <div className="relative bg-gradient-to-br from-rose-600 via-rose-500 to-orange-500 px-5 pb-5 pt-5 text-white">
+                <div className="absolute right-4 top-4 h-24 w-24 rounded-full bg-white/10 blur-2xl" />
+                <div className="relative flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/15 text-2xl ring-1 ring-white/20">
+                      ⚠️
+                    </div>
+                    <div>
+                      <p className="text-[11px] font-black uppercase tracking-[0.22em] text-white/70">Inventory Delete</p>
+                      <h3 className="mt-1 text-lg font-black leading-tight">
+                        {inventoryDeleteDialog.recipeCount + inventoryDeleteDialog.stockLinkCount > 0
+                          ? "Linked item found"
+                          : "Delete item?"}
+                      </h3>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={deletingInventoryItemId === inventoryDeleteDialog.item.id}
+                    onClick={() => setInventoryDeleteDialog(null)}
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white/15 text-2xl font-semibold leading-none text-white ring-1 ring-white/15 disabled:opacity-50"
+                    aria-label="Close delete popup"
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-5">
+                <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-base font-black text-slate-900">{inventoryDeleteDialog.item.item_name}</p>
+                      <p className="mt-1 text-xs font-semibold text-slate-500">
+                        Stock: {Number(inventoryDeleteDialog.item.current_stock || 0)} {inventoryDeleteDialog.item.unit} • Cost Rs. {formatMoney(Number(inventoryDeleteDialog.item.cost_per_unit || 0))}
+                      </p>
+                    </div>
+                    <span
+                      className={`shrink-0 rounded-full px-3 py-1 text-[10px] font-black ${
+                        inventoryDeleteDialog.item.item_type === "raw"
+                          ? "bg-emerald-100 text-emerald-700"
+                          : "bg-blue-100 text-blue-700"
+                      }`}
+                    >
+                      {inventoryDeleteDialog.item.item_type === "raw" ? "RAW" : "DIRECT"}
+                    </span>
+                  </div>
+                </div>
+
+                {inventoryDeleteDialog.recipeCount + inventoryDeleteDialog.stockLinkCount > 0 ? (
+                  <div className="mt-4 rounded-[24px] border border-rose-200 bg-rose-50 p-4">
+             
+              
+
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <div className="rounded-2xl bg-white px-3 py-3 ring-1 ring-rose-100">
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-rose-400">Recipe links</p>
+                        <p className="mt-1 text-xl font-black text-rose-700">{inventoryDeleteDialog.recipeCount}</p>
+                      </div>
+                      <div className="rounded-2xl bg-white px-3 py-3 ring-1 ring-rose-100">
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-rose-400">Direct links</p>
+                        <p className="mt-1 text-xl font-black text-rose-700">{inventoryDeleteDialog.stockLinkCount}</p>
+                      </div>
+                    </div>
+
+                    {inventoryDeleteDialog.linkedMenuNames.length > 0 ? (
+                      <div className="mt-3">
+                        <p className="text-[11px] font-bold text-rose-800">Used in:</p>
+                        <div className="mt-2 flex max-h-20 flex-wrap gap-2 overflow-y-auto">
+                          {inventoryDeleteDialog.linkedMenuNames.slice(0, 8).map((name) => (
+                            <span key={`delete-linked-${inventoryDeleteDialog.item.id}-${name}`} className="rounded-full bg-white px-3 py-1 text-[11px] font-bold text-slate-700 ring-1 ring-rose-100">
+                              {name}
+                            </span>
+                          ))}
+                          {inventoryDeleteDialog.linkedMenuNames.length > 8 ? (
+                            <span className="rounded-full bg-white px-3 py-1 text-[11px] font-bold text-slate-500 ring-1 ring-rose-100">
+                              +{inventoryDeleteDialog.linkedMenuNames.length - 8} more
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="mt-4 rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-sm font-black text-slate-900">Yo item kunai recipe/direct stock link maa use bhako chaina.</p>
+                    <p className="mt-2 text-xs leading-5 text-slate-600">
+                      Delete garepaxi stock item list bata permanently hataucha. This cannot be undone.
+                    </p>
+                  </div>
+                )}
+
+                <div className="mt-5 grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    disabled={deletingInventoryItemId === inventoryDeleteDialog.item.id}
+                    onClick={() => setInventoryDeleteDialog(null)}
+                    className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-700 disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={deletingInventoryItemId === inventoryDeleteDialog.item.id}
+                    onClick={() =>
+                      confirmInventoryDelete(
+                        inventoryDeleteDialog.recipeCount + inventoryDeleteDialog.stockLinkCount > 0
+                      )
+                    }
+                    className={`rounded-2xl px-4 py-3 text-sm font-black text-white shadow-[0_14px_30px_rgba(225,29,72,0.25)] disabled:opacity-60 ${
+                      inventoryDeleteDialog.recipeCount + inventoryDeleteDialog.stockLinkCount > 0
+                        ? "bg-rose-600"
+                        : "bg-slate-950"
+                    }`}
+                  >
+                    {deletingInventoryItemId === inventoryDeleteDialog.item.id
+                      ? "Deleting..."
+                      : inventoryDeleteDialog.recipeCount + inventoryDeleteDialog.stockLinkCount > 0
+                        ? "Unlink & Archive"
+                        : "Delete"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {selectedInventoryDetailItem ? (
+          <div className="fixed inset-0 z-[10030] flex items-end justify-center bg-slate-900/55 px-3 py-4 sm:items-center">
+            <div className="max-h-[88vh] w-full max-w-lg overflow-y-auto rounded-[28px] bg-white p-4 shadow-[0_24px_80px_rgba(15,23,42,0.30)]">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="truncate text-base font-black text-slate-900">{selectedInventoryDetailItem.item_name}</h3>
+                    <span
+                      className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${
+                        selectedInventoryDetailItem.item_type === "raw"
+                          ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100"
+                          : "bg-blue-50 text-blue-700 ring-1 ring-blue-100"
+                      }`}
+                    >
+                      {selectedInventoryDetailItem.item_type === "raw" ? "Raw" : "Direct"}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Stock {Number(selectedInventoryDetailItem.current_stock || 0)} {selectedInventoryDetailItem.unit} • Value Rs. {formatMoney(selectedInventoryStockValue)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setInventoryDetailItemId(null)}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    startInventoryEdit(selectedInventoryDetailItem);
+                    setShowAddInventoryItemForm(true);
+                    setInventoryTab("items");
+                    setInventoryDetailItemId(null);
+                    setInventorySummaryModal(null);
+                    scrollMainContentToTop();
+                  }}
+                  className="rounded-2xl bg-amber-50 px-4 py-3 text-sm font-bold text-amber-700 ring-1 ring-amber-100"
+                >
+                  Edit Item
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRestockInventoryItemId(String(selectedInventoryDetailItem.id));
+                    setInventoryTab("restock");
+                    setInventoryDetailItemId(null);
+                    setInventorySummaryModal(null);
+                    scrollMainContentToTop();
+                  }}
+                  className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-700 ring-1 ring-emerald-100"
+                >
+                  Add Stock
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAdjustmentInventoryItemId(String(selectedInventoryDetailItem.id));
+                    setInventoryTab("history");
+                    setInventoryDetailItemId(null);
+                    setInventorySummaryModal(null);
+                    scrollMainContentToTop();
+                  }}
+                  className="rounded-2xl bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700 ring-1 ring-rose-100"
+                >
+                  Adjust Stock
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const id = selectedInventoryDetailItem.id;
+                    setInventoryDetailItemId(null);
+                    setInventorySummaryModal(null);
+                    await deleteInventoryItem(id);
+                  }}
+                  className="rounded-2xl bg-slate-950 px-4 py-3 text-sm font-black text-white shadow-[0_12px_30px_rgba(15,23,42,0.22)] transition active:scale-[0.98]"
+                >
+                  Delete Item
+                </button>
+              </div>
+
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <p className="text-xs font-semibold text-slate-500">Low stock at</p>
+                  <p className="mt-1 text-sm font-black text-slate-900">
+                    {Number(selectedInventoryDetailItem.low_stock_threshold || 0)} {selectedInventoryDetailItem.unit}
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <p className="text-xs font-semibold text-slate-500">Cost per unit</p>
+                  <p className="mt-1 text-sm font-black text-slate-900">
+                    Rs. {formatMoney(Number(selectedInventoryDetailItem.cost_per_unit || 0))}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <h4 className="text-sm font-bold text-slate-900">Linked menu items</h4>
+                {selectedInventoryLinkedMenus.length === 0 ? (
+                  <p className="mt-2 text-xs text-slate-500">Yo item ahile kunai menu sanga linked chaina.</p>
+                ) : (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {selectedInventoryLinkedMenus.map((name) => (
+                      <span key={`linked-menu-${selectedInventoryDetailItem.id}-${name}`} className="rounded-full bg-white px-3 py-1 text-[11px] font-semibold text-slate-700 ring-1 ring-slate-200">
+                        {name}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <h4 className="text-sm font-bold text-slate-900">Recent purchase history</h4>
+                {selectedInventoryPurchaseHistory.length === 0 ? (
+                  <p className="mt-2 text-xs text-slate-500">Purchase history chaina.</p>
+                ) : (
+                  <div className="mt-3 space-y-2">
+                    {selectedInventoryPurchaseHistory.slice(0, 5).map((tx) => (
+                      <div key={`detail-purchase-${tx.id}`} className="rounded-xl bg-white px-3 py-3 ring-1 ring-slate-200">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-xs font-bold text-slate-800">
+                            {Number(tx.quantity || 0)} {selectedInventoryDetailItem.unit}
+                          </p>
+                          <p className="text-[11px] text-slate-500">{new Date(tx.created_at || "").toLocaleString()}</p>
+                        </div>
+                        {tx.note ? <p className="mt-1 text-[11px] text-slate-500">{tx.note}</p> : null}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : null}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderPasswordsPopup() {
+    return (
+      <div className="space-y-4 pb-4">
+        {sectionTitle("Passwords", "Change owner/staff passwords safely", "🔐")}
+
+        <div className="rounded-[30px] border border-white/70 bg-white/85 p-4 shadow-[0_18px_55px_rgba(15,23,42,0.08)] ring-1 ring-slate-900/5 backdrop-blur-xl space-y-4">
+          <div className="rounded-[22px] border border-amber-200 bg-amber-50 p-4">
+            <p className="text-sm font-black text-amber-800">Owner verification required</p>
+            <p className="mt-2 text-xs leading-5 text-amber-700">
+              Current owner password is required to change owner or staff password.
+            </p>
+          </div>
+
+          <div className="rounded-[22px] border border-slate-200 bg-slate-50 p-4">
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-bold text-slate-700">Current Owner Password</label>
+                <div className="relative mt-2">
+                  <input
+                    type={showCurrentOwnerPassword ? "text" : "password"}
+                    value={currentOwnerPassword}
+                    onChange={(event) => setCurrentOwnerPassword(event.target.value)}
+                    placeholder="Required for password change"
+                    className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 pr-12 text-sm font-semibold text-slate-800 outline-none placeholder:text-slate-400 focus:border-blue-400"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCurrentOwnerPassword((prev) => !prev)}
+                    className="absolute inset-y-0 right-3 flex items-center text-lg text-slate-500"
+                    aria-label={showCurrentOwnerPassword ? "Hide current password" : "Show current password"}
+                  >
+                    {showCurrentOwnerPassword ? "🙈" : "👁️"}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-bold text-slate-700">New Owner Password</label>
+                <div className="relative mt-2">
+                  <input
+                    type={showNewOwnerPassword ? "text" : "password"}
+                    value={newOwnerPassword}
+                    onChange={(event) => setNewOwnerPassword(event.target.value)}
+                    placeholder="Leave empty to keep current owner password"
+                    className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 pr-12 text-sm font-semibold text-slate-800 outline-none placeholder:text-slate-400 focus:border-blue-400"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewOwnerPassword((prev) => !prev)}
+                    className="absolute inset-y-0 right-3 flex items-center text-lg text-slate-500"
+                    aria-label={showNewOwnerPassword ? "Hide new owner password" : "Show new owner password"}
+                  >
+                    {showNewOwnerPassword ? "🙈" : "👁️"}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-bold text-slate-700">New Staff Password</label>
+                <div className="relative mt-2">
+                  <input
+                    type={showNewStaffPassword ? "text" : "password"}
+                    value={newStaffPassword}
+                    onChange={(event) => setNewStaffPassword(event.target.value)}
+                    placeholder="Leave empty to keep current staff password"
+                    className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 pr-12 text-sm font-semibold text-slate-800 outline-none placeholder:text-slate-400 focus:border-blue-400"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewStaffPassword((prev) => !prev)}
+                    className="absolute inset-y-0 right-3 flex items-center text-lg text-slate-500"
+                    aria-label={showNewStaffPassword ? "Hide new staff password" : "Show new staff password"}
+                  >
+                    {showNewStaffPassword ? "🙈" : "👁️"}
+                  </button>
+                </div>
+              </div>
+
+              <label className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-white p-4">
+                <input
+                  type="checkbox"
+                  checked={logoutAllDevicesAfterPasswordChange}
+                  onChange={(event) => setLogoutAllDevicesAfterPasswordChange(event.target.checked)}
+                  className="mt-1 h-4 w-4 accent-slate-900"
+                />
+                <span>
+                  <span className="block text-sm font-black text-slate-800">Logout all devices after password change</span>
+                  <span className="mt-1 block text-xs font-semibold leading-5 text-slate-500">
+                    Default off. Turn this on only when staff changed, phone is lost, or password was shared by mistake.
+                  </span>
+                </span>
+              </label>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                setPopupView("settings");
+                setShowHeaderMenu(false);
+              }}
+              className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700"
+            >
+              Back
+            </button>
+            <button
+              type="button"
+              onClick={savePasswords}
+              disabled={savingPasswords}
+              className={`rounded-2xl px-4 py-3 text-sm font-bold text-white ${savingPasswords ? "bg-slate-400" : "bg-blue-600"}`}
+            >
+              {savingPasswords ? "Saving..." : "Save Password"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderSettingsPopup() {
+    const currentDeviceId = typeof window !== "undefined" ? localStorage.getItem("restrofy_device_id") : null;
+
+    return (
+      <div className="manage-subpage-slide min-h-full bg-slate-50 px-3 pb-6 pt-5">
+        <button
+          type="button"
+          onClick={() => {
+            setPopupView(null);
+            setShowHeaderMenu(false);
+            scrollMainContentToTop();
+          }}
+          className="mb-4 inline-flex items-center rounded-full bg-white px-3.5 py-2 text-xs font-black text-slate-700 shadow-sm ring-1 ring-slate-200 active:scale-[0.98]"
+        >
+          ← Back Manage
+        </button>
+        <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Settings</p>
+              <h2 className="mt-1 text-xl font-black text-slate-900">Account & Device</h2>
+              <p className="mt-1 text-xs font-semibold text-slate-500">
+                Manage logout and trusted devices from here.
+              </p>
+            </div>
+            <div className="hidden" />
+          </div>
+
+          <div className="space-y-3">
+            <button
+              type="button"
+              onClick={() => {
+                setPopupView("passwords");
+                setShowHeaderMenu(false);
+                scrollMainContentToTop();
+              }}
+              className="flex w-full items-start gap-3 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-4 text-left hover:bg-blue-100"
+            >
+              <span className="mt-0.5 text-lg">🔐</span>
+              <span>
+                <span className="block text-sm font-black text-blue-800">Passwords</span>
+                <span className="mt-1 block text-xs font-semibold leading-5 text-blue-600">
+                  Change owner/staff password and choose whether to logout all devices.
+                </span>
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={logoutOwner}
+              className="flex w-full items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-left hover:bg-slate-100"
+            >
+              <span className="mt-0.5 text-lg">🚪</span>
+              <span>
+                <span className="block text-sm font-black text-slate-800">Logout</span>
+                <span className="mt-1 block text-xs font-semibold leading-5 text-slate-500">
+                  Exit app but keep this device trusted for next time.
+                </span>
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={removeTrustedDevice}
+              className="flex w-full items-start gap-3 rounded-2xl border border-rose-100 bg-rose-50 px-4 py-4 text-left hover:bg-rose-100"
+            >
+              <span className="mt-0.5 text-lg">🛡️</span>
+              <span>
+                <span className="block text-sm font-black text-rose-700">Remove This Device</span>
+                <span className="mt-1 block text-xs font-semibold leading-5 text-rose-500">
+                  This phone/browser will need password next time.
+                </span>
+              </span>
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-base font-black text-slate-900">Trusted Devices</h3>
+              <p className="mt-1 text-xs font-semibold text-slate-500">
+                Active devices using this restaurant app.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={fetchTrustedDevicesForSettings}
+              disabled={loadingSettingsDevices}
+              className="rounded-2xl border border-slate-200 px-3 py-2 text-xs font-black text-slate-700 disabled:opacity-50"
+            >
+              {loadingSettingsDevices ? "Loading" : "Refresh"}
+            </button>
+          </div>
+
+          {loadingSettingsDevices ? (
+            <div className="rounded-2xl bg-slate-50 px-4 py-5 text-center text-sm font-semibold text-slate-500">
+              Loading trusted devices...
+            </div>
+          ) : settingsDevices.length === 0 ? (
+            <div className="rounded-2xl bg-slate-50 px-4 py-5 text-center text-sm font-semibold text-slate-500">
+              No trusted devices found.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {settingsDevices.map((device) => {
+                const isCurrentDevice = Boolean(currentDeviceId && device.device_id === currentDeviceId);
+                const isRemoving = removingTrustedDeviceId === device.id;
+
+                return (
+                  <div
+                    key={device.id}
+                    className="flex items-center justify-between gap-3 rounded-2xl border border-slate-100 bg-slate-50 px-3 py-3"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="truncate text-sm font-black text-slate-800">
+                          {formatTrustedDeviceName(device)}
+                        </p>
+                        {isCurrentDevice && (
+                          <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-black text-emerald-700">
+                            This device
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-1 text-xs font-semibold capitalize text-slate-500">
+                        {device.panel || "device"} · {formatTrustedDeviceLastUsed(device.last_used_at)}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeTrustedDeviceFromList(device)}
+                      disabled={isRemoving || !device.device_id}
+                      className="shrink-0 rounded-xl bg-rose-600 px-3 py-2 text-xs font-black text-white disabled:bg-slate-300"
+                    >
+                      {isRemoving ? "Removing" : "Remove"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  function renderTaxDiscountPopup() {
+    return (
+      <div className="manage-subpage-slide mx-auto w-full max-w-md space-y-4 pb-24">
+        <div className="rounded-[28px] border border-slate-100 bg-white p-4 shadow-[0_14px_38px_rgba(15,23,42,0.06)]">
+          <div className="mb-4 flex items-start justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-black uppercase tracking-[0.18em] text-red-500">Billing setup</p>
+              <h2 className="mt-1 text-xl font-black tracking-tight text-slate-950">Tax & Discount</h2>
+              <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">
+                Manage बाट rule set हुन्छ. Payment मा tax auto लाग्छ, discount enabled भए मात्र discount option देखिन्छ.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setPopupView(null);
+                scrollMainContentToTop();
+              }}
+              className="rounded-full bg-slate-100 px-3 py-2 text-xs font-black text-slate-600"
+            >
+              Close
+            </button>
+          </div>
+
+          <div className="space-y-3">
+            <div className="rounded-[22px] border border-slate-100 bg-slate-50 p-3">
+              <label className="flex items-center justify-between gap-3">
+                <span>
+                  <span className="block text-sm font-black text-slate-950">Enable Tax</span>
+                  <span className="mt-0.5 block text-[11px] font-semibold text-slate-500">ON हुँदा bill मा tax auto calculate हुन्छ.</span>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={enableTax}
+                  onChange={(event) => setEnableTax(event.target.checked)}
+                  className="h-5 w-5 accent-red-600"
+                />
+              </label>
+
+              {enableTax && (
+                <div className="mt-3">
+                  <label className="mb-1 block text-xs font-black text-slate-700">Tax %</label>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min="0"
+                    max="100"
+                    value={defaultTaxPercent}
+                    onChange={(event) => setDefaultTaxPercent(Number(event.target.value))}
+                    className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-950 outline-none focus:border-red-400 focus:ring-4 focus:ring-red-50"
+                    placeholder="13"
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-[22px] border border-slate-100 bg-slate-50 p-3">
+              <label className="flex items-center justify-between gap-3">
+                <span>
+                  <span className="block text-sm font-black text-slate-950">Enable Discount</span>
+                  <span className="mt-0.5 block text-[11px] font-semibold text-slate-500">ON हुँदा payment मा discount option देखिन्छ.</span>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={enableDiscount}
+                  onChange={(event) => setEnableDiscount(event.target.checked)}
+                  className="h-5 w-5 accent-red-600"
+                />
+              </label>
+            </div>
+
+            <div className="rounded-[22px] border border-slate-200 bg-slate-50 p-3">
+              <p className="text-xs font-black text-red-700">Current rule</p>
+              <p className="mt-1 text-sm font-bold text-slate-900">
+                Tax: {enableTax ? `${Number(defaultTaxPercent || 0)}%` : "OFF"} · Discount: {enableDiscount ? "ON" : "OFF"}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={saveTaxDiscountSettings}
+              disabled={savingTaxDiscount}
+              className={`w-full rounded-2xl px-4 py-3.5 text-sm font-black text-white shadow-[0_14px_32px_rgba(220,38,38,0.28)] ${
+                savingTaxDiscount ? "bg-slate-400" : "bg-red-600 active:scale-[0.98]"
+              }`}
+            >
+              {savingTaxDiscount ? "Saving..." : "Save Tax & Discount"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderMainSection() {
+    if (desktopInventoryContentOpen) {
+      return renderInventoryPopup();
+    }
+
+    if (popupView === "menuItems") {
+      return renderMenuItemsPopup();
+    }
+
+    if (popupView === "passwords") {
+      return renderPasswordsPopup();
+    }
+
+    if (popupView === "inventory") {
+      return renderInventoryPopup();
+    }
+
+    if (popupView === "settings") {
+      if (isStaffMode) {
+        return renderDashboardView();
+      }
+      return renderSettingsPopup();
+    }
+
+    if (popupView === "taxDiscount") {
+      if (isStaffMode) {
+        return renderDashboardView();
+      }
+      return renderTaxDiscountPopup();
+    }
+
+    if (miniView === "dashboard") {
+      return renderDashboardView();
+    }
+
+    if (miniView === "order") {
+      return renderOrderView();
+    }
+
+    if (miniView === "manage") {
+      return renderManageView();
+    }
+
+    if (miniView === "kitchen") {
+      return renderKitchenView();
+    }
+
+    if (miniView === "salesOverview") {
+      return renderSalesOverviewView();
+    }
+
+    if (miniView === "report") {
+      return renderReportView();
+    }
+
+    return renderPaymentHistoryView();
+  }
+
+const shellClass =
+  "w-full min-h-screen bg-white text-[15px] text-slate-950 lg:bg-slate-50";
+
+if (!restaurantIdReady) {
+  return null;
+}
+
+if (!restaurantId) {
+  return (
+    <>
+      {renderFeedbackOverlays()}
+      <main className="min-h-screen w-full bg-white">
+        <div className={`${shellClass} flex items-center justify-center p-4`}>
+          <div className="rounded-3xl bg-white p-5 text-center text-sm shadow border border-slate-200">
+            <div className="font-semibold text-slate-900">Restaurant ID loading...</div>
+            <div className="mt-2 text-slate-600">
+              Open this page once with the full link like /mini?id=1 while online, then offline refresh will work from cache.
+            </div>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="mt-4 rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      </main>
+    </>
+  );
+}
+
+if (showSplash) {
+  return <AppSplash />;
+}
+  if (checkingRestaurant) {
+    return (
+      <>
+        {renderFeedbackOverlays()}
+        <main className="min-h-screen w-full bg-white">
+        <div className={`${shellClass} flex items-center justify-center p-4`}>
+          <div className="rounded-3xl bg-white p-5 text-center text-sm font-medium shadow border border-slate-200">
+            Loading...
+          </div>
+        </div>
+      </main>
+      </>
+    );
+  }
+
+  if (!restaurantExists) {
+    return (
+      <>
+        {renderFeedbackOverlays()}
+        <main className="min-h-screen w-full bg-white">
+        <div className={`${shellClass} flex items-center justify-center p-4`}>
+          <div className="rounded-3xl bg-white p-5 text-center text-sm shadow border border-slate-200">
+            <div className="font-medium text-red-600">Restaurant link not found. Please use the correct restaurant URL.</div>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="mt-4 rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      </main>
+      </>
+    );
+  }
+
+  if (!isSetupDone) {
+    return (
+      <>
+        {renderFeedbackOverlays()}
+        <main className="min-h-screen w-full bg-white">
+          <div className={`${shellClass} flex items-center justify-center p-4`}>
+            <div className="max-w-sm rounded-3xl bg-white p-5 text-center text-sm shadow border border-slate-200">
+              <div className="text-lg font-black text-slate-900">Secure setup required</div>
+              <div className="mt-2 text-slate-600">
+                This restaurant has not completed secure password setup. Use the one-time setup link generated from Supabase/admin.
+              </div>
+              {restaurantId ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.location.href = `/launcher?id=${restaurantId}`;
+                  }}
+                  className="mt-4 rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+                >
+                  Go to Launcher
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </main>
+      </>
+    );
+  }
+
+  return (
+    <>
+      {renderFeedbackOverlays()}
+      <style jsx global>{`
+        @keyframes manageSubpageSlideIn {
+          from { transform: translateX(28px); opacity: 0.001; }
+          to { transform: translateX(0); opacity: 1; }
+        }
+        .manage-subpage-slide {
+          animation: manageSubpageSlideIn 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+          will-change: transform, opacity;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .manage-subpage-slide { animation: none; }
+        }
+      `}</style>
+      {popupView === "menuItems" && menuManageMode === "items" && menuItemWorkMode === "list" && (
+        <button
+          type="button"
+          onClick={() => {
+            cancelEditMenuItem();
+            resetNewMenuItemForm();
+            setMenuItemWorkMode("add");
+            setShowNewItemCategoryPicker(false);
+            scrollMainContentToTop();
+          }}
+          className="fixed bottom-6 right-5 z-[999] flex items-center gap-2 rounded-full bg-red-600 px-5 py-4 text-base font-black text-white shadow-[0_18px_45px_rgba(220,38,38,0.42)] transition active:scale-[0.96]"
+          aria-label="Add menu item"
+        >
+          <span className="text-2xl leading-none">+</span>
+          <span>Add</span>
+        </button>
+      )}
+      <main className="min-h-screen w-full bg-white lg:bg-[radial-gradient(circle_at_top_left,#fee2e2_0,#f8fafc_30%,#eef2ff_100%)]">
+      <div className={`${shellClass} h-screen overflow-hidden relative lg:flex lg:bg-transparent`}>
+        {renderDesktopSidebar()}
+
+        <div className="flex h-full min-w-0 flex-1 flex-col px-3 lg:px-0">
+          {renderDesktopTopbar()}
+          
+          {!popupView && miniView !== "report" && miniView !== "paymentHistory" && (
+          <div className="shrink-0 pt-3 pb-2 lg:hidden">
+            <div className="rounded-[28px] border border-slate-100 bg-white px-4 py-4 text-slate-950 shadow-[0_14px_36px_rgba(15,23,42,0.08)]">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex min-w-0 items-start gap-3">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-slate-100 text-sm font-black text-slate-800 ring-1 ring-slate-200">
+                    {restaurantLogoUrl ? (
+                      <img
+                        src={restaurantLogoUrl}
+                        alt={restaurantName || "Restaurant"}
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      getRestaurantInitial()
+                    )}
+                  </div>
+
+                  <div className="min-w-0 pt-0.5">
+                    <h1 className="truncate text-[20px] font-black leading-tight">
+                      {restaurantName || "Restaurant"}
+                    </h1>
+                    <p className="mt-1 text-[12px] font-black text-red-600">{isStaffMode ? "Staff Panel" : "Dashboard"}</p>
+                    <p className="text-[11px] font-semibold text-slate-400">
+                      {new Date().toLocaleDateString()}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          )}
+
+
+          <div ref={contentScrollRef} className={`min-h-0 flex-1 overflow-y-auto overscroll-contain lg:px-8 lg:py-7 xl:px-10 ${popupView || desktopInventoryContentOpen || miniView === "report" || miniView === "paymentHistory" ? "pb-4 lg:pb-8" : "pb-24 lg:pb-8"}`}>
+            {isSwitching ? (
+              <div className="flex h-full items-center justify-center text-sm text-slate-400">
+                Loading...
+              </div>
+            ) : (
+              renderMainSection()
+            )}
+          </div>
+        </div>
+
+        {showTakeOrderModal && (
+          <div className="absolute inset-0 z-50">
+            <div
+              className="absolute inset-0 bg-slate-950/40 backdrop-blur-[1px]"
+              onClick={closeTakeOrderModal}
+            />
+
+            <div className="absolute inset-0 flex items-end justify-center">
+              <div className="relative flex h-full w-full flex-col overflow-hidden rounded-none bg-[#eef4ff] shadow-2xl">
+                <div className="shrink-0 border-b border-slate-200 bg-white/95 px-3 pb-2.5 pt-2.5 backdrop-blur-xl">
+                  <div className="flex items-center gap-2">
+                    {takeOrderStep === "items" ? (
+                      <button
+                        type="button"
+                        onClick={() => { setTakeOrderStep("table"); setTakeOrderSearch(""); setShowTakeOrderSearch(false); }}
+                        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-lg font-bold text-slate-700 shadow-sm"
+                        aria-label="Back to tables"
+                      >
+                        ←
+                      </button>
+                    ) : (
+                      <div className="h-9 w-9 shrink-0" />
+                    )}
+
+                    <div className="min-w-0 flex-1">
+                      <h2 className="truncate text-[18px] font-black tracking-tight text-slate-900">
+                        {takeOrderStep === "table" ? "Select Table / Cabin" : `${getTakeOrderPlaceType(takeOrderTableNumber)} ${takeOrderTableNumber}`} 
+                      </h2>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {takeOrderStep === "items" && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowTakeOrderSearch((prev) => {
+                              const next = !prev;
+                              if (prev) setTakeOrderSearch("");
+                              return next;
+                            });
+                          }}
+                          className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-base shadow-sm transition ${
+                            showTakeOrderSearch
+                              ? "border-blue-200 bg-blue-50 text-blue-700"
+                              : "border-slate-200 bg-white text-slate-700"
+                          }`}
+                          aria-label="Search items"
+                        >
+                          🔍
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={closeTakeOrderModal}
+                        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-[22px] text-slate-700 shadow-sm"
+                        aria-label="Close"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+
+                  {takeOrderStep === "items" && showTakeOrderSearch && (
+                    <div className="pt-2">
+                      <input
+                        type="text"
+                        value={takeOrderSearch}
+                        onChange={(e) => setTakeOrderSearch(e.target.value)}
+                        placeholder="Search items"
+                        autoFocus
+                        className="h-10 w-full rounded-[14px] border border-slate-200 bg-slate-50 px-3 text-[13px] text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100"
+                      />
+                    </div>
+                  )}
+                </div>
+                {takeOrderStep === "table" ? (
+                  <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+                    <div className="space-y-3 pb-8">
+                      <div className="rounded-[24px] border border-white/70 bg-white/90 p-3 shadow-[0_14px_34px_rgba(15,23,42,0.08)] backdrop-blur-sm ring-1 ring-slate-200/70">
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <h3 className="text-[14px] font-black tracking-tight text-slate-900">Select Table</h3>
+                            <div className="mt-1 inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600 ring-1 ring-slate-200">
+                              Free {takeOrderTableOccupancy.freeTables} · Occupied {takeOrderTableOccupancy.occupiedTables}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setTakeOrderVisibleTableCount((prev) => Math.min(prev + 3, 99))
+                            }
+                            disabled={!canShowMoreTables}
+                            className="shrink-0 rounded-full bg-rose-600 px-3 py-1.5 text-[10px] font-black text-white shadow-[0_8px_18px_rgba(225,29,72,0.24)] transition active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            + Table
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-2">
+                          {takeOrderVisibleTables.map((tableNumber) => {
+                            const isOccupied = occupiedTableNumbers.has(tableNumber);
+                            const isSelected = takeOrderTableNumber === tableNumber;
+
+                            return (
+                              <button
+                                key={`table-box-${tableNumber}`}
+                                type="button"
+                                onClick={() => {
+                                  if (!isOccupied) handleSelectTakeOrderTable(tableNumber);
+                                }}
+                                disabled={isOccupied}
+                                className={`group relative min-h-[86px] overflow-hidden rounded-[18px] border px-3 pb-3 pt-2.5 text-left transition-all duration-150 ${
+                                  isOccupied
+                                    ? "cursor-not-allowed border-rose-200/90 bg-gradient-to-br from-rose-50 to-white shadow-[0_10px_24px_rgba(244,63,94,0.10)]"
+                                    : isSelected
+                                      ? "border-blue-400 bg-gradient-to-br from-[#ecf4ff] via-white to-[#eef7f3] shadow-[0_16px_36px_rgba(37,99,235,0.22)] ring-2 ring-blue-500/80"
+                                      : "border-emerald-200/90 bg-gradient-to-br from-[#ecfbf4] via-white to-[#f3fbf7] shadow-[0_14px_30px_rgba(16,185,129,0.14)] active:scale-[0.98]"
+                                }`}
+                              >
+                                <div className={`absolute inset-x-0 top-0 h-[2px] ${
+                                  isOccupied
+                                    ? "bg-gradient-to-r from-rose-400 to-rose-500"
+                                    : isSelected
+                                      ? "bg-gradient-to-r from-blue-500 to-cyan-400"
+                                      : "bg-gradient-to-r from-emerald-400 to-teal-400"
+                                }`} />
+                                <p className="mt-1 text-[9px] font-bold uppercase tracking-[0.12em] text-slate-400">
+                                  Table
+                                </p>
+                                <div className="mt-1 flex items-end justify-between gap-1">
+                                  <p className="text-[26px] font-black leading-none text-slate-900">
+                                    {tableNumber}
+                                  </p>
+                                  {!isOccupied && (
+                                    <span className={`h-3 w-3 rounded-full ${isSelected ? "bg-blue-500 shadow-[0_0_0_4px_rgba(59,130,246,0.15)]" : "bg-emerald-500 shadow-[0_0_0_4px_rgba(16,185,129,0.12)]"}`} />
+                                  )}
+                                </div>
+                                <span
+                                  className={`mt-2 inline-flex rounded-full px-2 py-1 text-[9px] font-bold shadow-sm ${
+                                    isOccupied
+                                      ? "bg-rose-600 text-white"
+                                      : isSelected
+                                        ? "bg-blue-600 text-white"
+                                        : "bg-emerald-600 text-white"
+                                  }`}
+                                >
+                                  {isOccupied ? "Occupied" : isSelected ? "Selected" : "Free"}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        <div className="mt-4 border-t border-slate-200 pt-3">
+                          <div className="mb-2 flex items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <h3 className="text-[14px] font-black tracking-tight text-slate-900">Select Cabin</h3>
+                              <div className="mt-1 inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600 ring-1 ring-slate-200">
+                                Free {takeOrderTableOccupancy.freeCabins} · Occupied {takeOrderTableOccupancy.occupiedCabins}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-2">
+                            {takeOrderVisibleCabins.map((cabinNumber) => {
+                              const isOccupied = occupiedTableNumbers.has(cabinNumber);
+                              const isSelected = takeOrderTableNumber === cabinNumber;
+
+                              return (
+                                <button
+                                  key={`cabin-box-${cabinNumber}`}
+                                  type="button"
+                                  onClick={() => {
+                                    if (!isOccupied) handleSelectTakeOrderTable(cabinNumber);
+                                  }}
+                                  disabled={isOccupied}
+                                  className={`group relative min-h-[86px] overflow-hidden rounded-[18px] border px-3 pb-3 pt-2.5 text-left transition-all duration-150 ${
+                                    isOccupied
+                                      ? "cursor-not-allowed border-rose-200/90 bg-gradient-to-br from-rose-50 to-white shadow-[0_10px_24px_rgba(244,63,94,0.10)]"
+                                      : isSelected
+                                        ? "border-violet-400 bg-gradient-to-br from-violet-50 via-white to-blue-50 shadow-[0_16px_36px_rgba(124,58,237,0.20)] ring-2 ring-violet-500/75"
+                                        : "border-violet-200/90 bg-gradient-to-br from-violet-50 via-white to-slate-50 shadow-[0_14px_30px_rgba(124,58,237,0.12)] active:scale-[0.98]"
+                                  }`}
+                                >
+                                  <div className={`absolute inset-x-0 top-0 h-[2px] ${
+                                    isOccupied
+                                      ? "bg-gradient-to-r from-rose-400 to-rose-500"
+                                      : isSelected
+                                        ? "bg-gradient-to-r from-violet-500 to-blue-400"
+                                        : "bg-gradient-to-r from-violet-400 to-fuchsia-400"
+                                  }`} />
+                                  <p className="mt-1 text-[9px] font-bold uppercase tracking-[0.12em] text-slate-400">
+                                    Cabin
+                                  </p>
+                                  <div className="mt-1 flex items-end justify-between gap-1">
+                                    <p className="text-[26px] font-black leading-none text-slate-900">
+                                      {cabinNumber}
+                                    </p>
+                                    {!isOccupied && (
+                                      <span className={`h-3 w-3 rounded-full ${isSelected ? "bg-violet-500 shadow-[0_0_0_4px_rgba(124,58,237,0.14)]" : "bg-violet-500 shadow-[0_0_0_4px_rgba(124,58,237,0.12)]"}`} />
+                                    )}
+                                  </div>
+                                  <span
+                                    className={`mt-2 inline-flex rounded-full px-2 py-1 text-[9px] font-bold shadow-sm ${
+                                      isOccupied
+                                        ? "bg-rose-600 text-white"
+                                        : isSelected
+                                          ? "bg-violet-600 text-white"
+                                          : "bg-violet-600 text-white"
+                                    }`}
+                                  >
+                                    {isOccupied ? "Occupied" : isSelected ? "Selected" : "Free"}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setTakeOrderVisibleCabinCount((prev) => Math.min(prev + 3, 30))
+                            }
+                            disabled={!canShowMoreCabins}
+                            className="mt-3 rounded-full bg-rose-600 px-3 py-1.5 text-[10px] font-black text-white shadow-[0_8px_18px_rgba(225,29,72,0.24)] transition active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            + Cabin
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+                      <div className="space-y-3 pb-28">
+                        <div className="rounded-[18px] border border-slate-200 bg-white p-2 shadow-[0_10px_24px_rgba(15,23,42,0.06)] ring-1 ring-slate-200/70">
+                          {!takeOrderSearch.trim() && popularTakeOrderItems.length > 0 && (
+                            <div className="rounded-[14px] border border-amber-100 bg-amber-50/70 p-2 shadow-sm">
+                              <div className="mb-1.5 flex items-center justify-between gap-2">
+                                <p className="text-[9px] font-black uppercase tracking-[0.16em] text-amber-700">Fast Picks</p>
+                              </div>
+                              <div className="-mx-1 flex gap-1.5 overflow-x-auto px-1 pb-1">
+                                {popularTakeOrderItems.map((item) => {
+                                  const hasVariants = getMenuVariantCount(item.id) > 0;
+                                  const activeQty = takeOrderQuantityByMenuId[item.id] || 0;
+
+                                  return (
+                                    <button
+                                      key={`popular-fast-${item.id}`}
+                                      type="button"
+                                      onClick={() => handleTakeOrderMenuClick(item)}
+                                      className={`shrink-0 rounded-xl border px-2.5 py-1.5 text-left shadow-sm active:scale-[0.98] ${
+                                        activeQty > 0
+                                          ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                                          : "border-slate-200 bg-white text-slate-800"
+                                      }`}
+                                    >
+                                      <p className="max-w-[104px] truncate text-[10px] font-black">{item.item_name}</p>
+                                      <p className="mt-0.5 text-[9px] font-bold text-rose-600">{getMenuItemPriceRange(item.id)}</p>
+                                      <p className="mt-0.5 text-[8px] font-semibold text-slate-400">
+                                        {hasVariants ? "Variant" : activeQty > 0 ? `x${activeQty}` : "+ Add"}
+                                      </p>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="mt-2 grid min-h-[360px] grid-cols-[96px_minmax(0,1fr)] gap-2">
+                            <aside className="max-h-[520px] overflow-y-auto rounded-[14px] border border-slate-200 bg-slate-50 p-1 shadow-inner">
+                              <button
+                                type="button"
+                                onClick={() => setTakeOrderSelectedCategory("all")}
+                                className={`mb-1 w-full rounded-xl px-2 py-1.5 text-left text-[10px] font-black transition ${
+                                  takeOrderSelectedCategory === "all"
+                                    ? "bg-slate-950 text-white shadow-[0_10px_22px_rgba(15,23,42,0.22)]"
+                                    : "bg-white text-slate-700 ring-1 ring-slate-200"
+                                }`}
+                              >
+                                <span className="block truncate">All</span>
+                              </button>
+
+                              <div className="space-y-1">
+                                {visibleTakeOrderCategories.map((category) => {
+                                  const isActive = takeOrderSelectedCategory === category;
+                                  return (
+                                    <button
+                                      key={`take-order-side-category-${category}`}
+                                      type="button"
+                                      onClick={() => setTakeOrderSelectedCategory(category)}
+                                      className={`w-full rounded-xl px-2.5 py-2.5 text-left text-[12px] font-bold leading-[16px] transition ${
+                                        isActive
+                                          ? "bg-blue-600 text-white shadow-[0_10px_22px_rgba(37,99,235,0.25)]"
+                                          : "bg-white text-slate-700 ring-1 ring-slate-200 active:scale-[0.98]"
+                                      }`}
+                                    >
+                                      <span className="line-clamp-2 break-words">{category}</span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </aside>
+
+                            <div className="min-w-0">
+
+                          {filteredTakeOrderMenuItems.length === 0 ? (
+                            <div className="rounded-[16px] border border-dashed border-slate-200 bg-slate-50 px-3 py-10 text-center text-xs text-slate-500">
+                              {takeOrderSearch.trim()
+                                ? "Search match bhetena"
+                                : takeOrderSelectedCategory === "all"
+                                  ? "Menu items chaina"
+                                  : "Yo category ma item assign bhako chaina"}
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-4">
+                              {filteredTakeOrderMenuItems.map((item) => {
+                                const activeQty = takeOrderQuantityByMenuId[item.id] || 0;
+                                const simpleCartItem = getSimpleTakeOrderCartItem(item.id);
+                                const itemCategory = getTakeOrderItemCategory(item.id);
+                                const hasVariants = getMenuVariantCount(item.id) > 0;
+
+                                return (
+                                  <div
+                                    key={`premium-menu-${item.id}`}
+                                    className={`relative flex h-[225px] flex-col rounded-[14px] border bg-white p-2 text-left shadow-[0_4px_12px_rgba(15,23,42,0.06)] transition active:scale-[0.98] ${
+                                      activeQty > 0
+                                        ? "border-emerald-300 ring-1 ring-emerald-200"
+                                        : "border-slate-200"
+                                    }`}
+                                  >
+                                    {hasVariants && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleTakeOrderMenuClick(item)}
+                                        className="absolute left-0 top-10 z-10 flex h-[70px] w-6 items-center justify-center rounded-r-md bg-orange-500 text-white shadow-sm"
+                                        aria-label="Select options"
+                                      >
+                                        <span className="-rotate-90 whitespace-nowrap text-[9px] font-black leading-none">
+                                          {getMenuVariantCount(item.id)} Options
+                                        </span>
+                                      </button>
+                                    )}
+
+                                    <div className="flex min-h-0 flex-1 flex-col">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleTakeOrderMenuClick(item)}
+                                        className={`block w-full flex-none text-left ${hasVariants ? "pl-6" : ""}`}
+                                      >
+                                        <div className="flex h-24 w-full flex-none items-center justify-center rounded-[12px] bg-white">
+                                          {item.image_url ? (
+                                            <img
+                                              src={item.image_url}
+                                              alt={item.item_name}
+                                              className="h-full w-full object-contain"
+                                              loading="lazy"
+                                            />
+                                          ) : (
+                                            <div className="flex h-full w-full items-center justify-center rounded-[12px] bg-slate-50 text-[10px] font-bold text-slate-400 ring-1 ring-slate-100">
+                                              No image
+                                            </div>
+                                          )}
+                                        </div>
+
+                                        <div className="mt-2 min-h-[48px] flex-none">
+                                          <p className="line-clamp-2 text-[13px] font-bold leading-[17px] text-slate-950">
+                                            {item.item_name}
+                                          </p>
+                                          <p className="mt-1 truncate text-[13px] font-black leading-none text-red-600">
+                                            {getMenuItemPriceRange(item.id)}
+                                          </p>
+                                        </div>
+                                      </button>
+
+                                      {!hasVariants && simpleCartItem ? (
+                                        <div className="mt-auto flex h-9 w-full flex-none items-center justify-between overflow-hidden rounded-lg border border-slate-300 bg-slate-50 shadow-sm">
+                                        <button
+                                          type="button"
+                                          onClick={() => decreaseTakeOrderItem(simpleCartItem.id)}
+                                          className="flex h-full w-9 items-center justify-center text-lg font-black text-slate-700 active:bg-slate-100"
+                                          aria-label="Decrease quantity"
+                                        >
+                                          −
+                                        </button>
+                                        <span className="min-w-[32px] text-center text-sm font-black text-slate-950">
+                                          {simpleCartItem.quantity}
+                                        </span>
+                                        <button
+                                          type="button"
+                                          onClick={() => increaseTakeOrderItem(simpleCartItem.id)}
+                                          className="flex h-full w-9 items-center justify-center text-lg font-black text-slate-700 active:bg-slate-100"
+                                          aria-label="Increase quantity"
+                                        >
+                                          +
+                                        </button>
+                                      </div>
+                                    ) : (
+                                        <button
+                                          type="button"
+                                          onClick={() => handleTakeOrderMenuClick(item)}
+                                          className="mt-auto flex h-9 w-full flex-none items-center justify-center rounded-lg border border-slate-300 bg-slate-50 text-[13px] font-black text-slate-900 shadow-sm active:bg-slate-100"
+                                        >
+                                          <span className="mr-1 text-lg leading-none">+</span> Add
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                            </div>
+                          </div>
+
+                        {takeOrderItems.length > 0 && (
+                          <div className="rounded-[18px] border border-dashed border-blue-200 bg-white px-3 py-2.5 shadow-sm">
+                            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">
+                              Quick Preview
+                            </p>
+                            <div className="mt-2 space-y-1.5">
+                              {takeOrderItems.slice(0, 4).map((item) => (
+                                <div
+                                  key={`preview-${item.id}`}
+                                  className="flex items-center justify-between gap-3 text-[12px] font-semibold text-slate-700"
+                                >
+                                  <span className="truncate">{item.item_name}</span>
+                                  <span className="shrink-0 text-slate-500">x{item.quantity}</span>
+                                </div>
+                              ))}
+                              {takeOrderItems.length > 4 ? (
+                                <div className="text-[11px] font-semibold text-slate-400">
+                                  +{takeOrderItems.length - 4} more items
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="shrink-0 border-t border-slate-200/80 bg-white/95 px-3 pb-3 pt-2.5 backdrop-blur-xl">
+                      <button
+                        type="button"
+                        onClick={() => takeOrderItems.length > 0 && setShowTakeOrderCart(true)}
+                        disabled={takeOrderItems.length === 0}
+                        className={`w-full rounded-[24px] p-3.5 text-left shadow-[0_16px_34px_rgba(15,23,42,0.12)] backdrop-blur transition active:scale-[0.99] ${
+                          takeOrderItems.length === 0
+                            ? "cursor-not-allowed border border-dashed border-slate-200 bg-slate-50 text-slate-400"
+                            : "border border-blue-200 bg-gradient-to-r from-slate-950 via-slate-900 to-blue-950 text-white"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className={`text-[10px] font-black uppercase tracking-[0.18em] ${takeOrderItems.length === 0 ? "text-slate-400" : "text-white/65"}`}>
+                              {takeOrderItems.length === 0 ? "Cart Empty" : `Table ${takeOrderTableNumber} Cart`}
+                            </p>
+                            <p className={`mt-1 text-base font-black tracking-tight ${takeOrderItems.length === 0 ? "text-slate-500" : "text-white"}`}>
+                              {takeOrderCartCount} items • Rs. {takeOrderCartTotal}
+                            </p>
+                          </div>
+                          <span className={`inline-flex items-center justify-center rounded-full px-5 py-2.5 text-sm font-black shadow-sm ${
+                            takeOrderItems.length === 0
+                              ? "bg-white text-slate-400"
+                              : "bg-white text-slate-950"
+                          }`}>
+                            {takeOrderItems.length === 0 ? "Add Items" : "Review & Send"}
+                          </span>
+                        </div>
+                      </button>
+                    </div>
+
+                    {showVariantSheet && selectedVariantMenu && (
+                      <div className="absolute inset-0 z-[70] flex items-end justify-center">
+                        <div
+                          className="absolute inset-0 bg-slate-950/50 backdrop-blur-[1px]"
+                          onClick={closeVariantSheet}
+                        />
+                        <div
+                          className="relative w-full overflow-hidden rounded-t-[30px] border border-slate-200/80 bg-white shadow-[0_-24px_60px_rgba(15,23,42,0.22)] transition-transform duration-150"
+                          style={{ transform: `translateY(${variantSheetOffsetY}px)` }}
+                        >
+                          <div
+                            className="px-4 pt-2"
+                            onPointerDown={handleVariantSheetPointerDown}
+                            onPointerMove={handleVariantSheetPointerMove}
+                            onPointerUp={handleVariantSheetPointerUp}
+                            onPointerCancel={handleVariantSheetPointerUp}
+                          >
+                            <div className="mx-auto mb-3 h-1.5 w-14 rounded-full bg-slate-300" />
+                          </div>
+
+                          <div className="rounded-t-[28px] bg-gradient-to-r from-slate-950 via-slate-900 to-rose-950 px-4 pb-4 pt-1 text-white">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/60">
+                                  Customize Dish
+                                </p>
+                                <h3 className="mt-1 truncate text-lg font-extrabold">{selectedVariantMenu.item_name}</h3>
+                                <p className="mt-1 text-xs text-white/70">Variant select gara ani cart maa add gara</p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={closeVariantSheet}
+                                className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/12 text-xl text-white backdrop-blur"
+                              >
+                                ×
+                              </button>
+                            </div>
+
+                            <div className="mt-4 flex items-center justify-between gap-3 rounded-[20px] border border-white/10 bg-white/10 px-3 py-2.5 backdrop-blur">
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-bold text-white">{selectedVariantMenu.item_name}</p>
+                                <p className="text-[11px] text-white/65">Select Variants</p>
+                              </div>
+
+                              <div className="flex shrink-0 items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedVariantQty((prev) => Math.max(1, prev - 1))}
+                                  className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-white/14 text-base font-bold text-white"
+                                >
+                                  −
+                                </button>
+                                <span className="min-w-[22px] text-center text-sm font-black text-white">
+                                  {selectedVariantQty}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedVariantQty((prev) => prev + 1)}
+                                  className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-rose-500 text-base font-bold text-white shadow-[0_10px_20px_rgba(244,63,94,0.35)]"
+                                >
+                                  +
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="px-4 pb-4 pt-4">
+                            <div className="mb-4">
+                              <div className="mb-2 flex items-center justify-between gap-3">
+                                <p className="text-sm font-extrabold text-slate-900">Select Variant</p>
+                                <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">
+                                  {getVariantsForMenuItem(selectedVariantMenu.id).length} options
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-2 gap-2">
+                                {getVariantsForMenuItem(selectedVariantMenu.id).map((variant) => {
+                                  const isActive = selectedVariantOptionId === variant.id;
+
+                                  return (
+                                    <button
+                                      key={`variant-${variant.id}`}
+                                      type="button"
+                                      onClick={() => setSelectedVariantOptionId(variant.id)}
+                                      className={`rounded-2xl border px-3 py-2.5 text-left shadow-sm transition active:scale-[0.98] ${
+                                        isActive
+                                          ? "border-rose-500 bg-rose-500 text-white shadow-[0_12px_24px_rgba(244,63,94,0.24)]"
+                                          : "border-slate-200 bg-white text-slate-900 hover:border-rose-200 hover:bg-rose-50/60"
+                                      }`}
+                                    >
+                                      <div className="flex items-start justify-between gap-2">
+                                        <div className="min-w-0">
+                                          <p className={`truncate text-[12px] font-extrabold ${isActive ? "text-white" : "text-slate-900"}`}>
+                                            {variant.variant_name}
+                                          </p>
+                                          <p className={`mt-1 text-[11px] font-bold ${isActive ? "text-white/90" : "text-rose-600"}`}>
+                                            Rs. {variant.price}
+                                          </p>
+                                        </div>
+                                        <span className={`mt-0.5 h-2.5 w-2.5 shrink-0 rounded-full ${isActive ? "bg-white shadow-[0_0_0_4px_rgba(255,255,255,0.18)]" : "bg-slate-300"}`} />
+                                      </div>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+
+                            <div className="mb-4">
+                              <label className="mb-2 block text-sm font-extrabold text-slate-900">
+                                Remarks
+                              </label>
+                              <textarea
+                                value={selectedVariantRemarks}
+                                onChange={(e) => setSelectedVariantRemarks(e.target.value)}
+                                placeholder="Special note, spice level, no onion..."
+                                rows={2}
+                                className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-rose-300 focus:bg-white"
+                              />
+                            </div>
+
+                            <div className="grid grid-cols-[100px_1fr] gap-3">
+                              <button
+                                type="button"
+                                onClick={closeVariantSheet}
+                                className="rounded-2xl bg-slate-100 px-4 py-3 text-sm font-extrabold text-slate-700"
+                              >
+                                Cancel
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={addSelectedVariantToCart}
+                                className="rounded-2xl bg-gradient-to-r from-rose-600 to-red-500 px-4 py-3 text-sm font-extrabold text-white shadow-[0_14px_28px_rgba(244,63,94,0.28)]"
+                              >
+                                Add to Cart Rs. {" "}
+                                {(() => {
+                                  const selectedVariant =
+                                    selectedVariantOptionId == null ? null : menuItemVariantById.get(Number(selectedVariantOptionId));
+                                  return selectedVariant
+                                    ? Number(selectedVariant.price || 0) * selectedVariantQty
+                                    : 0;
+                                })()}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {showTakeOrderCart && (
+                      <div className="absolute inset-0 z-[60] flex items-end justify-center">
+                        <div className="absolute inset-0 bg-slate-950/55 backdrop-blur-[3px]" onClick={closeTakeOrderCart} />
+                        <div
+                          className="relative w-full overflow-hidden rounded-t-[32px] border border-slate-200/80 bg-[#f8fafc] shadow-[0_-24px_60px_rgba(15,23,42,0.25)] transition-transform duration-150"
+                          style={{ transform: `translateY(${cartSheetOffsetY}px)` }}
+                        >
+                          <div
+                            className="bg-gradient-to-r from-slate-950 via-slate-900 to-blue-950 px-4 pb-4 pt-2 text-white"
+                            onPointerDown={handleCartSheetPointerDown}
+                            onPointerMove={handleCartSheetPointerMove}
+                            onPointerUp={handleCartSheetPointerUp}
+                            onPointerCancel={handleCartSheetPointerUp}
+                          >
+                            <div className="mx-auto mb-3 h-1.5 w-14 rounded-full bg-white/35" />
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0 flex-1">
+                                <div className="inline-flex items-center rounded-full border border-white/15 bg-white/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/75">
+                                  Your Cart
+                                </div>
+                                <h3 className="mt-2 text-[20px] font-black tracking-tight text-white">
+                                  Table {takeOrderTableNumber}
+                                </h3>
+                                <p className="mt-1 text-xs text-white/70">
+                                  {takeOrderCartCount} items • Rs. {takeOrderCartTotal}
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={closeTakeOrderCart}
+                                className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/15 bg-white/10 text-xl text-white"
+                              >
+                                ×
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="px-4 pb-4 pt-4">
+                            {takeOrderItems.length === 0 ? (
+                              <div className="rounded-[24px] border border-dashed border-slate-200 bg-white px-4 py-10 text-center text-sm text-slate-500 shadow-sm">
+                                No items in cart.
+                              </div>
+                            ) : (
+                              <>
+                                <div className="max-h-[40vh] space-y-3 overflow-y-auto pr-1">
+                                  {takeOrderItems.map((item, index) => (
+                                    <div
+                                      key={`cart-${item.id}`}
+                                      className="rounded-[24px] border border-slate-200 bg-white p-3 shadow-[0_8px_20px_rgba(15,23,42,0.06)]"
+                                    >
+                                      <div className="flex items-start gap-3">
+                                        <div className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${index % 3 === 0 ? "bg-rose-500" : index % 3 === 1 ? "bg-amber-500" : "bg-emerald-500"}`} />
+                                        <div className="min-w-0 flex-1">
+                                          <div className="flex items-start justify-between gap-3">
+                                            <div className="min-w-0 flex-1">
+                                              <p className="line-clamp-2 text-[13px] font-extrabold leading-[1.25] text-slate-900">
+                                                {item.item_name}
+                                              </p>
+                                              <div className="mt-2 flex flex-wrap items-center gap-2">
+                                                <span className="inline-flex rounded-full bg-rose-50 px-2 py-1 text-[10px] font-bold text-rose-600">
+                                                  Rs. {item.price}
+                                                </span>
+                                                <span className="inline-flex rounded-full bg-slate-100 px-2 py-1 text-[10px] font-semibold text-slate-600">
+                                                  Qty {item.quantity}
+                                                </span>
+                                              </div>
+                                              {item.remarks ? (
+                                                <p className="mt-2 line-clamp-2 text-[10px] text-slate-400">Note: {item.remarks}</p>
+                                              ) : null}
+                                            </div>
+
+                                            <div className="shrink-0 rounded-full bg-slate-900 px-2.5 py-1 text-[11px] font-extrabold text-white shadow-sm">
+                                              Rs. {item.price * item.quantity}
+                                            </div>
+                                          </div>
+
+                                          <div className="mt-3 flex items-center justify-between gap-2">
+                                            <div className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 p-1 shadow-inner">
+                                              <button
+                                                type="button"
+                                                onClick={() => decreaseTakeOrderItem(item.id)}
+                                                className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white text-sm font-black text-slate-700 shadow-sm ring-1 ring-slate-200"
+                                              >
+                                                −
+                                              </button>
+                                              <span className="min-w-[28px] text-center text-xs font-black text-slate-900">
+                                                {item.quantity}
+                                              </span>
+                                              <button
+                                                type="button"
+                                                onClick={() => increaseTakeOrderItem(item.id)}
+                                                className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-blue-600 text-sm font-black text-white shadow-sm"
+                                              >
+                                                +
+                                              </button>
+                                            </div>
+
+                                            <button
+                                              type="button"
+                                              onClick={() => removeTakeOrderItem(item.id)}
+                                              className="inline-flex items-center rounded-full bg-rose-50 px-2.5 py-1 text-[10px] font-bold text-rose-600"
+                                            >
+                                              Remove
+                                            </button>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+
+                                <div className="mt-4 rounded-[24px] border border-slate-200 bg-white p-3 shadow-[0_8px_20px_rgba(15,23,42,0.05)]">
+                                  <div className="mb-2 flex items-center justify-between gap-2">
+                                    <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">
+                                      Order Remarks
+                                    </p>
+                                    <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-semibold text-slate-500">
+                                      Optional
+                                    </span>
+                                  </div>
+                                  <textarea
+                                    value={takeOrderRemarks}
+                                    onChange={(e) => setTakeOrderRemarks(e.target.value)}
+                                    placeholder="Add remarks for kitchen..."
+                                    rows={2}
+                                    className="w-full resize-none rounded-[18px] border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-blue-400 focus:bg-white"
+                                  />
+                                </div>
+
+                                <div className="mt-4 rounded-[26px] border border-slate-200 bg-white p-3 shadow-[0_12px_24px_rgba(15,23,42,0.08)]">
+                                  <div className="mb-3 grid grid-cols-2 gap-3">
+                                    <div className="rounded-[20px] bg-slate-50 px-3 py-3 ring-1 ring-slate-100">
+                                      <p className="text-[11px] font-semibold text-slate-500">Total Items</p>
+                                      <p className="mt-1 text-base font-black tracking-tight text-slate-900">{takeOrderCartCount}</p>
+                                    </div>
+                                    <div className="rounded-[20px] bg-rose-50 px-3 py-3 ring-1 ring-rose-100">
+                                      <p className="text-[11px] font-semibold text-rose-500">Grand Total</p>
+                                      <p className="mt-1 text-base font-black tracking-tight text-rose-600">Rs. {takeOrderCartTotal}</p>
+                                    </div>
+                                  </div>
+
+                                  <div className="grid grid-cols-[112px_1fr] gap-3">
+                                    <button
+                                      type="button"
+                                      onClick={closeTakeOrderCart}
+                                      className="rounded-[20px] border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-700"
+                                    >
+                                      Continue
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={confirmTakeOrderFromCart}
+                                      disabled={submittingTakeOrder || takeOrderItems.length === 0}
+                                      className="rounded-[20px] bg-gradient-to-r from-blue-600 to-indigo-600 px-4 py-3 text-sm font-extrabold text-white shadow-[0_14px_28px_rgba(37,99,235,0.35)] disabled:opacity-60"
+                                    >
+                                      {submittingTakeOrder ? (editingOrderId ? "Updating..." : "Sending...") : (editingOrderId ? "Update Order" : "Send to Kitchen")}
+                                    </button>
+                                  </div>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+
+        {showChangeTableModal && (
+          <div className="absolute inset-0 z-[90]">
+            <div
+              className="absolute inset-0 bg-slate-950/50 backdrop-blur-[2px]"
+              onClick={closeChangeTableModal}
+            />
+            <div className="absolute inset-0 flex items-end justify-center px-4 pb-4">
+              <div className="w-full max-w-sm rounded-[30px] bg-white p-5 shadow-[0_24px_80px_rgba(15,23,42,0.35)]">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Move unpaid orders</p>
+                    <h3 className="mt-1 text-xl font-black text-slate-950">Change Table</h3>
+                    <p className="mt-1 text-sm text-slate-500">Paid bills र pending-payment sync orders move हुँदैनन्।</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeChangeTableModal}
+                    disabled={changingTable}
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-xl font-bold text-slate-700 disabled:opacity-50"
+                  >
+                    ×
+                  </button>
+                </div>
+
+                <div className="mt-5 grid grid-cols-2 gap-3">
+                  <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">From</p>
+                    <p className="mt-1 text-lg font-black text-slate-900">Table {changeTableFrom}</p>
+                  </div>
+                  <div>
+                    <label className="mb-2 block text-[11px] font-bold uppercase tracking-wide text-slate-400">To</label>
+                    <input
+                      type="tel"
+                      inputMode="numeric"
+                      value={changeTableTo}
+                      onChange={(e) => setChangeTableTo(e.target.value.replace(/\D/g, ""))}
+                      placeholder="New table"
+                      disabled={changingTable}
+                      className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-lg font-black text-slate-900 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100 disabled:bg-slate-100"
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-5 grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={closeChangeTableModal}
+                    disabled={changingTable}
+                    className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-700 disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={confirmChangeTable}
+                    disabled={changingTable}
+                    className="rounded-2xl bg-slate-950 px-4 py-3 text-sm font-bold text-white disabled:bg-slate-400"
+                  >
+                    {changingTable ? "Changing..." : "Change"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {reportOrder && (
+          <div className="absolute inset-0 z-[70]">
+            <div
+              className="absolute inset-0 bg-slate-950/45 backdrop-blur-[2px]"
+              onClick={closeOrderReport}
+            />
+
+            <div className="absolute inset-0 flex items-end justify-center">
+              <div className="relative flex h-full w-full flex-col overflow-hidden rounded-none bg-[#f8fafc] shadow-2xl">
+                <div className="shrink-0 border-b border-slate-200 bg-white px-4 pb-3 pt-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                        {reportMode === "kot" ? "Kitchen Order Ticket" : "Payment"}
+                      </p>
+                      <h2 className="text-[22px] font-extrabold tracking-tight text-slate-900">
+                        Table {reportOrder.table_number}
+                      </h2>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={closeOrderReport}
+                      className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-2xl text-slate-700 shadow-sm"
+                    >
+                      ×
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 text-[13px] text-slate-700">
+                    <div className="rounded-2xl bg-slate-50 px-3 py-3">
+                      <p className="text-[11px] uppercase tracking-wide text-slate-400">Table</p>
+                      <p className="mt-1 font-bold text-slate-900">{reportOrder.table_number}</p>
+                    </div>
+                    <div className="rounded-2xl bg-slate-50 px-3 py-3">
+                      <p className="text-[11px] uppercase tracking-wide text-slate-400">Status</p>
+                      <p className={`mt-1 font-bold ${getOrderDisplayStatus(reportOrder) === "ready" ? "text-emerald-600" : "text-amber-600"}`}>
+                        {getOrderDisplayStatus(reportOrder) === "ready" ? "READY" : "PENDING"}
+                      </p>
+                    </div>
+                  </div>
+
+                  {reportMode === "pay" && reportOrder.is_paid !== true && reportOrder.sync_status !== "pending_payment" && (
+                    <button
+                      type="button"
+                      onClick={() => openChangeTableModal(reportOrder.table_number)}
+                      className="mt-3 w-full rounded-[18px] border border-slate-200 bg-white px-3 py-3 text-sm font-bold text-slate-900 shadow-sm"
+                    >
+                      Change Table
+                    </button>
+                  )}
+
+                  {reportMode === "kot" && (
+                    <div className="mt-3 grid grid-cols-2 gap-3">
+                      <button
+                        type="button"
+                        onClick={() => reportOrderBillTable && printBill(reportOrderBillTable, "kot")}
+                        className="flex items-center justify-center gap-2 rounded-[18px] border border-slate-200 bg-white px-3 py-3 text-sm font-bold text-slate-900 shadow-sm"
+                      >
+                        <span>🖨️</span>
+                        Print KOT
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => reportOrderBillTable && downloadBill(reportOrderBillTable, "kot")}
+                        className="flex items-center justify-center gap-2 rounded-[18px] border border-rose-200 bg-rose-50 px-3 py-3 text-sm font-bold text-rose-600 shadow-sm"
+                      >
+                        <span>⬇️</span>
+                        Download KOT
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+                  <div className="space-y-4 pb-28">
+                    <div className="rounded-[28px] bg-white p-5 shadow-sm ring-1 ring-slate-200/70">
+                      <div className="text-center">
+                        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-400">
+                          {restaurantName || "Restaurant"}
+                        </p>
+                        <h3 className="mt-2 text-[28px] font-black tracking-tight text-slate-900">
+                          {reportMode === "kot" ? "KOT Bill" : "Order Payment"}
+                        </h3>
+                        <p className="mt-1 text-sm text-slate-500">Table {reportOrder.table_number}</p>
+                      </div>
+
+                      <div className="mt-5 grid grid-cols-2 gap-3 text-[14px] text-slate-800">
+                        <div className="rounded-2xl bg-slate-50 p-3">
+                          <p className="text-[11px] uppercase tracking-wide text-slate-400">Table</p>
+                          <p className="mt-1 font-bold text-slate-900">{reportOrder.table_number}</p>
+                        </div>
+
+                        <div className="rounded-2xl bg-slate-50 p-3">
+                          <p className="text-[11px] uppercase tracking-wide text-slate-400">Created At</p>
+                          <p className="mt-1 font-semibold text-slate-900">
+                            {new Date(reportOrder.created_at).toLocaleString()}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="my-5 border-t border-dashed border-slate-300" />
+
+                      <div className="grid grid-cols-[1fr_56px_80px] items-center gap-2 text-[14px] font-bold text-slate-900">
+                        <span>Item</span>
+                        <span className="text-center">Qty</span>
+                        <span className="text-right">Amount</span>
+                      </div>
+
+                      <div className="my-4 border-t border-dashed border-slate-300" />
+
+                      <div className="space-y-3">
+                        {(reportOrder.order_items || []).length === 0 ? (
+                          <p className="text-sm text-slate-500">No order items found.</p>
+                        ) : (
+                          (reportOrder.order_items || []).map((item) => (
+                            <div
+                              key={`report-item-${item.id}`}
+                              className="grid grid-cols-[1fr_56px_80px] items-start gap-2 text-[15px] text-slate-900"
+                            >
+                              <div className="min-w-0">
+                                <p className="break-words font-medium">{item.item_name}</p>
+                                <p className="text-[12px] text-slate-500">Rs. {Number(item.unit_price || 0)} each</p>
+                              </div>
+                              <span className="text-center">{item.quantity}</span>
+                              <span className="text-right font-semibold">
+                                Rs. {Number(item.quantity || 0) * Number(item.unit_price || 0)}
+                              </span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+
+                      {reportOrder.remarks && (
+                        <>
+                          <div className="my-5 border-t border-dashed border-slate-300" />
+                          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-[14px] text-slate-900">
+                            <p className="font-semibold">Remarks</p>
+                            <p className="mt-1 whitespace-pre-wrap">{reportOrder.remarks}</p>
+                          </div>
+                        </>
+                      )}
+
+                      <div className="my-5 border-t border-dashed border-slate-300" />
+
+                      <div className="space-y-2 rounded-[22px] bg-slate-900 px-4 py-4 text-white">
+                        <div className="flex items-center justify-between text-sm">
+                          <span>Items</span>
+                          <span className="font-bold">
+                            {(reportOrder.order_items || []).reduce(
+                              (sum, item) => sum + Number(item.quantity || 0),
+                              0
+                            )}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between text-base">
+                          <span>Total</span>
+                          <span className="text-xl font-extrabold">Rs. {getOrderTotal(reportOrder)}</span>
+                        </div>
+                      </div>
+
+                      {reportMode === "pay" && reportOrder.is_paid !== true && reportOrder.sync_status !== "pending_payment" && (() => {
+                        const tableNo = reportOrder.table_number;
+                        const selectedTable = groupedTableOrders.find(
+                          (table) => String(table.table_number || "").trim() === String(tableNo || "").trim()
+                        );
+                        const selectedSubtotal = selectedTable ? Number(selectedTable.total || 0) : getOrderTotal(reportOrder);
+                        const paymentBreakdown = getPaymentBreakdown(selectedSubtotal, tableNo);
+
+                        return (
+                          <div className="mt-6 space-y-4 rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+                            <div className="flex items-center justify-between gap-3">
+                              <div>
+                                <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">Payment Summary</p>
+                                <p className="mt-1 text-sm font-black text-slate-900">Table {tableNo}</p>
+                              </div>
+                              <p className="rounded-2xl bg-white px-3 py-2 text-xs font-black text-slate-700 ring-1 ring-slate-200">
+                                {enableTax ? `Tax ${paymentBreakdown.tax_percent}%` : "No Tax"}
+                              </p>
+                            </div>
+
+                            {enableDiscount && (
+                              <div className="space-y-2 rounded-[20px] bg-white p-3 ring-1 ring-slate-200">
+                                <div className="flex items-center justify-between gap-3">
+                                  <p className="text-sm font-black text-slate-800">Discount</p>
+                                  <p className="text-xs font-bold text-rose-600">- Rs. {paymentBreakdown.discount_amount}</p>
+                                </div>
+                                <div className="grid grid-cols-4 gap-2">
+                                  {["0", "5", "10"].map((percent) => (
+                                    <button
+                                      key={`${tableNo}-report-discount-${percent}`}
+                                      type="button"
+                                      disabled={markingPaidTable === tableNo}
+                                      onClick={() =>
+                                        setTableDiscountPercents((prev) => ({
+                                          ...prev,
+                                          [tableNo]: percent,
+                                        }))
+                                      }
+                                      className={`rounded-2xl px-3 py-2.5 text-xs font-black transition disabled:opacity-60 ${
+                                        String(tableDiscountPercents[tableNo] || "0") === percent
+                                          ? "bg-rose-600 text-white shadow-sm"
+                                          : "bg-slate-100 text-slate-700"
+                                      }`}
+                                    >
+                                      {percent}%
+                                    </button>
+                                  ))}
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    max="100"
+                                    value={tableDiscountPercents[tableNo] || "0"}
+                                    onChange={(e) =>
+                                      setTableDiscountPercents((prev) => ({
+                                        ...prev,
+                                        [tableNo]: e.target.value,
+                                      }))
+                                    }
+                                    disabled={markingPaidTable === tableNo}
+                                    className="rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-center text-xs font-black text-slate-900 disabled:opacity-60"
+                                    placeholder="Custom"
+                                  />
+                                </div>
+                              </div>
+                            )}
+
+                            <div className="space-y-2 rounded-[20px] bg-white p-3 ring-1 ring-slate-200">
+                              <div className="flex items-center justify-between text-sm">
+                                <span className="font-bold text-slate-600">Subtotal</span>
+                                <span className="font-black text-slate-900">Rs. {paymentBreakdown.subtotal}</span>
+                              </div>
+                              {enableDiscount && (
+                                <div className="flex items-center justify-between text-sm">
+                                  <span className="font-bold text-slate-600">Discount ({paymentBreakdown.discount_percent}%)</span>
+                                  <span className="font-black text-rose-600">- Rs. {paymentBreakdown.discount_amount}</span>
+                                </div>
+                              )}
+                              {enableTax && (
+                                <div className="flex items-center justify-between text-sm">
+                                  <span className="font-bold text-slate-600">Tax ({paymentBreakdown.tax_percent}%)</span>
+                                  <span className="font-black text-slate-900">Rs. {paymentBreakdown.tax_amount}</span>
+                                </div>
+                              )}
+                              <div className="flex items-center justify-between rounded-2xl bg-slate-900 px-3 py-3 text-white">
+                                <span className="text-sm font-black">Grand Total</span>
+                                <span className="text-lg font-black">Rs. {paymentBreakdown.grand_total}</span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="shrink-0 border-t border-slate-200 bg-white px-4 pb-4 pt-3">
+                  {reportMode === "pay" && reportOrder.is_paid !== true && reportOrder.sync_status !== "pending_payment" ? (
+                    <div className="space-y-3">
+                      <div className="rounded-[22px] bg-slate-100 p-2">
+                        <p className="px-1 pb-2 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
+                          Payment Method
+                        </p>
+                        <div className="grid grid-cols-3 gap-2">
+                          {(["cash", "qr", "card"] as const).map((method) => {
+                            const selectedMethod = tablePaymentMethods[reportOrder.table_number] || "cash";
+
+                            return (
+                              <button
+                                key={`report-payment-method-${method}`}
+                                type="button"
+                                disabled={markingPaidTable === reportOrder.table_number}
+                                onClick={() =>
+                                  setTablePaymentMethods((prev) => ({
+                                    ...prev,
+                                    [reportOrder.table_number]: method,
+                                  }))
+                                }
+                                className={`rounded-[16px] px-3 py-3 text-sm font-bold transition disabled:opacity-60 ${
+                                  selectedMethod === method
+                                    ? "bg-white text-slate-900 shadow-sm ring-1 ring-slate-200"
+                                    : "text-slate-500"
+                                }`}
+                              >
+                                {method.toUpperCase()}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const tableNo = reportOrder.table_number;
+                          const method = tablePaymentMethods[tableNo] || "cash";
+                          closeOrderReport();
+                          markGroupedTableAsPaid(tableNo, method);
+                        }}
+                        disabled={markingPaidTable === reportOrder.table_number}
+                        className="w-full rounded-[20px] bg-emerald-600 py-3 text-sm font-bold text-white disabled:opacity-60"
+                      >
+                        {markingPaidTable === reportOrder.table_number ? "Paying Table..." : "Pay Full Table"}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={closeOrderReport}
+                      className="w-full rounded-[20px] bg-slate-900 py-3 text-sm font-bold text-white"
+                    >
+                      {reportMode === "kot" ? "Close KOT" : "Close"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {selectedPaidOrder && (() => {
+          const tableNo = String(selectedPaidOrder.table_number || "").trim();
+          const selectedOrderIsPaidLocally =
+            selectedPaidOrder.is_paid === true || selectedPaidOrder.sync_status === "pending_payment";
+          const isPendingPaymentBill = selectedPaidOrder.sync_status === "pending_payment";
+          const isPayableBill = !selectedOrderIsPaidLocally;
+          const selectedTable = groupedTableOrders.find(
+            (table) => String(table.table_number || "").trim() === tableNo
+          );
+
+          const sourceOrders = isPayableBill
+            ? orders.filter(
+                (order) =>
+                  String(order.table_number || "").trim() === tableNo &&
+                  order.is_paid !== true &&
+                  order.sync_status !== "pending_payment"
+              )
+            : [selectedPaidOrder];
+
+          const sourceHasPaidLocalOrder = sourceOrders.some(
+            (order) => order.is_paid === true || order.sync_status === "pending_payment"
+          );
+          const isPaidLocalBill = selectedOrderIsPaidLocally || sourceHasPaidLocalOrder;
+
+          const billItems = isPayableBill && selectedTable
+            ? selectedTable.items.map((item) => ({
+                item_name: item.item_name,
+                quantity: Number(item.quantity || 0),
+                total: Number(item.total || 0),
+                statuses: [item.status || selectedTable.table_status || "pending"],
+              }))
+            : (selectedPaidOrder.order_items || []).map((item) => ({
+                item_name: item.item_name,
+                quantity: Number(item.quantity || 0),
+                total: Number(item.quantity || 0) * Number(item.unit_price || 0),
+                statuses: [item.status || selectedPaidOrder.status || "pending"],
+              }));
+
+          const billSubtotal = billItems.reduce((sum, item) => sum + Number(item.total || 0), 0);
+          const liveBreakdown = isPayableBill
+            ? getPaymentBreakdown(billSubtotal, tableNo)
+            : {
+                subtotal: Number(selectedPaidOrder.subtotal || billSubtotal),
+                discount_enabled: Boolean(selectedPaidOrder.discount_enabled),
+                discount_percent: Number(selectedPaidOrder.discount_percent || 0),
+                discount_amount: Number(selectedPaidOrder.discount_amount || 0),
+                tax_enabled: Boolean(selectedPaidOrder.tax_enabled),
+                tax_percent: Number(selectedPaidOrder.tax_percent || 0),
+                tax_amount: Number(selectedPaidOrder.tax_amount || 0),
+                grand_total: Number(
+                  selectedPaidOrder.grand_total ||
+                    Math.max(
+                      0,
+                      Number(selectedPaidOrder.subtotal || billSubtotal) -
+                        Number(selectedPaidOrder.discount_amount || 0) +
+                        Number(selectedPaidOrder.tax_amount || 0)
+                    )
+                ),
+              };
+
+          const selectedMethod = tablePaymentMethods[tableNo] || "cash";
+          const billGrandTotal = Number(liveBreakdown.grand_total || billSubtotal);
+          const paidAmount = isPaidLocalBill ? billGrandTotal : 0;
+          const dueAmount = isPaidLocalBill ? 0 : Math.max(0, billGrandTotal - paidAmount);
+
+          const billTable: BillReceiptTable = {
+            table_number: tableNo,
+            order_ids: sourceOrders.map((order) => Number(order.id || 0)).filter((id) => Number.isFinite(id) && id > 0),
+            remarks: sourceOrders.map((order) => String(order.remarks || "").trim()).filter(Boolean),
+            items: billItems,
+            total: billSubtotal,
+            subtotal: liveBreakdown.subtotal,
+            discount_enabled: Boolean(liveBreakdown.discount_enabled),
+            discount_percent: Number(liveBreakdown.discount_percent || 0),
+            discount_amount: Number(liveBreakdown.discount_amount || 0),
+            tax_enabled: Boolean(liveBreakdown.tax_enabled),
+            tax_percent: Number(liveBreakdown.tax_percent || 0),
+            tax_amount: Number(liveBreakdown.tax_amount || 0),
+            grand_total: billGrandTotal,
+            paid_amount: Number(paidAmount || 0),
+            due_amount: Number(dueAmount || 0),
+            payment_method: isPayableBill ? null : selectedPaidOrder.payment_method || null,
+            paid_at: isPayableBill ? null : selectedPaidOrder.paid_at || null,
+            unpaid_orders_count: isPayableBill ? sourceOrders.length : 0,
+            sourceOrders,
+          };
+
+          return (
+            <div className="absolute inset-0 z-[100] bg-white">
+              <div className="flex h-full w-full flex-col bg-white text-slate-950">
+                <div className="shrink-0 border-b border-slate-200 bg-white px-4 pb-4 pt-5">
+                  <div className="flex items-center gap-4">
+                    <button
+                      type="button"
+                      onClick={closePaidOrderBill}
+                      className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-white text-3xl font-light text-slate-900 active:bg-slate-100"
+                      aria-label="Back"
+                    >
+                      ‹
+                    </button>
+                    <h2 className="text-3xl font-black tracking-tight text-slate-950">Bill & Payment</h2>
+                    <button
+                      type="button"
+                      onClick={closePaidOrderBill}
+                      className="ml-auto rounded-full bg-slate-100 px-4 py-2 text-sm font-black text-slate-700 active:bg-slate-200"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+
+                <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-7 pt-5">
+                  <div className="mx-auto max-w-lg space-y-6 pb-28">
+                    <div className="grid grid-cols-2 gap-3">
+                      <button
+                        type="button"
+                        onClick={() => downloadBill(billTable, "customer")}
+                        className="rounded-[20px] border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-900 shadow-sm active:scale-[0.99]"
+                      >
+                        ⬇️ Download Bill
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => printBill(billTable, "customer")}
+                        className="rounded-[20px] bg-blue-600 px-4 py-3 text-sm font-black text-white shadow-[0_12px_28px_rgba(37,99,235,0.24)] active:scale-[0.99]"
+                      >
+                        🖨️ Print Bill
+                      </button>
+                    </div>
+
+                    <section className="rounded-[32px] bg-white px-5 py-6 shadow-sm ring-1 ring-slate-100 sm:px-6">
+                      <div className="text-center">
+                        <h3 className="text-[30px] font-black tracking-tight text-slate-950">{restaurantName || "Restaurant"}</h3>
+                        <p className="mt-1 text-base font-medium text-slate-400">Pokhara, Gandaki, Nepal</p>
+                      </div>
+
+                      <div className="mt-6">
+                        <h4 className="text-[26px] font-black text-slate-950">Table: {tableNo}</h4>
+                      </div>
+
+                      <div className="mt-6 grid grid-cols-[minmax(0,1fr)_56px_84px_98px] items-center gap-3 border-b border-slate-900 pb-3 text-[15px] font-black text-slate-950">
+                        <span>Item</span>
+                        <span className="text-center">Qty</span>
+                        <span className="text-right">Rate</span>
+                        <span className="text-right">Amount</span>
+                      </div>
+
+                      <div className="space-y-4 py-5">
+                        {billItems.length === 0 ? (
+                          <p className="py-4 text-center text-sm font-semibold text-slate-400">No bill items found.</p>
+                        ) : (
+                          billItems.map((item, index) => {
+                            const qty = Number(item.quantity || 0);
+                            const amount = Number(item.total || 0);
+                            const rate = qty > 0 ? amount / qty : amount;
+
+                            return (
+                              <div
+                                key={`bill-payment-item-${index}-${item.item_name}`}
+                                className="grid grid-cols-[minmax(0,1fr)_56px_84px_98px] items-start gap-3 text-[16px] leading-6 text-slate-900"
+                              >
+                                <span className="min-w-0 break-words pr-1 font-semibold leading-6">{item.item_name}</span>
+                                <span className="text-center font-semibold">{formatReceiptMoney(qty)}</span>
+                                <span className="text-right font-semibold text-slate-500">{formatReceiptMoney(rate)}</span>
+                                <span className="text-right font-black text-red-600">{formatReceiptMoney(amount)}</span>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+
+                      <div className="mt-8 border-t border-slate-900 pt-7">
+                        <div className="space-y-5 text-[16px] leading-7 text-slate-900">
+                          <div className="flex items-center justify-between gap-5 py-1">
+                            <span>Subtotal {enableTax ? "(Pre-Tax)" : ""}</span>
+                            <span className="font-medium">Rs. {formatReceiptMoney(liveBreakdown.subtotal)}</span>
+                          </div>
+
+                          {Boolean(liveBreakdown.tax_enabled) && (
+                            <div className="flex items-center justify-between gap-5 py-1">
+                              <span>Tax</span>
+                              <span className="font-medium">Rs. {formatReceiptMoney(Number(liveBreakdown.tax_amount || 0))}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {isPayableBill && enableDiscount ? (
+                        <div className="mt-5 rounded-[28px] bg-white p-5 shadow-[0_12px_34px_rgba(15,23,42,0.08)] ring-1 ring-slate-100">
+                          <div className="flex items-start gap-4">
+                            <div className="mt-1 text-2xl text-slate-500">🏷️</div>
+                            <div className="min-w-0 flex-1">
+                              <p className="text-xl font-black text-slate-950">Discount</p>
+                              <p className="mt-1 text-sm font-medium text-slate-400">
+                                {Number(liveBreakdown.discount_amount || 0) > 0
+                                  ? `${formatReceiptMoney(liveBreakdown.discount_percent)}% discount applied`
+                                  : "No discount applied"}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="mt-4 grid grid-cols-4 gap-2">
+                            {["0", "5", "10"].map((percent) => (
+                              <button
+                                key={`${tableNo}-bill-discount-${percent}`}
+                                type="button"
+                                disabled={markingPaidTable === tableNo}
+                                onClick={() =>
+                                  setTableDiscountPercents((prev) => ({
+                                    ...prev,
+                                    [tableNo]: percent,
+                                  }))
+                                }
+                                className={`rounded-[18px] px-3 py-3 text-sm font-black transition disabled:opacity-60 ${
+                                  String(tableDiscountPercents[tableNo] || "0") === percent
+                                    ? "bg-red-600 text-white shadow-sm"
+                                    : "border border-slate-200 bg-white text-slate-800"
+                                }`}
+                              >
+                                {percent}%
+                              </button>
+                            ))}
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              value={tableDiscountPercents[tableNo] || "0"}
+                              onChange={(e) =>
+                                setTableDiscountPercents((prev) => ({
+                                  ...prev,
+                                  [tableNo]: e.target.value,
+                                }))
+                              }
+                              disabled={markingPaidTable === tableNo}
+                              className="rounded-[18px] border border-slate-200 bg-white px-2 py-3 text-center text-sm font-black text-slate-900 outline-none focus:border-red-500 disabled:opacity-60"
+                              placeholder="Custom"
+                            />
+                          </div>
+                        </div>
+                      ) : Number(liveBreakdown.discount_amount || 0) > 0 ? (
+                        <div className="mt-6 flex items-center justify-between gap-5 rounded-[22px] bg-red-50 px-4 py-4 text-sm font-black leading-6 text-red-700">
+                          <span>Discount ({formatReceiptMoney(liveBreakdown.discount_percent)}%)</span>
+                          <span>- Rs. {formatReceiptMoney(liveBreakdown.discount_amount)}</span>
+                        </div>
+                      ) : null}
+
+                      <div className="mt-8 space-y-5 border-t border-dashed border-slate-300 pt-6">
+                        <div className="flex items-center justify-between gap-5 py-1 text-xl font-black text-red-600">
+                          <span>Grand total</span>
+                          <span>Rs. {formatReceiptMoney(liveBreakdown.grand_total)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-5 py-1 text-lg font-semibold text-slate-900">
+                          <span>Paid</span>
+                          <span>Rs. {formatReceiptMoney(paidAmount)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-5 py-1 text-xl font-black text-red-600">
+                          <span>Due</span>
+                          <span>Rs. {formatReceiptMoney(dueAmount)}</span>
+                        </div>
+                      </div>
+
+                      {(enableTax || Number(liveBreakdown.tax_amount || 0) > 0) && (
+                        <div className="mt-5 rounded-[20px] border border-sky-200 bg-sky-50 px-4 py-4 text-sm font-semibold leading-6 text-sky-800">
+                          ⓘ Prices are exclusive of applicable tax. No mandatory service charge is applied.
+                        </div>
+                      )}
+                    </section>
+
+                    {isPayableBill ? (
+                      <section className="space-y-3">
+                        <h3 className="text-2xl font-black text-slate-950">Payments</h3>
+                        <div className="rounded-[28px] bg-white p-4 shadow-sm ring-1 ring-slate-100">
+                          <div className="grid grid-cols-3 gap-2">
+                            {(["cash", "qr", "card"] as const).map((method) => (
+                              <button
+                                key={`${tableNo}-reference-payment-method-${method}`}
+                                type="button"
+                                disabled={markingPaidTable === tableNo}
+                                onClick={() =>
+                                  setTablePaymentMethods((prev) => ({
+                                    ...prev,
+                                    [tableNo]: method,
+                                  }))
+                                }
+                                className={`rounded-[18px] px-3 py-4 text-sm font-black transition disabled:opacity-60 ${
+                                  selectedMethod === method
+                                    ? "bg-red-600 text-white shadow-[0_12px_24px_rgba(220,38,38,0.22)]"
+                                    : "bg-slate-50 text-slate-700 ring-1 ring-slate-200"
+                                }`}
+                              >
+                                {method.toUpperCase()}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const method = tablePaymentMethods[tableNo] || "cash";
+                            markGroupedTableAsPaid(tableNo, method);
+                          }}
+                          disabled={markingPaidTable === tableNo}
+                          className="mt-5 flex w-full items-center justify-center gap-3 rounded-[26px] bg-gradient-to-r from-red-600 to-rose-600 py-4 text-lg font-black text-white shadow-[0_18px_38px_rgba(220,38,38,0.34)] disabled:opacity-60"
+                        >
+                          💳 {markingPaidTable === tableNo ? "Paying Table..." : "Pay Full Table"}
+                        </button>
+                      </section>
+                    ) : (
+                      <section className="space-y-3">
+                        <h3 className="text-2xl font-black text-slate-950">Payments</h3>
+                        {isPendingPaymentBill ? (
+                          <div className="rounded-[22px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-black text-amber-800">
+                            Payment queued - paid locally. Sync pending.
+                          </div>
+                        ) : null}
+                        <div className="rounded-[28px] bg-white p-5 shadow-sm ring-1 ring-slate-100">
+                          <div className="flex items-center justify-between gap-4">
+                            <div>
+                              <p className="text-base font-black uppercase tracking-wide text-slate-900">
+                                {(selectedPaidOrder.payment_method || "paid").toUpperCase()} • SUCCESS
+                              </p>
+                              <p className="mt-1 text-sm font-semibold text-slate-400">
+                                {selectedPaidOrder.paid_at ? new Date(selectedPaidOrder.paid_at).toLocaleString() : "Paid"}
+                              </p>
+                            </div>
+                            <p className="text-xl font-black text-red-600">Rs. {formatReceiptMoney(liveBreakdown.grand_total)}</p>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={closePaidOrderBill}
+                          className="mt-5 w-full rounded-[24px] bg-slate-900 py-4 text-base font-black text-white"
+                        >
+                          Close
+                        </button>
+                      </section>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+        {isOwnerMode && showQR && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 px-4">
+            <div className="max-h-[90vh] w-full max-w-sm overflow-y-auto rounded-[28px] bg-white p-5 shadow-2xl">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900">Brand & QR</h3>
+                  <p className="mt-1 text-xs text-slate-500">Restaurant logo, app access QR and bill payment QR</p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowQR(false)}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-lg text-slate-600"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="mt-5 rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h4 className="text-sm font-black text-slate-900">Restaurant Logo</h4>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Optional. If empty, the app shows the first letter of the restaurant name.
+                    </p>
+                  </div>
+                  {restaurantLogoPreview ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRestaurantLogoFile(null);
+                        setRestaurantLogoUrl("");
+                        setRestaurantLogoPreview(null);
+                      }}
+                      className="rounded-full bg-rose-50 px-3 py-1 text-xs font-bold text-rose-600 ring-1 ring-rose-100"
+                    >
+                      Remove
+                    </button>
+                  ) : null}
+                </div>
+
+                <div className="mt-4 flex items-center gap-4">
+                  <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 text-2xl font-black text-white">
+                    {restaurantLogoPreview ? (
+                      <img src={restaurantLogoPreview} alt="Restaurant logo preview" className="h-full w-full object-cover" />
+                    ) : (
+                      <span>{getRestaurantInitial()}</span>
+                    )}
+                  </div>
+
+                  <div className="min-w-0 flex-1">
+                    <label className="inline-flex cursor-pointer items-center justify-center rounded-2xl bg-slate-900 px-4 py-3 text-sm font-bold text-white shadow-sm">
+                      Upload Logo
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handleRestaurantLogoChange}
+                        className="hidden"
+                      />
+                    </label>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">
+                      Best: square logo. It will be compressed to WebP automatically.
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={saveRestaurantBrandSettings}
+                  disabled={savingRestaurantLogo}
+                  className={`mt-4 w-full rounded-2xl px-4 py-3 text-sm font-bold text-white ${savingRestaurantLogo ? "bg-slate-400" : "bg-slate-900"}`}
+                >
+                  {savingRestaurantLogo ? "Saving..." : "Save Restaurant Logo"}
+                </button>
+              </div>
+
+              <div className="mt-4 rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+                <div className="flex justify-center">
+                  <QRCodeCanvas
+                    id="mini-qr-canvas"
+                    value={miniQrLink || "about:blank"}
+                    size={220}
+                    level="H"
+                    includeMargin
+                    bgColor="#ffffff"
+                    fgColor="#0f172a"
+                  />
+                </div>
+
+                <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-3 py-3">
+                  <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    Mini Link
+                  </p>
+                  <p className="break-all text-xs text-slate-700">{miniQrLink || "Link not ready"}</p>
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={copyMiniQrLink}
+                    className="rounded-2xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white shadow-[0_10px_25px_rgba(37,99,235,0.28)]"
+                  >
+                    Copy Link
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={downloadMiniQr}
+                    className="rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white shadow-[0_10px_25px_rgba(5,150,105,0.28)]"
+                  >
+                    Download QR
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h4 className="text-sm font-black text-slate-900">Bill Payment QR</h4>
+                    <p className="mt-1 text-xs text-slate-500">
+                      This QR appears at the bottom of customer bill only.
+                    </p>
+                  </div>
+                  {paymentQrPreview ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPaymentQrFile(null);
+                        setPaymentQrUrl("");
+                        setPaymentQrPreview("");
+                      }}
+                      className="rounded-full bg-rose-50 px-3 py-1 text-xs font-bold text-rose-600 ring-1 ring-rose-100"
+                    >
+                      Remove
+                    </button>
+                  ) : null}
+                </div>
+
+                <div className="mt-4 flex items-center gap-4">
+                  <div className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-2xl border border-dashed border-slate-300 bg-white">
+                    {paymentQrPreview ? (
+                      <img src={paymentQrPreview} alt="Payment QR preview" className="h-full w-full object-contain p-2" />
+                    ) : (
+                      <span className="px-3 text-center text-xs font-semibold text-slate-400">No QR uploaded</span>
+                    )}
+                  </div>
+
+                  <div className="min-w-0 flex-1">
+                    <label className="inline-flex cursor-pointer items-center justify-center rounded-2xl bg-slate-900 px-4 py-3 text-sm font-bold text-white shadow-sm">
+                      Upload Payment QR
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handlePaymentQrChange}
+                        className="hidden"
+                      />
+                    </label>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">
+                      Use clear bank/eSewa/Khalti/Fonepay QR image. Blurry QR is useless.
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={savePaymentQrSettings}
+                  disabled={savingPaymentQr}
+                  className={`mt-4 w-full rounded-2xl px-4 py-3 text-sm font-bold text-white ${savingPaymentQr ? "bg-slate-400" : "bg-slate-900"}`}
+                >
+                  {savingPaymentQr ? "Saving..." : "Save Bill Payment QR"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+    {!popupView && miniView !== "report" && miniView !== "paymentHistory" && (
+      <div className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200/80 bg-white/95 px-3 pb-[calc(env(safe-area-inset-bottom)+10px)] pt-2 shadow-[0_-18px_45px_rgba(15,23,42,0.10)] backdrop-blur-xl lg:hidden">
+        {isOwnerMode ? (
+          <div className="mx-auto grid max-w-md grid-cols-5 items-end gap-1">
+            <button type="button" onClick={() => changeView("dashboard")} className={bottomNavButtonClass("dashboard")}>
+              <NavSvgIcon type="home" size={25} className={bottomNavIconClass("dashboard")} />
+              <span>Home</span>
+            </button>
+
+            <button type="button" onClick={() => changeView("order")} className={bottomNavButtonClass("order")}>
+              <NavSvgIcon type="order" size={25} className={bottomNavIconClass("order")} />
+              <span>Order</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={openTakeOrderModal}
+              className="-mt-6 flex min-h-[70px] flex-col items-center justify-center gap-1 rounded-[22px] px-2 pb-2 pt-2 text-[10px] font-black text-red-600 transition-all active:scale-[0.96]"
+              aria-label="Take order"
+            >
+              <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-red-600 shadow-[0_10px_30px_rgba(15,23,42,0.18)] ring-1 ring-slate-200/80">
+                <NavSvgIcon type="grid" size={26} strokeWidth={2.8} />
+              </span>
+            </button>
+
+            <button type="button" onClick={() => changeView("salesOverview")} className={bottomNavButtonClass("salesOverview")}>
+              <NavSvgIcon type="insights" size={25} className={bottomNavIconClass("salesOverview")} />
+              <span>Insights</span>
+            </button>
+
+            <button type="button" onClick={() => changeView("manage")} className={bottomNavButtonClass("manage")}>
+              <NavSvgIcon type="manage" size={25} className={bottomNavIconClass("manage")} />
+              <span>Manage</span>
+            </button>
+          </div>
+        ) : (
+          <div className="mx-auto grid max-w-md grid-cols-4 items-end gap-1">
+            <button type="button" onClick={() => changeView("dashboard")} className={bottomNavButtonClass("dashboard")}>
+              <NavSvgIcon type="home" size={25} className={bottomNavIconClass("dashboard")} />
+              <span>Home</span>
+            </button>
+
+            <button type="button" onClick={() => changeView("order")} className={bottomNavButtonClass("order")}>
+              <NavSvgIcon type="order" size={25} className={bottomNavIconClass("order")} />
+              <span>Order</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={openTakeOrderModal}
+              className="-mt-6 flex min-h-[70px] flex-col items-center justify-center gap-1 rounded-[22px] px-2 pb-2 pt-2 text-[10px] font-black text-red-600 transition-all active:scale-[0.96]"
+              aria-label="Take order"
+            >
+              <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-red-600 shadow-[0_10px_30px_rgba(15,23,42,0.18)] ring-1 ring-slate-200/80">
+                <NavSvgIcon type="grid" size={26} strokeWidth={2.8} />
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => openPlusMenuAction(logoutOwner)}
+              className="group flex min-h-[58px] flex-col items-center justify-center gap-1 rounded-2xl px-2 py-2 text-[11px] font-bold leading-none text-slate-500 transition-all active:scale-[0.96]"
+            >
+              <NavSvgIcon type="logout" size={25} className="opacity-80 group-hover:opacity-100" strokeWidth={2.2} />
+              <span>Logout</span>
+            </button>
+          </div>
+        )}
+      </div>
+    )}
+      </div>
+    </main>
+    </>
+  );
+}

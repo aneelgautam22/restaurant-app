@@ -27,25 +27,28 @@ export default function AppSplash({
         }`}
       >
         <div
-          className={`mx-auto mb-3 h-20 w-20 rounded-[22px] overflow-hidden shadow-[0_18px_45px_rgba(239,68,68,0.35)] ring-1 ring-white/15 transition-all duration-700 ease-out ${
+          className={`mx-auto mb-3 h-20 w-20 rounded-[22px] overflow-hidden shadow-[0_18px_45px_rgba(239,68,68,0.35)] transition-all duration-700 ease-out ${
             visible ? "scale-100 opacity-100" : "scale-90 opacity-0"
           }`}
         >
           <img
             src="/logo.png"
-            alt="Restrofy Logo"
+            alt="ServeX Logo"
             className="h-full w-full object-cover"
           />
         </div>
 
-        <p
-          className={`text-base font-extrabold tracking-[0.2em] uppercase mt-3 transition-all duration-700 delay-100 ease-out ${
-            visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2"
-          }`}
-        >
-          <span className="text-white">RESTRO</span>
-          <span className="text-red-500">FY</span>
-        </p>
+   <p
+  className={`text-base font-extrabold tracking-[0.2em] uppercase mt-3 transition-all duration-700 delay-100 ease-out ${
+    visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2"
+  }`}
+>
+  <span className="text-white">SERVE</span>
+
+  <span className="text-red-500 text-[1.45rem] ml-[1px] inline-block">
+    X
+  </span>
+</p>
 
         <p
           className={`mt-3 text-sm text-slate-300 transition-all duration-700 delay-150 ease-out ${

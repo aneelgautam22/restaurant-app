@@ -1,11 +1,22 @@
-const CACHE_NAME = "mini-pwa-v4";
+const CACHE_NAME = "mini-pwa-v5";
 
 self.addEventListener("install", (event) => {
   self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(
+    caches
+      .keys()
+      .then((keys) =>
+        Promise.all(
+          keys
+            .filter((key) => key !== CACHE_NAME)
+            .map((key) => caches.delete(key))
+        )
+      )
+      .then(() => self.clients.claim())
+  );
 });
 
 self.addEventListener("fetch", (event) => {
@@ -13,7 +24,6 @@ self.addEventListener("fetch", (event) => {
 
   if (req.method !== "GET") return;
 
-  // HTML page
   if (req.mode === "navigate") {
     event.respondWith(
       fetch(req)
@@ -27,7 +37,6 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // JS / CSS / _next files
   if (
     req.url.includes("_next") ||
     req.url.endsWith(".js") ||
@@ -48,11 +57,9 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // images and other files
   event.respondWith(fetch(req).catch(() => caches.match(req)));
 });
 
-// Push notification received
 self.addEventListener("push", (event) => {
   let data = {
     title: "Order Ready",
@@ -80,7 +87,6 @@ self.addEventListener("push", (event) => {
   );
 });
 
-// Manual test notification from page
 self.addEventListener("message", (event) => {
   if (event.data?.type === "TEST_NOTIFICATION") {
     event.waitUntil(
@@ -98,27 +104,28 @@ self.addEventListener("message", (event) => {
   }
 });
 
-// Notification click
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
 
   const targetUrl = event.notification?.data?.url || "/";
 
   event.waitUntil(
-    clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientList) => {
-      for (const client of clientList) {
-        if ("focus" in client) {
-          client.focus();
-          if ("navigate" in client) {
-            client.navigate(targetUrl);
+    clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then((clientList) => {
+        for (const client of clientList) {
+          if ("focus" in client) {
+            client.focus();
+            if ("navigate" in client) {
+              client.navigate(targetUrl);
+            }
+            return;
           }
-          return;
         }
-      }
 
-      if (clients.openWindow) {
-        return clients.openWindow(targetUrl);
-      }
-    })
+        if (clients.openWindow) {
+          return clients.openWindow(targetUrl);
+        }
+      })
   );
 });

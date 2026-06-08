@@ -7,11 +7,21 @@ import { QRCodeCanvas } from "qrcode.react";
 
 const CREATE_ADMIN_ACCESS_KEY = "create_admin_access";
 
+function ServeXBrand() {
+  return (
+    <h1 className="mt-5 text-5xl font-black tracking-tight text-slate-950">
+      Serve
+      <span className="ml-[2px] inline-block text-[3.65rem] leading-none text-red-600">
+        X
+      </span>
+    </h1>
+  );
+}
+
 export default function CreateRestaurant() {
   const router = useRouter();
 
   const [name, setName] = useState("");
-  const [type, setType] = useState<"full" | "mini">("full");
   const [loading, setLoading] = useState(false);
   const [showSplash, setShowSplash] = useState(true);
   const [createdId, setCreatedId] = useState<number | null>(null);
@@ -21,24 +31,18 @@ export default function CreateRestaurant() {
   const [adminUnlocked, setAdminUnlocked] = useState(false);
   const [adminChecking, setAdminChecking] = useState(false);
 
-  const ownerQrRef = useRef<HTMLDivElement | null>(null);
-  const waiterQrRef = useRef<HTMLDivElement | null>(null);
-  const kitchenQrRef = useRef<HTMLDivElement | null>(null);
-  const miniQrRef = useRef<HTMLDivElement | null>(null);
+  const appQrRef = useRef<HTMLDivElement | null>(null);
 
-  const baseUrl =
-    typeof window !== "undefined" ? window.location.origin : "";
+  const baseUrl = typeof window !== "undefined" ? window.location.origin : "";
 
-  const adminIdFromEnv =
-    process.env.NEXT_PUBLIC_CREATE_ADMIN_ID || "admin";
-
+  const adminIdFromEnv = process.env.NEXT_PUBLIC_CREATE_ADMIN_ID || "admin";
   const adminPasswordFromEnv =
     process.env.NEXT_PUBLIC_CREATE_ADMIN_PASSWORD || "Piano@12";
 
   useEffect(() => {
     const timer = setTimeout(() => {
       setShowSplash(false);
-    }, 2500);
+    }, 900);
 
     return () => clearTimeout(timer);
   }, []);
@@ -70,10 +74,7 @@ export default function CreateRestaurant() {
     const cleanId = adminIdInput.trim();
     const cleanPassword = adminPasswordInput.trim();
 
-    if (
-      cleanId === adminIdFromEnv &&
-      cleanPassword === adminPasswordFromEnv
-    ) {
+    if (cleanId === adminIdFromEnv && cleanPassword === adminPasswordFromEnv) {
       setAdminUnlocked(true);
       setAdminIdInput("");
       setAdminPasswordInput("");
@@ -96,7 +97,6 @@ export default function CreateRestaurant() {
     setAdminPasswordInput("");
     setCreatedId(null);
     setName("");
-    setType("full");
   }
 
   async function handleCreate() {
@@ -113,9 +113,9 @@ export default function CreateRestaurant() {
         {
           name: name.trim(),
           owner_password: "setup_pending",
-          waiter_password: type === "full" ? "setup_pending" : null,
-          kitchen_password: type === "full" ? "setup_pending" : null,
-          app_type: type,
+          waiter_password: "setup_pending",
+          kitchen_password: null,
+          app_type: "unified",
         },
       ])
       .select()
@@ -130,7 +130,7 @@ export default function CreateRestaurant() {
 
     setCreatedId(data.id);
     localStorage.setItem("lastRestaurantId", String(data.id));
-    localStorage.setItem("lastPanel", type === "mini" ? "mini" : "owner");
+    localStorage.setItem("lastPanel", "owner");
   }
 
   async function copyLink(link: string) {
@@ -159,34 +159,23 @@ export default function CreateRestaurant() {
     a.click();
   }
 
-  const ownerLink = createdId ? `${baseUrl}/owner?id=${createdId}` : "";
-  const waiterLink = createdId ? `${baseUrl}/waiter?id=${createdId}` : "";
-  const kitchenLink = createdId ? `${baseUrl}/kitchen?id=${createdId}` : "";
-  const miniLink = createdId ? `${baseUrl}/mini?id=${createdId}` : "";
+  const appLink = createdId ? `${baseUrl}/mini?id=${createdId}` : "";
 
   if (showSplash) {
     return (
-      <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#1e293b_0%,_#0f172a_35%,_#020617_100%)] flex items-center justify-center px-4">
+      <main className="min-h-screen bg-white flex items-center justify-center px-6">
         <div className="text-center">
           <img
             src="/logo.png"
-            alt="Restrofy Logo"
-            className="w-24 h-24 mx-auto rounded-[28px] object-cover shadow-[0_18px_45px_rgba(239,68,68,0.35)] border border-white/10"
+            alt="ServeX Logo"
+            className="mx-auto h-20 w-20 rounded-2xl object-cover shadow-[0_16px_45px_rgba(220,38,38,0.28)]"
           />
 
-          <h1 className="mt-5 text-4xl font-extrabold tracking-wide text-white">
-            Restrofy
-          </h1>
+          <ServeXBrand />
 
-          <p className="mt-2 text-sm text-slate-300">
-            Smart Restaurant Management
+          <p className="mt-3 text-sm font-bold text-slate-500">
+            Modern Restaurant POS & Management System
           </p>
-
-          <div className="mt-5 flex items-center justify-center gap-2">
-            <span className="h-2.5 w-2.5 rounded-full bg-white animate-pulse"></span>
-            <span className="h-2.5 w-2.5 rounded-full bg-white/80 animate-pulse [animation-delay:200ms]"></span>
-            <span className="h-2.5 w-2.5 rounded-full bg-white/60 animate-pulse [animation-delay:400ms]"></span>
-          </div>
         </div>
       </main>
     );
@@ -194,407 +183,230 @@ export default function CreateRestaurant() {
 
   if (!adminUnlocked) {
     return (
-      <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#1e293b_0%,_#0f172a_35%,_#020617_100%)] flex items-center justify-center px-4 py-10">
-        <div className="w-full max-w-md">
-          <div className="mb-8 text-center">
+      <main className="min-h-screen bg-white text-slate-950">
+        <div className="mx-auto flex min-h-screen w-full max-w-md flex-col justify-center px-7 py-8">
+          <section className="text-center">
             <img
               src="/logo.png"
-              alt="Restrofy Logo"
-              className="w-20 h-20 mx-auto rounded-[28px] object-cover shadow-[0_18px_45px_rgba(239,68,68,0.35)] border border-white/10"
+              alt="ServeX Logo"
+              className="mx-auto h-20 w-20 rounded-2xl object-cover shadow-[0_16px_45px_rgba(220,38,38,0.28)]"
             />
 
-            <h1 className="mt-5 text-4xl font-extrabold tracking-wide text-white">
-              Restrofy
-            </h1>
+            <ServeXBrand />
 
-            <p className="mt-2 text-sm text-slate-300">
-              Admin access required
+            <p className="mt-3 text-xl font-black leading-snug text-slate-950">
+              Admin Access
+              <br />
+              <span className="text-red-600">Required</span>
             </p>
-          </div>
+          </section>
 
-          <div className="rounded-[32px] border border-white/10 bg-white/95 backdrop-blur-xl shadow-[0_25px_80px_rgba(0,0,0,0.35)] p-6 sm:p-8">
-            <div className="mb-6 text-center">
-              <div className="inline-flex items-center rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 border border-red-100">
-                Admin Login
-              </div>
-
-              <h2 className="mt-4 text-2xl font-bold text-slate-900">
+          <section className="mt-8">
+            <div className="mb-5 text-center">
+              <p className="text-2xl font-black text-slate-950">
                 Unlock Create Page
-              </h2>
-
-              <p className="mt-2 text-sm text-slate-500">
+              </p>
+              <p className="mt-2 text-sm font-semibold text-slate-500">
                 Only admin can create restaurant workspaces
               </p>
             </div>
 
-            <form onSubmit={unlockCreatePage} className="space-y-5">
+            <form onSubmit={unlockCreatePage} className="space-y-4">
               <div>
-                <label className="mb-2 block text-sm font-semibold text-slate-700">
+                <label className="mb-2 block text-xs font-extrabold uppercase tracking-[0.2em] text-slate-500">
                   Admin ID
                 </label>
 
-                <div className="flex items-center rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm focus-within:border-red-400 focus-within:ring-4 focus-within:ring-red-100">
-                  <span className="mr-3 text-lg">🪪</span>
-                  <input
-                    type="text"
-                    placeholder="Enter admin ID"
-                    value={adminIdInput}
-                    onChange={(e) => setAdminIdInput(e.target.value)}
-                    className="w-full bg-transparent text-slate-900 placeholder:text-slate-400 outline-none"
-                  />
-                </div>
+                <input
+                  type="text"
+                  placeholder="Enter admin ID"
+                  value={adminIdInput}
+                  onChange={(e) => setAdminIdInput(e.target.value)}
+                  className="w-full rounded-[22px] border border-slate-200 bg-white px-5 py-4 text-base font-bold text-slate-950 shadow-sm outline-none placeholder:text-slate-400 focus:border-red-500"
+                />
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-semibold text-slate-700">
+                <label className="mb-2 block text-xs font-extrabold uppercase tracking-[0.2em] text-slate-500">
                   Admin Password
                 </label>
 
-                <div className="flex items-center rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm focus-within:border-red-400 focus-within:ring-4 focus-within:ring-red-100">
-                  <span className="mr-3 text-lg">🔐</span>
-                  <input
-                    type="password"
-                    placeholder="Enter admin password"
-                    value={adminPasswordInput}
-                    onChange={(e) => setAdminPasswordInput(e.target.value)}
-                    className="w-full bg-transparent text-slate-900 placeholder:text-slate-400 outline-none"
-                  />
-                </div>
+                <input
+                  type="password"
+                  placeholder="Enter admin password"
+                  value={adminPasswordInput}
+                  onChange={(e) => setAdminPasswordInput(e.target.value)}
+                  className="w-full rounded-[22px] border border-slate-200 bg-white px-5 py-4 text-base font-bold text-slate-950 shadow-sm outline-none placeholder:text-slate-400 focus:border-red-500"
+                />
               </div>
 
               <button
                 type="submit"
                 disabled={adminChecking}
-                className="w-full rounded-2xl bg-gradient-to-r from-red-600 via-red-500 to-orange-500 px-4 py-3.5 text-white font-semibold shadow-[0_14px_30px_rgba(239,68,68,0.35)] hover:scale-[1.01] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-70"
+                className="block w-full rounded-[22px] bg-red-600 px-5 py-4 text-base font-black text-white shadow-[0_14px_32px_rgba(220,38,38,0.25)] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {adminChecking ? "Checking..." : "Login to Continue"}
               </button>
             </form>
-
-            <div className="mt-6 rounded-2xl bg-slate-50 border border-slate-200 p-4">
-              <p className="text-xs leading-5 text-slate-500 text-center">
-                This page is protected so only you can create new restaurant
-                accounts.
-              </p>
-            </div>
-          </div>
+          </section>
         </div>
       </main>
     );
   }
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#1e293b_0%,_#0f172a_35%,_#020617_100%)] flex items-center justify-center px-4 py-10">
-      <div className="w-full max-w-md">
-        <div className="mb-8 text-center relative">
+    <main className="min-h-screen bg-white text-slate-950">
+      <div className="mx-auto flex min-h-screen w-full max-w-md flex-col px-7 py-8">
+        <section className="text-center">
           <img
             src="/logo.png"
-            alt="Restrofy Logo"
-            className="w-20 h-20 mx-auto rounded-[28px] object-cover shadow-[0_18px_45px_rgba(239,68,68,0.35)] border border-white/10"
+            alt="ServeX Logo"
+            className="mx-auto h-20 w-20 rounded-2xl object-cover shadow-[0_16px_45px_rgba(220,38,38,0.28)]"
           />
 
-          <h1 className="mt-5 text-4xl font-extrabold tracking-wide text-white">
-            Restrofy
-          </h1>
+          <ServeXBrand />
 
-          <p className="mt-2 text-sm text-slate-300">
-            Create your restaurant workspace and start managing smarter
+          <p className="mt-3 text-xl font-black leading-snug text-slate-950">
+            Create Restaurant
+            <br />
+            <span className="text-red-600">Workspace</span>
           </p>
 
           <button
             type="button"
             onClick={logoutCreateAdmin}
-            className="mt-4 inline-flex items-center rounded-full bg-white/10 px-4 py-2 text-xs font-semibold text-white border border-white/10"
+            className="mt-4 rounded-full border border-slate-200 bg-white px-5 py-2 text-xs font-black text-slate-600 shadow-sm"
           >
             Logout Admin
           </button>
-        </div>
+        </section>
 
-        <div className="rounded-[32px] border border-white/10 bg-white/95 backdrop-blur-xl shadow-[0_25px_80px_rgba(0,0,0,0.35)] p-6 sm:p-8">
-          <div className="mb-6 text-center">
-            <div className="inline-flex items-center rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 border border-red-100">
-              Restaurant Setup
-            </div>
-
-            <h2 className="mt-4 text-2xl font-bold text-slate-900">
-              Create Restaurant Account
-            </h2>
-
-            <p className="mt-2 text-sm text-slate-500">
-              Set up your restaurant and continue to your management panels
-            </p>
-          </div>
-
+        <section className="mt-8 flex-1">
           {!createdId ? (
             <>
-              <div className="space-y-5">
+              <div className="text-center">
+                <h2 className="text-3xl font-black tracking-tight text-slate-950">
+                  Restaurant Setup
+                </h2>
+                <p className="mt-2 text-sm font-semibold leading-6 text-slate-500">
+                  One unified app for owner and staff access
+                </p>
+              </div>
+
+              <div className="mt-7 space-y-5">
                 <div>
-                  <label className="mb-2 block text-sm font-semibold text-slate-700">
+                  <label className="mb-2 block text-xs font-extrabold uppercase tracking-[0.2em] text-slate-500">
                     Restaurant Name
                   </label>
 
-                  <div className="flex items-center rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm focus-within:border-red-400 focus-within:ring-4 focus-within:ring-red-100">
-                    <span className="mr-3 text-lg">🏪</span>
-                    <input
-                      type="text"
-                      placeholder="Enter restaurant name"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      className="w-full bg-transparent text-slate-900 placeholder:text-slate-400 outline-none"
-                    />
-                  </div>
+                  <input
+                    type="text"
+                    placeholder="Enter restaurant name"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    className="w-full rounded-[22px] border border-slate-200 bg-white px-5 py-4 text-base font-bold text-slate-950 shadow-sm outline-none placeholder:text-slate-400 focus:border-red-500"
+                  />
                 </div>
 
-                <div>
-                  <label className="mb-2 block text-sm font-semibold text-slate-700">
-                    App Type
-                  </label>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setType("full")}
-                      className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
-                        type === "full"
-                          ? "border-blue-500 bg-blue-500 text-white shadow-[0_10px_25px_rgba(59,130,246,0.28)]"
-                          : "border-slate-200 bg-white text-slate-700"
-                      }`}
-                    >
-                      Full Panel
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setType("mini")}
-                      className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
-                        type === "mini"
-                          ? "border-emerald-500 bg-emerald-500 text-white shadow-[0_10px_25px_rgba(16,185,129,0.28)]"
-                          : "border-slate-200 bg-white text-slate-700"
-                      }`}
-                    >
-                      Mini App
-                    </button>
-                  </div>
-
-                  <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                    <p className="text-xs leading-5 text-slate-500">
-                      {type === "full"
-                        ? "Full Panel is for bigger restaurants with separate Owner, Waiter and Kitchen panels."
-                        : "Mini App is for smaller restaurants where everything can be managed from one device."}
-                    </p>
-                  </div>
+                <div className="rounded-[22px] border border-slate-100 bg-slate-50 px-5 py-4">
+                  <p className="text-center text-sm font-semibold leading-6 text-slate-500">
+                    One app will be created. Owner and staff panel selection
+                    will happen inside the app.
+                  </p>
                 </div>
-
-                <button
-                  onClick={handleCreate}
-                  disabled={loading}
-                  className="w-full rounded-2xl bg-gradient-to-r from-red-600 via-red-500 to-orange-500 px-4 py-3.5 text-white font-semibold shadow-[0_14px_30px_rgba(239,68,68,0.35)] hover:scale-[1.01] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-70"
-                >
-                  {loading
-                    ? "Creating Restaurant..."
-                    : type === "mini"
-                    ? "Create Mini Restaurant"
-                    : "Create Full Restaurant"}
-                </button>
-              </div>
-
-              <div className="mt-6 rounded-2xl bg-slate-50 border border-slate-200 p-4">
-                <p className="text-xs leading-5 text-slate-500 text-center">
-                  Your restaurant will be created first.{" "}
-                  {type === "full"
-                    ? "Owner, waiter and kitchen passwords can be set up later from your owner side."
-                    : "Mini app access can be set up later from your owner side."}
-                </p>
-              </div>
-            </>
-          ) : (
-            <div className="space-y-5">
-              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-center">
-                <p className="text-sm font-semibold text-emerald-700">
-                  Restaurant created successfully
-                </p>
-                <p className="mt-1 text-xs text-slate-600">
-                  Restaurant ID: <span className="font-bold">{createdId}</span>
-                </p>
-              </div>
-
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <h3 className="text-base font-bold text-slate-900 text-center">
-                  QR Access
-                </h3>
-                <p className="mt-1 text-xs text-center text-slate-500">
-                  Scan, copy, or download these QR codes
-                </p>
-
-                <div className="mt-4 grid grid-cols-2 gap-4">
-                  {type === "full" && (
-                    <>
-                      <div className="rounded-2xl bg-white p-3 text-center border border-slate-200">
-                        <div ref={ownerQrRef} className="flex justify-center">
-                          <QRCodeCanvas value={ownerLink} size={120} />
-                        </div>
-                        <p className="mt-2 text-xs font-semibold text-slate-800">
-                          Owner
-                        </p>
-                        <div className="mt-3 space-y-2">
-                          <button
-                            type="button"
-                            onClick={() => copyLink(ownerLink)}
-                            className="w-full rounded-xl bg-slate-900 px-3 py-2 text-[11px] font-semibold text-white"
-                          >
-                            Copy Link
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              downloadQr(ownerQrRef, `owner-qr-${createdId}.png`)
-                            }
-                            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-semibold text-slate-700"
-                          >
-                            Download QR
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="rounded-2xl bg-white p-3 text-center border border-slate-200">
-                        <div ref={waiterQrRef} className="flex justify-center">
-                          <QRCodeCanvas value={waiterLink} size={120} />
-                        </div>
-                        <p className="mt-2 text-xs font-semibold text-slate-800">
-                          Waiter
-                        </p>
-                        <div className="mt-3 space-y-2">
-                          <button
-                            type="button"
-                            onClick={() => copyLink(waiterLink)}
-                            className="w-full rounded-xl bg-slate-900 px-3 py-2 text-[11px] font-semibold text-white"
-                          >
-                            Copy Link
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              downloadQr(waiterQrRef, `waiter-qr-${createdId}.png`)
-                            }
-                            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-semibold text-slate-700"
-                          >
-                            Download QR
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="rounded-2xl bg-white p-3 text-center border border-slate-200 col-span-2">
-                        <div ref={kitchenQrRef} className="flex justify-center">
-                          <QRCodeCanvas value={kitchenLink} size={120} />
-                        </div>
-                        <p className="mt-2 text-xs font-semibold text-slate-800">
-                          Kitchen
-                        </p>
-                        <div className="mt-3 grid grid-cols-2 gap-2">
-                          <button
-                            type="button"
-                            onClick={() => copyLink(kitchenLink)}
-                            className="w-full rounded-xl bg-slate-900 px-3 py-2 text-[11px] font-semibold text-white"
-                          >
-                            Copy Link
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              downloadQr(kitchenQrRef, `kitchen-qr-${createdId}.png`)
-                            }
-                            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-semibold text-slate-700"
-                          >
-                            Download QR
-                          </button>
-                        </div>
-                      </div>
-                    </>
-                  )}
-
-                  {type === "mini" && (
-                    <div className="rounded-2xl bg-white p-3 text-center border border-slate-200 col-span-2">
-                      <div ref={miniQrRef} className="flex justify-center">
-                        <QRCodeCanvas value={miniLink} size={120} />
-                      </div>
-                      <p className="mt-2 text-xs font-semibold text-slate-800">
-                        Mini App
-                      </p>
-                      <div className="mt-3 grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => copyLink(miniLink)}
-                          className="w-full rounded-xl bg-slate-900 px-3 py-2 text-[11px] font-semibold text-white"
-                        >
-                          Copy Link
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            downloadQr(miniQrRef, `mini-qr-${createdId}.png`)
-                          }
-                          className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-semibold text-slate-700"
-                        >
-                          Download QR
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 gap-3">
-                {type === "full" ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => router.push(`/owner?id=${createdId}`)}
-                      className="w-full rounded-2xl bg-blue-500 px-4 py-3 text-sm font-semibold text-white shadow-[0_10px_25px_rgba(59,130,246,0.28)]"
-                    >
-                      Open Owner Panel
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => router.push(`/waiter?id=${createdId}`)}
-                      className="w-full rounded-2xl bg-red-500 px-4 py-3 text-sm font-semibold text-white shadow-[0_10px_25px_rgba(239,68,68,0.28)]"
-                    >
-                      Open Waiter Panel
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => router.push(`/kitchen?id=${createdId}`)}
-                      className="w-full rounded-2xl bg-orange-500 px-4 py-3 text-sm font-semibold text-white shadow-[0_10px_25px_rgba(249,115,22,0.28)]"
-                    >
-                      Open Kitchen Panel
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => router.push(`/mini?id=${createdId}`)}
-                    className="w-full rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-white shadow-[0_10px_25px_rgba(16,185,129,0.28)]"
-                  >
-                    Open Mini App
-                  </button>
-                )}
 
                 <button
                   type="button"
-                  onClick={() => {
-                    setCreatedId(null);
-                    setName("");
-                    setType("full");
-                  }}
-                  className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700"
+                  onClick={handleCreate}
+                  disabled={loading}
+                  className="block w-full rounded-[22px] bg-red-600 px-5 py-4 text-base font-black text-white shadow-[0_14px_32px_rgba(220,38,38,0.25)] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  Create Another Restaurant
+                  {loading ? "Creating Restaurant..." : "Create Restaurant"}
                 </button>
               </div>
+
+              <p className="mt-5 text-center text-xs font-semibold leading-5 text-slate-400">
+                Password setup can be completed from the owner side after
+                restaurant creation.
+              </p>
+            </>
+          ) : (
+            <div className="space-y-5">
+              <div className="text-center">
+                <h2 className="text-3xl font-black tracking-tight text-slate-950">
+                  Created <span className="text-red-600">Successfully</span>
+                </h2>
+                <p className="mt-2 text-sm font-semibold text-slate-500">
+                  Restaurant ID:{" "}
+                  <span className="font-black text-slate-950">{createdId}</span>
+                </p>
+              </div>
+
+              <div className="rounded-[26px] border border-slate-100 bg-slate-50 p-5 text-center">
+                <h3 className="text-lg font-black text-slate-950">
+                  QR Access
+                </h3>
+
+                <p className="mt-1 text-xs font-semibold text-slate-500">
+                  One QR for the unified restaurant app
+                </p>
+
+                <div className="mt-5 rounded-[24px] bg-white p-5 shadow-sm">
+                  <div ref={appQrRef} className="flex justify-center">
+                    <QRCodeCanvas value={appLink} size={150} />
+                  </div>
+
+                  <p className="mt-4 text-sm font-black text-slate-950">
+                    Restaurant App
+                  </p>
+
+                  <p className="mt-2 break-all text-xs font-semibold leading-5 text-slate-500">
+                    {appLink}
+                  </p>
+
+                  <div className="mt-5 grid grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={() => copyLink(appLink)}
+                      className="rounded-[18px] bg-slate-950 px-4 py-3 text-xs font-black text-white"
+                    >
+                      Copy Link
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        downloadQr(appQrRef, `restaurant-app-qr-${createdId}.png`)
+                      }
+                      className="rounded-[18px] bg-red-600 px-4 py-3 text-xs font-black text-white"
+                    >
+                      Download QR
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => router.push(`/mini?id=${createdId}`)}
+                className="block w-full rounded-[22px] bg-slate-950 px-5 py-4 text-base font-black text-white shadow-[0_14px_30px_rgba(15,23,42,0.18)] active:scale-[0.99]"
+              >
+                Open Restaurant App
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setCreatedId(null);
+                  setName("");
+                }}
+                className="block w-full rounded-[22px] bg-red-600 px-5 py-4 text-base font-black text-white shadow-[0_14px_32px_rgba(220,38,38,0.25)] active:scale-[0.99]"
+              >
+                Create Another Restaurant
+              </button>
             </div>
           )}
-        </div>
+        </section>
       </div>
     </main>
   );

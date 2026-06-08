@@ -188,7 +188,7 @@ function HomePageContent() {
   }, [appType]);
 
   if (showSplash) {
-    return <AppSplash subtitle="Opening Workspace..." />;
+    return <AppSplash subtitle="Opening ServeX..." />;
   }
 
   return (
@@ -198,15 +198,20 @@ function HomePageContent() {
           <div className="mx-auto mb-3 h-20 w-20 rounded-[22px] overflow-hidden shadow-[0_18px_45px_rgba(239,68,68,0.35)] ring-1 ring-white/15">
             <img
               src="/logo.png"
-              alt="logo"
+              alt="ServeX Logo"
               className="h-full w-full object-cover"
             />
           </div>
 
-          <p className="mt-2 text-sm font-bold tracking-[0.25em] uppercase">
-            <span className="text-white/90">RESTRO</span>
-            <span className="text-red-500">FY</span>
-          </p>
+          <div className="mt-2 flex items-center justify-center">
+            <span className="text-sm font-bold tracking-[0.25em] uppercase text-white/90">
+              SERVE
+            </span>
+
+            <span className="ml-[2px] inline-block text-[1.55rem] font-black leading-none text-red-500">
+              X
+            </span>
+          </div>
 
           <h1 className="mt-2 text-[28px] leading-[1.05] font-bold tracking-tight">
             {loading ? (
@@ -234,9 +239,11 @@ function HomePageContent() {
               <p className="text-[10px] font-bold tracking-[0.22em] uppercase text-slate-500">
                 Quick Access
               </p>
+
               <p className="mt-1 text-[15px] font-semibold text-slate-800">
                 Open the panel you need
               </p>
+
               <p className="mt-1 text-[12px] leading-5 text-slate-500">
                 Start a new restaurant or continue from your existing workspace.
               </p>
@@ -271,6 +278,7 @@ function HomePageContent() {
                       <div className="text-[15px] font-bold leading-tight">
                         {panel.title}
                       </div>
+
                       <div
                         className={[
                           "mt-0.5 text-[12px] leading-5",
@@ -303,6 +311,7 @@ function HomePageContent() {
                   <span className="font-bold text-slate-700">
                     {activeRestaurantId}
                   </span>
+
                   {appType && (
                     <>
                       {" • "}Type:{" "}
@@ -325,7 +334,7 @@ function HomePageContent() {
 
 export default function HomePage() {
   return (
-    <Suspense fallback={<AppSplash subtitle="Opening Workspace..." />}>
+    <Suspense fallback={<AppSplash subtitle="Opening ServeX..." />}>
       <HomePageContent />
     </Suspense>
   );
