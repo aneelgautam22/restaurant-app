@@ -9,6 +9,33 @@ import jsPDF from "jspdf";
 import { miniDB } from "@/lib/mini-db";
 import type { Table } from "dexie";
 
+function generateUuid() {
+  if (
+    typeof globalThis !== "undefined" &&
+    globalThis.crypto &&
+    typeof globalThis.crypto.randomUUID === "function"
+  ) {
+    return globalThis.crypto.randomUUID();
+  }
+
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(
+    /[xy]/g,
+    (c) => {
+      const r = Math.random() * 16 | 0;
+      const v = c === "x" ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    }
+  );
+}
+
+function isValidUuid(value: unknown): value is string {
+  return typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function validUuidOrNull(value: unknown) {
+  return isValidUuid(value) ? value : null;
+}
 
 function NavSvgIcon({ type, size = 25, className = "", strokeWidth = 2.3 }: { type: "home" | "order" | "insights" | "manage" | "grid" | "logout"; size?: number; className?: string; strokeWidth?: number }) {
   const common = {
@@ -96,6 +123,7 @@ type MenuItem = {
 
 type OrderItem = {
   id: number;
+  client_item_id?: string | null;
   item_name: string;
   menu_item_id?: number | null;
   quantity: number;
@@ -106,6 +134,8 @@ type OrderItem = {
 
 type OrderRow = {
   id: number;
+  server_id?: number | null;
+  client_create_id?: string | null;
   table_number: string;
   status: string;
   created_at: string;
@@ -378,6 +408,7 @@ type LocalMenuItemRow = {
 type LocalOrderRow = {
   id?: number;
   server_id?: number | null;
+  client_create_id?: string | null;
   restaurant_id: number;
   table_number: string;
   status: string;
@@ -396,6 +427,7 @@ type LocalOrderRow = {
   tax_amount?: number | null;
   grand_total?: number | null;
   remarks?: string | null;
+  inventory_deducted?: boolean | null;
   sync_status?: "synced" | "pending_create" | "pending_update" | "pending_payment" | "pending_delete";
 };
 
@@ -404,6 +436,7 @@ type LocalOrderItemRow = {
   local_order_id: number;
   server_order_id?: number | null;
   server_id?: number | null;
+  client_item_id?: string | null;
   item_name: string;
   menu_item_id?: number | null;
   quantity: number;
@@ -461,6 +494,11 @@ type CostInsightItemBreakdown = {
 type CostInsightBill = {
   table_number: string;
   order_ids: number[];
+  subtotal: number;
+  discount_amount: number;
+  net_sales: number;
+  tax_amount: number;
+  grand_total: number;
   selling: number;
   cost: number;
   profit: number;
@@ -651,7 +689,7 @@ export default function MiniApp({
     "dashboard"
   );
   const [orderTopTab, setOrderTopTab] = useState<"orders" | "table" | "kot">("orders");
-  const [selectedTableOrderId, setSelectedTableOrderId] = useState<number | null>(null);
+  const [selectedTableOrderId, setSelectedTableOrderId] = useState<string | null>(null);
   const isStaffMode = forcedRole === "staff";
   const isOwnerMode = forcedRole === "owner";
   const [popupView, setPopupView] = useState<PopupView>(null);
@@ -701,6 +739,7 @@ export default function MiniApp({
   const [reportMode, setReportMode] = useState<"kot" | "pay">("pay");
   const [selectedPaidOrder, setSelectedPaidOrder] = useState<OrderRow | null>(null);
   const [editingOrderId, setEditingOrderId] = useState<number | null>(null);
+  const editingOrderStableKeyRef = useRef<string | null>(null);
   const [editingOrderLoading, setEditingOrderLoading] = useState(false);
 
 
@@ -728,8 +767,9 @@ export default function MiniApp({
 
   const url = new URL(window.location.href);
   const currentId = url.searchParams.get("id");
-  const deviceToken = url.searchParams.get("device");
+  const deviceToken = url.searchParams.get("device") || url.searchParams.get("trusted");
   const trustedPanel = isStaffMode ? "staff" : "owner";
+  let shouldReplaceUrl = false;
 
   if (deviceToken) {
     localStorage.setItem("activeRestaurantId", String(restaurantId));
@@ -738,11 +778,20 @@ export default function MiniApp({
       `trustedDeviceToken:${restaurantId}:${trustedPanel}`,
       deviceToken
     );
+
+    // Remove bootstrap device token from URL after successful storage to reduce leakage risk.
+    url.searchParams.delete("device");
+    url.searchParams.delete("trusted");
+    shouldReplaceUrl = true;
   }
 
   if (currentId !== String(restaurantId)) {
     url.searchParams.set("id", String(restaurantId));
-    window.history.replaceState({}, "", url.toString());
+    shouldReplaceUrl = true;
+  }
+
+  if (shouldReplaceUrl) {
+    window.history.replaceState(window.history.state, "", url.toString());
   }
 }, [restaurantId, isStaffMode]);
   const [restaurantExists, setRestaurantExists] = useState(true);
@@ -1105,6 +1154,27 @@ export default function MiniApp({
     }, []);
   }, [customStockGroups, deletedStockGroupNames, inventoryItems]);
 
+  const recipeBuilderInventoryOptionsByCategory = useMemo(() => {
+    const raw = new Map<string, InventoryItem[]>();
+    const direct = new Map<string, InventoryItem[]>();
+    raw.set("all", []);
+    direct.set("all", []);
+
+    inventoryItems.forEach((item) => {
+      const target = item.item_type === "raw" ? raw : item.item_type === "direct" ? direct : null;
+      if (!target) return;
+
+      const category = item.category || "Other";
+      target.get("all")?.push(item);
+      if (!target.has(category)) {
+        target.set(category, []);
+      }
+      target.get(category)?.push(item);
+    });
+
+    return { raw, direct };
+  }, [inventoryItems]);
+
   const inventoryUnitUsageCountByCode = useMemo(() => {
     const map = new Map<string, number>();
 
@@ -1130,6 +1200,12 @@ export default function MiniApp({
 
   function getInventoryCategoryOptions() {
     return inventoryCategoryOptions;
+  }
+
+  function getRecipeBuilderInventoryOptions(type: "raw" | "direct", category?: string) {
+    const optionsByCategory = recipeBuilderInventoryOptionsByCategory[type];
+    if (!category || category === "all") return optionsByCategory.get("all") || [];
+    return optionsByCategory.get(category) || [];
   }
 
   function saveInlineInventoryCategory() {
@@ -1194,6 +1270,34 @@ function getInventoryTransactionSignedText(tx: InventoryTransaction) {
 
   const [rawBuilderRows, setRawBuilderRows] = useState<RecipeBuilderRow[]>([{ rowId: `raw-${Date.now()}`, inventoryId: "", quantity: "", category: "all" }]);
   const [directBuilderRows, setDirectBuilderRows] = useState<RecipeBuilderRow[]>([{ rowId: `direct-${Date.now()}`, inventoryId: "", quantity: "", category: "all" }]);
+  const rawBuilderSelectedInventoryIdsByRowId = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    rawBuilderRows.forEach((row) => {
+      map.set(
+        row.rowId,
+        new Set(
+          rawBuilderRows
+            .filter((entry) => entry.rowId !== row.rowId && entry.inventoryId)
+            .map((entry) => entry.inventoryId)
+        )
+      );
+    });
+    return map;
+  }, [rawBuilderRows]);
+  const directBuilderSelectedInventoryIdsByRowId = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    directBuilderRows.forEach((row) => {
+      map.set(
+        row.rowId,
+        new Set(
+          directBuilderRows
+            .filter((entry) => entry.rowId !== row.rowId && entry.inventoryId)
+            .map((entry) => entry.inventoryId)
+        )
+      );
+    });
+    return map;
+  }, [directBuilderRows]);
   const [addRecipeMenuPickerOpen, setAddRecipeMenuPickerOpen] = useState(false);
   const [addRecipeMenuSearch, setAddRecipeMenuSearch] = useState("");
   const [addRecipeStockPickerRowId, setAddRecipeStockPickerRowId] = useState<string | null>(null);
@@ -1265,9 +1369,15 @@ function getInventoryTransactionSignedText(tx: InventoryTransaction) {
 
   const menuRef = useRef<HTMLDivElement | null>(null);
   const contentScrollRef = useRef<HTMLDivElement | null>(null);
+  const paymentInFlightTableNumbersRef = useRef<Set<string>>(new Set());
+  const inventoryDeductionInFlightOrderIdsRef = useRef<Set<number>>(new Set());
   const ordersRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const menuRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const staffRefreshInFlightRef = useRef(false);
+  const paymentSyncInFlightRef = useRef(false);
+  const paymentSyncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const orderIdsRef = useRef<number[]>([]);
+  const [lastPaymentSyncTime, setLastPaymentSyncTime] = useState<string | null>(null);
 
   const getTodayLocalDate = () => {
     const today = new Date();
@@ -1306,8 +1416,31 @@ function getInventoryTransactionSignedText(tx: InventoryTransaction) {
       if (toastTimerRef.current) {
         clearTimeout(toastTimerRef.current);
       }
+      if (paymentSyncIntervalRef.current) {
+        clearInterval(paymentSyncIntervalRef.current);
+        paymentSyncIntervalRef.current = null;
+      }
     };
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !restaurantId) return;
+    setLastPaymentSyncTime(localStorage.getItem(`servex:lastPaymentSync:${restaurantId}`));
+  }, [restaurantId]);
+
+  function rememberPaymentSyncSuccess() {
+    if (typeof window === "undefined" || !restaurantId) return;
+    const value = new Date().toISOString();
+    localStorage.setItem(`servex:lastPaymentSync:${restaurantId}`, value);
+    setLastPaymentSyncTime(value);
+  }
+
+  function formatLastPaymentSyncTime(value: string | null) {
+    if (!value) return "Never";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "Never";
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
 
 
   function showToast(message: string, kind: "success" | "error" | "info" = "info") {
@@ -1323,33 +1456,73 @@ function getInventoryTransactionSignedText(tx: InventoryTransaction) {
       toastTimerRef.current = null;
     }, 2200);
   }
-  async function compressMenuImage(file: File): Promise<File> {
+async function compressMenuImage(file: File): Promise<File> {
   const imageBitmap = await createImageBitmap(file);
 
-  const maxSize = 600;
-  const scale = Math.min(maxSize / imageBitmap.width, maxSize / imageBitmap.height, 1);
+  let maxDimension = 600;
+  const targetSize = 30 * 1024; // 30KB
 
+  while (maxDimension >= 300) {
+    const scale = Math.min(
+      maxDimension / imageBitmap.width,
+      maxDimension / imageBitmap.height,
+      1
+    );
+
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(imageBitmap.width * scale);
+    canvas.height = Math.round(imageBitmap.height * scale);
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Image compression failed");
+
+    ctx.drawImage(imageBitmap, 0, 0, canvas.width, canvas.height);
+
+    for (let quality = 0.8; quality >= 0.3; quality -= 0.05) {
+      const blob = await new Promise<Blob | null>((resolve) => {
+        canvas.toBlob(resolve, "image/webp", quality);
+      });
+
+      if (!blob) continue;
+
+      if (blob.size <= targetSize) {
+        return new File(
+          [blob],
+          `${file.name.replace(/\.[^/.]+$/, "")}.webp`,
+          { type: "image/webp" }
+        );
+      }
+    }
+
+    // If still bigger than 30KB, reduce resolution and retry
+    maxDimension -= 100;
+  }
+
+  // Final fallback (always return something)
   const canvas = document.createElement("canvas");
-  canvas.width = Math.round(imageBitmap.width * scale);
-  canvas.height = Math.round(imageBitmap.height * scale);
+  canvas.width = 300;
+  canvas.height = Math.round(
+    (imageBitmap.height / imageBitmap.width) * 300
+  );
 
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Image compression failed");
 
   ctx.drawImage(imageBitmap, 0, 0, canvas.width, canvas.height);
 
-  const blob = await new Promise<Blob | null>((resolve) => {
-    canvas.toBlob(resolve, "image/webp", 0.75);
+  const fallbackBlob = await new Promise<Blob | null>((resolve) => {
+    canvas.toBlob(resolve, "image/webp", 0.3);
   });
 
-  if (!blob) throw new Error("Image compression failed");
+  if (!fallbackBlob) throw new Error("Image compression failed");
 
   return new File(
-    [blob],
+    [fallbackBlob],
     `${file.name.replace(/\.[^/.]+$/, "")}.webp`,
     { type: "image/webp" }
   );
 }
+
 async function uploadMenuImage(file: File) {
   if (!restaurantId) {
     throw new Error("Invalid restaurant link");
@@ -1381,14 +1554,55 @@ async function uploadMenuImage(file: File) {
 
   return data.publicUrl;
 }
+
+async function normalizePaymentQrImage(file: File): Promise<File> {
+  const imageBitmap = await createImageBitmap(file);
+  const canvasSize = Math.max(800, imageBitmap.width, imageBitmap.height);
+  const scale = Math.min(canvasSize / imageBitmap.width, canvasSize / imageBitmap.height, 1);
+  const drawWidth = Math.round(imageBitmap.width * scale);
+  const drawHeight = Math.round(imageBitmap.height * scale);
+  const offsetX = Math.round((canvasSize - drawWidth) / 2);
+  const offsetY = Math.round((canvasSize - drawHeight) / 2);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = canvasSize;
+  canvas.height = canvasSize;
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Payment QR normalization failed");
+
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(imageBitmap, offsetX, offsetY, drawWidth, drawHeight);
+
+  const blob = await new Promise<Blob | null>((resolve) => {
+    canvas.toBlob(resolve, "image/png");
+  });
+
+  if (!blob) throw new Error("Payment QR normalization failed");
+
+  return new File(
+    [blob],
+    `${file.name.replace(/\.[^/.]+$/, "") || "payment-qr"}.png`,
+    { type: "image/png" }
+  );
+}
+
 async function uploadPaymentQrImage(file: File) {
   if (!restaurantId) {
     throw new Error("Invalid restaurant link");
   }
 
-  // Do NOT compress payment QR images.
-  // Compression/resizing can blur QR patterns and make bank/eSewa/Fonepay scanners show "invalid QR".
-  const safeFileName = file.name
+  // Do NOT compress QR; only normalize to square white canvas to prevent PDF distortion.
+  let uploadFile = file;
+  try {
+    uploadFile = await normalizePaymentQrImage(file);
+  } catch (error) {
+    console.warn("Payment QR normalization failed; uploading original file", error);
+  }
+
+  const safeFileName = uploadFile.name
     .toLowerCase()
     .replace(/[^a-z0-9.]+/g, "-")
     .replace(/-+/g, "-")
@@ -1398,10 +1612,10 @@ async function uploadPaymentQrImage(file: File) {
 
   const { error } = await supabase.storage
     .from("payment-qr")
-    .upload(fileName, file, {
+    .upload(fileName, uploadFile, {
       cacheControl: "31536000",
       upsert: false,
-      contentType: file.type || "image/png",
+      contentType: uploadFile.type || "image/png",
     });
 
   if (error) throw error;
@@ -1502,12 +1716,28 @@ async function uploadRestaurantLogoImage(file: File) {
   }
 }
 
-  function normalizeDefaultImageKeyword(value: string) {
-    return String(value || "")
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, " ")
-      .replace(/\s+/g, " ")
+  function normalizeImageAlias(value: string) {
+    return value
+      // MOMO variations: MOMO, MoMo, MO:MO, MO-MO, MO MO
+      .replace(/\bmo\s*mo\b/g, "momo")
+      .replace(/\bmo\s*:\s*mo\b/g, "momo")
+
+      // Chowmein variations: Chow Mein, Chow-Mein, CHOW MEIN
+      .replace(/\bchow\s*mein\b/g, "chowmein")
+
+      // Coke variations: Coca Cola, Coca-Cola
+      .replace(/\bcoca\s*cola\b/g, "coke")
       .trim();
+  }
+
+  function normalizeDefaultImageKeyword(value: string) {
+    return normalizeImageAlias(
+      String(value || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+    );
   }
 
   function findDefaultImageUrlForItemName(
@@ -1883,8 +2113,16 @@ async function uploadRestaurantLogoImage(file: File) {
     if (!isStaffMode || !restaurantId || !isOnline) return;
 
     const timer = window.setInterval(() => {
-      fetchOrders();
-      syncLocalChanges();
+      if (staffRefreshInFlightRef.current) return;
+
+      staffRefreshInFlightRef.current = true;
+      Promise.all([
+        fetchOrders().catch((error) => console.error(error)),
+        syncLocalChanges().catch((error) => console.error(error)),
+      ])
+        .finally(() => {
+          staffRefreshInFlightRef.current = false;
+        });
     }, 8000);
 
     return () => window.clearInterval(timer);
@@ -2114,43 +2352,71 @@ async function uploadRestaurantLogoImage(file: File) {
   async function fetchPaidOrdersForCsv(range: { startIso: string; endIso: string }) {
     if (!restaurantId) return [];
 
-    const { data, error } = await supabase
-      .from("orders")
-      .select(
-        `
-        id,
-        table_number,
-        created_at,
-        paid_at,
-        payment_method,
-        subtotal,
-        discount_enabled,
-        discount_percent,
-        discount_amount,
-        tax_enabled,
-        tax_percent,
-        tax_amount,
-        grand_total,
-        remarks,
-        order_items (
+    // Exports must paginate full history to avoid truncating large datasets.
+    const batchSize = 1000;
+    const maxBatches = 100;
+    const ordersById = new Map<number, OrderRow>();
+    let hitMaxBatches = true;
+
+    for (let batchIndex = 0; batchIndex < maxBatches; batchIndex += 1) {
+      const from = batchIndex * batchSize;
+      const { data, error } = await supabase
+        .from("orders")
+        .select(
+          `
           id,
-          item_name,
-          quantity,
-          unit_price,
-          menu_item_id,
-          menu_item_variant_id
+          client_create_id,
+          table_number,
+          created_at,
+          paid_at,
+          payment_method,
+          subtotal,
+          discount_enabled,
+          discount_percent,
+          discount_amount,
+          tax_enabled,
+          tax_percent,
+          tax_amount,
+          grand_total,
+          remarks,
+          order_items (
+            id,
+            client_item_id,
+            item_name,
+            quantity,
+            unit_price,
+            menu_item_id,
+            menu_item_variant_id
+          )
+        `
         )
-      `
-      )
-      .eq("restaurant_id", restaurantId)
-      .eq("is_paid", true)
-      .gte("paid_at", range.startIso)
-      .lte("paid_at", range.endIso)
-      .order("paid_at", { ascending: true });
+        .eq("restaurant_id", restaurantId)
+        .eq("is_paid", true)
+        .gte("paid_at", range.startIso)
+        .lte("paid_at", range.endIso)
+        .order("paid_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, from + batchSize - 1);
 
-    if (error) throw error;
+      if (error) throw error;
 
-    return (data || []) as OrderRow[];
+      const batchRows = (data || []) as OrderRow[];
+      batchRows.forEach((order) => ordersById.set(Number(order.id), order));
+
+      if (batchRows.length < batchSize) {
+        hitMaxBatches = false;
+        break;
+      }
+    }
+
+    if (hitMaxBatches) {
+      console.warn("Paid order export fetch reached maxBatches", maxBatches);
+    }
+
+    return Array.from(ordersById.values()).sort((a, b) => {
+      const paidAtDifference = new Date(a.paid_at || a.created_at).getTime() - new Date(b.paid_at || b.created_at).getTime();
+      return paidAtDifference || Number(a.id) - Number(b.id);
+    });
   }
 
   async function fetchOrderCostSnapshotMap(orderIds: number[]) {
@@ -2160,17 +2426,48 @@ async function uploadRestaurantLogoImage(file: File) {
       return snapshotMap;
     }
 
-    const { data, error } = await supabase
-      .from("order_cost_snapshots")
-      .select("id, order_id, restaurant_id, total_cost, total_revenue, total_profit, created_at")
-      .eq("restaurant_id", restaurantId)
-      .in("order_id", orderIds);
+    const batchSize = 1000;
+    const maxBatches = 100;
+    const orderIdChunkSize = 500;
+    const snapshotsById = new Map<number, OrderCostSnapshot>();
+    const uniqueOrderIds = Array.from(new Set(orderIds));
 
-    if (error) throw error;
+    for (let chunkStart = 0; chunkStart < uniqueOrderIds.length; chunkStart += orderIdChunkSize) {
+      const orderIdChunk = uniqueOrderIds.slice(chunkStart, chunkStart + orderIdChunkSize);
+      let hitMaxBatches = true;
 
-    ((data || []) as OrderCostSnapshot[]).forEach((snapshot) => {
+      for (let batchIndex = 0; batchIndex < maxBatches; batchIndex += 1) {
+        const from = batchIndex * batchSize;
+        const { data, error } = await supabase
+          .from("order_cost_snapshots")
+          .select("id, order_id, restaurant_id, total_cost, total_revenue, total_profit, created_at")
+          .eq("restaurant_id", restaurantId)
+          .in("order_id", orderIdChunk)
+          .order("created_at", { ascending: true })
+          .order("id", { ascending: true })
+          .range(from, from + batchSize - 1);
+
+        if (error) throw error;
+
+        const batchRows = (data || []) as OrderCostSnapshot[];
+        batchRows.forEach((snapshot) => snapshotsById.set(Number(snapshot.id), snapshot));
+
+        if (batchRows.length < batchSize) {
+          hitMaxBatches = false;
+          break;
+        }
+      }
+
+      if (hitMaxBatches) {
+        console.warn("Cost snapshot export fetch reached maxBatches", maxBatches);
+      }
+    }
+
+    Array.from(snapshotsById.values())
+      .sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime() || Number(a.id) - Number(b.id))
+      .forEach((snapshot) => {
       snapshotMap.set(Number(snapshot.order_id), snapshot);
-    });
+      });
 
     return snapshotMap;
   }
@@ -2182,17 +2479,48 @@ async function uploadRestaurantLogoImage(file: File) {
       return costItemMap;
     }
 
-    const { data, error } = await supabase
-      .from("order_cost_snapshot_items")
-      .select(
-        "id, order_id, restaurant_id, menu_item_id, menu_item_variant_id, item_name, quantity, unit_price, selling, cost, profit, materials, created_at"
-      )
-      .eq("restaurant_id", restaurantId)
-      .in("order_id", orderIds);
+    const batchSize = 1000;
+    const maxBatches = 100;
+    const orderIdChunkSize = 500;
+    const itemsById = new Map<number, OrderCostSnapshotItem>();
+    const uniqueOrderIds = Array.from(new Set(orderIds));
 
-    if (error) throw error;
+    for (let chunkStart = 0; chunkStart < uniqueOrderIds.length; chunkStart += orderIdChunkSize) {
+      const orderIdChunk = uniqueOrderIds.slice(chunkStart, chunkStart + orderIdChunkSize);
+      let hitMaxBatches = true;
 
-    ((data || []) as OrderCostSnapshotItem[]).forEach((item) => {
+      for (let batchIndex = 0; batchIndex < maxBatches; batchIndex += 1) {
+        const from = batchIndex * batchSize;
+        const { data, error } = await supabase
+          .from("order_cost_snapshot_items")
+          .select(
+            "id, order_id, restaurant_id, menu_item_id, menu_item_variant_id, item_name, quantity, unit_price, selling, cost, profit, materials, created_at"
+          )
+          .eq("restaurant_id", restaurantId)
+          .in("order_id", orderIdChunk)
+          .order("created_at", { ascending: true })
+          .order("id", { ascending: true })
+          .range(from, from + batchSize - 1);
+
+        if (error) throw error;
+
+        const batchRows = (data || []) as OrderCostSnapshotItem[];
+        batchRows.forEach((item) => itemsById.set(Number(item.id), item));
+
+        if (batchRows.length < batchSize) {
+          hitMaxBatches = false;
+          break;
+        }
+      }
+
+      if (hitMaxBatches) {
+        console.warn("Cost snapshot item export fetch reached maxBatches", maxBatches);
+      }
+    }
+
+    Array.from(itemsById.values())
+      .sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime() || Number(a.id) - Number(b.id))
+      .forEach((item) => {
       const key = [
         Number(item.order_id),
         Number(item.menu_item_id || 0),
@@ -2201,18 +2529,13 @@ async function uploadRestaurantLogoImage(file: File) {
       ].join("|");
 
       costItemMap.set(key, item);
-    });
+      });
 
     return costItemMap;
   }
 
   function getOrderTotalForCsv(order: OrderRow) {
-    const storedGrandTotal = Number(order.grand_total || 0);
-    if (storedGrandTotal > 0) return storedGrandTotal;
-
-    return (order.order_items || []).reduce((sum, item) => {
-      return sum + Number(item.quantity || 0) * Number(item.unit_price || 0);
-    }, 0);
+    return getOrderAmount(order);
   }
 
   async function downloadOwnerSummaryCsvForDates(fromDate: string, toDate: string, label?: string) {
@@ -2285,7 +2608,7 @@ async function uploadRestaurantLogoImage(file: File) {
 
         if (inventoryEnabled) {
           current.totalCost += Number(snapshot?.total_cost || 0);
-          current.totalProfit += Number(snapshot?.total_profit || 0);
+          current.totalProfit += getOrderProfitFromSnapshot(order, snapshot);
         }
 
         dayMap.set(paidDate, current);
@@ -2424,7 +2747,7 @@ async function uploadRestaurantLogoImage(file: File) {
               order.payment_method || "cash",
               paidTimeText,
               lockedCostItem ? Number(lockedCostItem.cost || 0) : "",
-              lockedCostItem ? Number(lockedCostItem.profit || 0) : "",
+              lockedCostItem ? getSnapshotItemProfitForOrder(lockedCostItem, order) : "",
               order.remarks || "",
             ]);
 
@@ -2496,7 +2819,7 @@ async function uploadRestaurantLogoImage(file: File) {
 
       if (inventoryEnabled) {
         totalCost += Number(snapshot?.total_cost || 0);
-        totalProfit += Number(snapshot?.total_profit || 0);
+        totalProfit += getOrderProfitFromSnapshot(order, snapshot);
       }
 
       (order.order_items || []).forEach((item) => {
@@ -2769,7 +3092,7 @@ async function uploadRestaurantLogoImage(file: File) {
 
         if (inventoryEnabled) {
           totalCost += Number(snapshot?.total_cost || 0);
-          totalProfit += Number(snapshot?.total_profit || 0);
+          totalProfit += getOrderProfitFromSnapshot(order, snapshot);
         }
 
         (order.order_items || []).forEach((item) => {
@@ -2947,6 +3270,7 @@ async function uploadRestaurantLogoImage(file: File) {
     setCartDragStartY(null);
     setCartSheetOffsetY(0);
     setEditingOrderId(null);
+    editingOrderStableKeyRef.current = null;
     setEditingOrderLoading(false);
     setShowVariantSheet(false);
     setSelectedVariantMenu(null);
@@ -3156,19 +3480,39 @@ async function uploadRestaurantLogoImage(file: File) {
     }
   }
 
-  async function getLocalOrderForUiId(uiOrderId: number) {
+  async function getLocalOrderForUiOrder(
+    uiOrder: OrderRow,
+    candidateLocalOrders?: LocalOrderRow[]
+  ) {
     if (!restaurantId) return null;
 
-    const localOrders = await localOrdersTable
+    const localOrders = candidateLocalOrders || await localOrdersTable
       .where("restaurant_id")
       .equals(restaurantId)
       .toArray();
+    const serverId = Number(uiOrder.server_id || 0);
 
-    return (
-      localOrders.find((order) => order.server_id === uiOrderId) ||
-      localOrders.find((order) => order.id === uiOrderId) ||
-      null
-    );
+    // Local Dexie IDs and server IDs share numeric space; payment pairing must be source-aware.
+    if (Number.isFinite(serverId) && serverId > 0) {
+      return localOrders.find((order) => Number(order.server_id || 0) === serverId) || null;
+    }
+
+    const uiOrderId = Number(uiOrder.id || 0);
+    if (!Number.isFinite(uiOrderId) || uiOrderId <= 0) return null;
+
+    if (uiOrderId >= 1000000000000) {
+      return localOrders.find(
+        (order) => Number(order.id || 0) === uiOrderId && !order.server_id
+      ) || null;
+    }
+
+    if (getOrderStableKey(uiOrder).startsWith("server:")) {
+      return localOrders.find((order) => Number(order.server_id || 0) === uiOrderId) || null;
+    }
+
+    return localOrders.find(
+      (order) => Number(order.id || 0) === uiOrderId && !order.server_id
+    ) || null;
   }
 
   async function waitForLocalOrderServerId(localOrderId: number, timeoutMs = 4500) {
@@ -3189,13 +3533,34 @@ async function uploadRestaurantLogoImage(file: File) {
     const localOrder = await localOrdersTable.get(localOrderId);
     if (!localOrder || localOrder.restaurant_id !== restaurantId) return;
 
-    const localItems = await localOrderItemsTable
+    let localItems = await localOrderItemsTable
       .where("local_order_id")
       .equals(localOrderId)
       .toArray();
 
+    if (!isValidUuid(localOrder.client_create_id)) {
+      console.warn("Order is about to sync without a valid client_create_id; creating and persisting one", localOrderId);
+      localOrder.client_create_id = generateUuid();
+      // Idempotency tokens must persist across retries.
+      await localOrdersTable.update(localOrderId, {
+        client_create_id: localOrder.client_create_id,
+        updated_at: new Date().toISOString(),
+      });
+    }
+
+    for (const localItem of localItems) {
+      if (isValidUuid(localItem.client_item_id) || !localItem.id) continue;
+      localItem.client_item_id = generateUuid();
+      // Idempotency tokens must persist across retries.
+      await localOrderItemsTable.update(localItem.id, {
+        client_item_id: localItem.client_item_id,
+        updated_at: new Date().toISOString(),
+      });
+    }
+
     const orderPayload = {
       restaurant_id: restaurantId,
+      client_create_id: localOrder.client_create_id,
       table_number: String(localOrder.table_number || "").trim(),
       status: localOrder.status || "pending",
       remarks: localOrder.remarks || null,
@@ -3214,11 +3579,71 @@ async function uploadRestaurantLogoImage(file: File) {
     };
 
     let remoteOrderId = localOrder.server_id || null;
-    const shouldAppendOnlyToRemoteOrder = Boolean(remoteOrderId) && localItems.some(
-      (item) => item.sync_status === "pending_update" && !item.server_id
-    );
+    let shouldAppendOnlyToRemoteOrder = false;
 
     if (remoteOrderId) {
+      const hasUnmappedLocalItems = localItems.some((item) => !item.server_id);
+
+      // A mapped pending_create/pending_update already owns this server order.
+      // Add Dish retries must reconcile by client_item_id to avoid duplicate remote order_items.
+      if (localOrder.sync_status === "pending_create" || hasUnmappedLocalItems) {
+        const { data: existingRemoteItems, error: existingRemoteItemsError } = await supabase
+          .from("order_items")
+          .select("id, client_item_id, item_name, menu_item_id, quantity, unit_price, status, menu_item_variant_id")
+          .eq("order_id", remoteOrderId);
+
+        if (existingRemoteItemsError) throw existingRemoteItemsError;
+
+        const knownRemoteItemIds = new Set(
+          localItems
+            .map((item) => Number(item.server_id || 0))
+            .filter((id) => Number.isFinite(id) && id > 0)
+        );
+        const unmatchedRemoteItems = (existingRemoteItems || []).filter(
+          (remoteItem) => !knownRemoteItemIds.has(Number(remoteItem.id || 0))
+        );
+        const reconciledLocalItems = [...localItems];
+
+        for (let index = 0; index < reconciledLocalItems.length; index += 1) {
+          const localItem = reconciledLocalItems[index];
+          if (localItem.server_id) continue;
+
+          const remoteItemIndex = unmatchedRemoteItems.findIndex(
+            (remoteItem) =>
+              (localItem.client_item_id && remoteItem.client_item_id === localItem.client_item_id) ||
+              (localOrder.sync_status === "pending_create" &&
+                !remoteItem.client_item_id &&
+                String(remoteItem.item_name || "") === String(localItem.item_name || "") &&
+                Number(remoteItem.menu_item_id || 0) === Number(localItem.menu_item_id || 0) &&
+                Number(remoteItem.quantity || 0) === Number(localItem.quantity || 0) &&
+                Number(remoteItem.unit_price || 0) === Number(localItem.unit_price || 0) &&
+                Number(remoteItem.menu_item_variant_id || 0) === Number(localItem.menu_item_variant_id || 0))
+          );
+
+          if (remoteItemIndex < 0) continue;
+
+          const [matchedRemoteItem] = unmatchedRemoteItems.splice(remoteItemIndex, 1);
+          await localOrderItemsTable.update(localItem.id!, {
+            server_order_id: remoteOrderId,
+            server_id: Number(matchedRemoteItem.id),
+            updated_at: new Date().toISOString(),
+            sync_status: "synced",
+          });
+          reconciledLocalItems[index] = {
+            ...localItem,
+            server_order_id: remoteOrderId,
+            server_id: Number(matchedRemoteItem.id),
+            sync_status: "synced",
+          };
+        }
+
+        localItems = reconciledLocalItems;
+      }
+
+      shouldAppendOnlyToRemoteOrder =
+        localOrder.sync_status === "pending_create" ||
+        localItems.some((item) => item.sync_status === "pending_update" && !item.server_id);
+
       const { error: updateOrderError } = await supabase
         .from("orders")
         .update(orderPayload)
@@ -3229,32 +3654,60 @@ async function uploadRestaurantLogoImage(file: File) {
         throw updateOrderError;
       }
 
-      if (!shouldAppendOnlyToRemoteOrder) {
-        const { error: deleteRemoteItemsError } = await supabase
-          .from("order_items")
-          .delete()
-          .eq("order_id", remoteOrderId);
+    } else {
+      const { data: existingOrderByToken, error: existingOrderLookupError } = await supabase
+        .from("orders")
+        .select("id")
+        .eq("restaurant_id", restaurantId)
+        .eq("client_create_id", localOrder.client_create_id)
+        .maybeSingle();
 
-        if (deleteRemoteItemsError) {
-          throw deleteRemoteItemsError;
+      if (existingOrderLookupError) throw existingOrderLookupError;
+
+      if (existingOrderByToken?.id) {
+        remoteOrderId = Number(existingOrderByToken.id);
+      } else {
+        const { data: insertedOrder, error: insertOrderError } = await supabase
+          .from("orders")
+          .insert([orderPayload])
+          .select()
+          .single();
+
+        if (insertOrderError || !insertedOrder) {
+          if (insertOrderError && isDuplicateConstraintError(insertOrderError)) {
+            // Duplicate client_create_id means the server order already exists;
+            // recover server_id and continue item sync.
+            const { data: recoveredOrder, error: recoveredOrderError } = await supabase
+              .from("orders")
+              .select("id")
+              .eq("restaurant_id", restaurantId)
+              .eq("client_create_id", localOrder.client_create_id)
+              .maybeSingle();
+
+            if (recoveredOrderError || !recoveredOrder?.id) {
+              throw recoveredOrderError || insertOrderError;
+            }
+
+            remoteOrderId = Number(recoveredOrder.id);
+            await localOrdersTable.update(localOrderId, {
+              server_id: remoteOrderId,
+              updated_at: new Date().toISOString(),
+              sync_status: "pending_create",
+            });
+          } else {
+            throw insertOrderError || new Error("Failed to create order");
+          }
+        } else {
+          remoteOrderId = Number(insertedOrder.id);
         }
       }
-    } else {
-      const { data: insertedOrder, error: insertOrderError } = await supabase
-        .from("orders")
-        .insert([orderPayload])
-        .select()
-        .single();
 
-      if (insertOrderError || !insertedOrder) {
-        throw insertOrderError || new Error("Failed to create order");
-      }
-
-      remoteOrderId = insertedOrder.id;
-
+      // Save server_id immediately after remote order creation to prevent
+      // duplicate KOT/bills on retry.
       await localOrdersTable.update(localOrderId, {
         server_id: remoteOrderId,
         updated_at: new Date().toISOString(),
+        sync_status: "pending_create",
       });
     }
 
@@ -3274,6 +3727,7 @@ async function uploadRestaurantLogoImage(file: File) {
 
       const itemPayload = localItemsToUpload.map((item) => ({
         order_id: remoteOrderId,
+        client_item_id: item.client_item_id,
         item_name: item.item_name,
         menu_item_id: Number(item.menu_item_id),
         quantity: Number(item.quantity || 0),
@@ -3282,27 +3736,144 @@ async function uploadRestaurantLogoImage(file: File) {
         menu_item_variant_id: item.menu_item_variant_id ?? null,
       }));
 
-      const { data: insertedItems, error: insertItemsError } = await supabase
-        .from("order_items")
-        .insert(itemPayload)
-        .select();
+      // Never delete existing remote items before the replacement set is safely written.
+      // A lost connection between delete and insert could leave a server order with zero items.
+      let existingRemoteItemsForReplacement: Array<{ id: number | string; client_item_id?: string | null }> = [];
+      if (!shouldAppendOnlyToRemoteOrder) {
+        const { data: existingRemoteItems, error: existingRemoteItemsError } = await supabase
+            .from("order_items")
+            .select("id, client_item_id")
+            .eq("order_id", remoteOrderId);
+
+        if (existingRemoteItemsError) {
+          throw existingRemoteItemsError;
+        }
+
+        existingRemoteItemsForReplacement = existingRemoteItems || [];
+      }
+
+      // order_items idempotency is scoped per order_id + client_item_id.
+      const writeItemsQuery = shouldAppendOnlyToRemoteOrder
+        ? supabase.from("order_items").insert(itemPayload)
+        : supabase.from("order_items").upsert(itemPayload, { onConflict: "order_id,client_item_id" });
+
+      let insertedItems: any[] | null = null;
+      let recoveredFromDuplicateClientItemError = false;
+      const { data: insertedItemsResult, error: insertItemsError } = await writeItemsQuery.select();
 
       if (insertItemsError) {
-        throw insertItemsError;
+        const errorText = [
+          (insertItemsError as { code?: string }).code,
+          (insertItemsError as { message?: string }).message,
+          (insertItemsError as { details?: string }).details,
+        ]
+          .map((value) => String(value || "").toLowerCase())
+          .join(" ");
+        const isDuplicateClientItemError =
+          errorText.includes("23505") ||
+          (errorText.includes("duplicate") && errorText.includes("client_item_id"));
+
+        if (!isDuplicateClientItemError) {
+          throw insertItemsError;
+        }
+
+        recoveredFromDuplicateClientItemError = true;
+        const retryClientItemIds = localItemsToUpload
+          .map((item) => validUuidOrNull(item.client_item_id))
+          .filter((id): id is string => Boolean(id));
+
+        if (retryClientItemIds.length === 0) {
+          throw insertItemsError;
+        }
+
+        const { data: existingItemsAfterDuplicate, error: existingItemsAfterDuplicateError } = await supabase
+          .from("order_items")
+          .select("id, client_item_id")
+          .eq("order_id", remoteOrderId)
+          .in("client_item_id", retryClientItemIds);
+
+        if (existingItemsAfterDuplicateError) {
+          throw existingItemsAfterDuplicateError;
+        }
+
+        insertedItems = existingItemsAfterDuplicate || [];
+      } else {
+        insertedItems = insertedItemsResult || [];
       }
 
       const insertedList = Array.isArray(insertedItems) ? insertedItems : [];
+      const insertedRemoteItemIds = new Set(
+        insertedList
+          .map((item) => Number(item.id || 0))
+          .filter((id) => Number.isFinite(id) && id > 0)
+      );
+      const replacementClientItemIds = new Set(
+        localItemsToUpload
+          .map((item) => validUuidOrNull(item.client_item_id))
+          .filter((id): id is string => Boolean(id))
+      );
 
-      for (let index = 0; index < localItemsToUpload.length; index += 1) {
-        const localItem = localItemsToUpload[index];
-        const remoteItem = insertedList[index];
-        await localOrderItemsTable.update(localItem.id!, {
-          server_order_id: remoteOrderId,
-          server_id: remoteItem?.id || null,
-          updated_at: new Date().toISOString(),
-          sync_status: "synced",
-        });
+      if (!shouldAppendOnlyToRemoteOrder) {
+        const staleRemoteItemIds = existingRemoteItemsForReplacement
+          .filter((remoteItem) => {
+            const remoteId = Number(remoteItem.id || 0);
+            const remoteClientItemId = validUuidOrNull(remoteItem.client_item_id);
+            return (
+              Number.isFinite(remoteId) &&
+              remoteId > 0 &&
+              !insertedRemoteItemIds.has(remoteId) &&
+              (!remoteClientItemId || !replacementClientItemIds.has(remoteClientItemId))
+            );
+          })
+          .map((remoteItem) => Number(remoteItem.id));
+
+        if (staleRemoteItemIds.length > 0) {
+          const { error: deleteStaleRemoteItemsError } = await supabase
+            .from("order_items")
+            .delete()
+            .eq("order_id", remoteOrderId)
+            .in("id", staleRemoteItemIds);
+
+          if (deleteStaleRemoteItemsError) {
+            throw deleteStaleRemoteItemsError;
+          }
+        }
       }
+
+      // Order and item cache writes must be atomic to prevent partial local state.
+      await miniDB.transaction("rw", localOrdersTable, localOrderItemsTable, async () => {
+        let unresolvedUploadedItemCount = 0;
+
+        for (let index = 0; index < localItemsToUpload.length; index += 1) {
+          const localItem = localItemsToUpload[index];
+          const remoteItem = insertedList.find(
+            (item) => item.client_item_id === localItem.client_item_id
+          ) || (recoveredFromDuplicateClientItemError ? null : insertedList[index]);
+
+          if (!remoteItem?.id) {
+            unresolvedUploadedItemCount += 1;
+            continue;
+          }
+
+          await localOrderItemsTable.update(localItem.id!, {
+            server_order_id: remoteOrderId,
+            server_id: remoteItem.id,
+            updated_at: new Date().toISOString(),
+            sync_status: "synced",
+          });
+        }
+
+        await localOrdersTable.update(localOrderId, {
+          server_id: remoteOrderId,
+          updated_at: new Date().toISOString(),
+          sync_status: unresolvedUploadedItemCount > 0
+            ? localOrder.sync_status && localOrder.sync_status !== "synced"
+              ? localOrder.sync_status
+              : "pending_update"
+            : "synced",
+        });
+      });
+      return;
     }
 
     await localOrdersTable.update(localOrderId, {
@@ -3311,6 +3882,72 @@ async function uploadRestaurantLogoImage(file: File) {
       sync_status: "synced",
     });
   }
+
+async function markLocalPaymentInventorySynced(remoteOrderId: number, localOrderId?: number | null) {
+  const now = new Date().toISOString();
+  const matchesRemoteOrder = (order: OrderRow) => {
+    const explicitServerId = Number(order.server_id || 0);
+    if (explicitServerId > 0) return explicitServerId === Number(remoteOrderId);
+    return getOrderStableKey(order) === `server:${Number(remoteOrderId)}`;
+  };
+
+  setOrders((prev) =>
+    prev.map((order) =>
+      matchesRemoteOrder(order)
+        ? {
+            ...order,
+            inventory_deducted: true,
+            sync_status: order.sync_status === "pending_payment" ? "synced" : order.sync_status,
+          }
+        : order
+    )
+  );
+
+  setReportOrder((current) =>
+    current && matchesRemoteOrder(current)
+      ? {
+          ...current,
+          inventory_deducted: true,
+          sync_status: current.sync_status === "pending_payment" ? "synced" : current.sync_status,
+        }
+      : current
+  );
+
+  if (localOrderId) {
+    await localOrdersTable.update(localOrderId, {
+      server_id: remoteOrderId,
+      inventory_deducted: true,
+      updated_at: now,
+      sync_status: "synced",
+    });
+  }
+
+  setLocalPendingPaymentOrders((prev) =>
+    prev.filter((order) => {
+      const localId = Number(order.id || 0);
+      const serverId = Number((order as OrderRow & { server_id?: number | null }).server_id || 0);
+      return (
+        (localOrderId ? localId !== Number(localOrderId) : true) &&
+        serverId !== Number(remoteOrderId)
+      );
+    })
+  );
+}
+
+async function hasRemoteInventoryDeduction(remoteOrderId: number) {
+  if (!restaurantId || !remoteOrderId) return false;
+
+  const { data, error } = await supabase
+    .from("orders")
+    .select("inventory_deducted")
+    .eq("id", remoteOrderId)
+    .eq("restaurant_id", restaurantId)
+    .maybeSingle();
+
+  if (error) throw error;
+
+  return Boolean(data?.inventory_deducted);
+}
 
 async function runInventoryDeductionAndCostLock(
   remoteOrderId: number,
@@ -3326,7 +3963,29 @@ async function runInventoryDeductionAndCostLock(
     return false;
   }
 
+  const normalizedRemoteOrderId = Number(remoteOrderId);
+  if (inventoryDeductionInFlightOrderIdsRef.current.has(normalizedRemoteOrderId)) {
+    // Same app instance is already deducting this order. Never run the RPC twice.
+    return false;
+  }
+
+  inventoryDeductionInFlightOrderIdsRef.current.add(normalizedRemoteOrderId);
+
   let lastError: unknown = null;
+
+  try {
+
+  try {
+    const alreadyDeducted = await hasRemoteInventoryDeduction(remoteOrderId);
+
+    if (alreadyDeducted) {
+      await markLocalPaymentInventorySynced(remoteOrderId, options.localOrderId || null);
+      return true;
+    }
+  } catch (error) {
+    lastError = error;
+    console.warn("Inventory deduction status check failed:", error);
+  }
 
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
@@ -3336,27 +3995,7 @@ async function runInventoryDeductionAndCostLock(
 
       if (error) throw error;
 
-      setOrders((prev) =>
-        prev.map((order) =>
-          Number(order.id) === Number(remoteOrderId)
-            ? { ...order, inventory_deducted: true, sync_status: order.sync_status === "pending_payment" ? "synced" : order.sync_status }
-            : order
-        )
-      );
-
-      setReportOrder((current) =>
-        current && Number(current.id) === Number(remoteOrderId)
-          ? { ...current, inventory_deducted: true, sync_status: current.sync_status === "pending_payment" ? "synced" : current.sync_status }
-          : current
-      );
-
-      if (options.localOrderId) {
-        await localOrdersTable.update(options.localOrderId, {
-          server_id: remoteOrderId,
-          updated_at: new Date().toISOString(),
-          sync_status: "synced",
-        });
-      }
+      await markLocalPaymentInventorySynced(remoteOrderId, options.localOrderId || null);
 
       if (popupView === "inventory") {
         setTimeout(() => {
@@ -3368,6 +4007,17 @@ async function runInventoryDeductionAndCostLock(
     } catch (error) {
       lastError = error;
       console.error("Inventory deduction/cost lock failed:", error);
+
+      try {
+        const deductedAfterError = await hasRemoteInventoryDeduction(remoteOrderId);
+
+        if (deductedAfterError) {
+          await markLocalPaymentInventorySynced(remoteOrderId, options.localOrderId || null);
+          return true;
+        }
+      } catch (statusError) {
+        console.warn("Inventory deduction status recheck failed:", statusError);
+      }
 
       if (attempt === 1) {
         await new Promise((resolve) => setTimeout(resolve, 600));
@@ -3389,6 +4039,9 @@ async function runInventoryDeductionAndCostLock(
   }
 
   return false;
+  } finally {
+    inventoryDeductionInFlightOrderIdsRef.current.delete(normalizedRemoteOrderId);
+  }
 }
 
 async function ensureRemoteOrderIdForPayment(
@@ -3465,9 +4118,10 @@ async function syncPaymentForLocalOrder(localOrder: LocalOrderRow) {
     paid_at: localOrder.paid_at ?? null,
     sync_status: localOrder.sync_status || "pending_payment",
   };
+  let remoteOrderId = Number(localOrder.server_id || 0) || null;
 
   try {
-    const remoteOrderId = await ensureRemoteOrderIdForPayment(
+    remoteOrderId = await ensureRemoteOrderIdForPayment(
       Number(localOrder.server_id || localOrder.id),
       localOrder
     );
@@ -3476,6 +4130,24 @@ async function syncPaymentForLocalOrder(localOrder: LocalOrderRow) {
       localOrder.payment_method === "qr" || localOrder.payment_method === "card"
         ? localOrder.payment_method
         : "cash";
+
+    // Totals must be stored before marking paid to avoid paid orders with stale revenue.
+    const { error: paymentBreakdownUpdateError } = await supabase
+      .from("orders")
+      .update({
+        subtotal: Number(localOrder.subtotal || 0),
+        discount_enabled: Boolean(localOrder.discount_enabled),
+        discount_percent: Number(localOrder.discount_percent || 0),
+        discount_amount: Number(localOrder.discount_amount || 0),
+        tax_enabled: Boolean(localOrder.tax_enabled),
+        tax_percent: Number(localOrder.tax_percent || 0),
+        tax_amount: Number(localOrder.tax_amount || 0),
+        grand_total: Number(localOrder.grand_total || 0),
+      })
+      .eq("id", remoteOrderId)
+      .eq("restaurant_id", restaurantId);
+
+    if (paymentBreakdownUpdateError) throw paymentBreakdownUpdateError;
 
     const { data, error } = await supabase.rpc("mark_order_paid_fast", {
       p_order_id: remoteOrderId,
@@ -3492,21 +4164,6 @@ async function syncPaymentForLocalOrder(localOrder: LocalOrderRow) {
         throw new Error(result?.message || "Payment sync failed");
       }
     }
-
-    await supabase
-      .from("orders")
-      .update({
-        subtotal: Number(localOrder.subtotal || 0),
-        discount_enabled: Boolean(localOrder.discount_enabled),
-        discount_percent: Number(localOrder.discount_percent || 0),
-        discount_amount: Number(localOrder.discount_amount || 0),
-        tax_enabled: Boolean(localOrder.tax_enabled),
-        tax_percent: Number(localOrder.tax_percent || 0),
-        tax_amount: Number(localOrder.tax_amount || 0),
-        grand_total: Number(localOrder.grand_total || 0),
-      })
-      .eq("id", remoteOrderId)
-      .eq("restaurant_id", restaurantId);
 
     // Offline/payment queue is not complete until inventory deduction + locked snapshots also succeed.
     // If this fails, keep the local row as pending_payment so it retries next time the app is online.
@@ -3526,6 +4183,8 @@ async function syncPaymentForLocalOrder(localOrder: LocalOrderRow) {
   } catch (error) {
     await localOrdersTable.update(localOrder.id, {
       ...preservedPaymentState,
+      server_id: remoteOrderId || preservedPaymentState.server_id,
+      sync_status: "pending_payment",
       updated_at: new Date().toISOString(),
     });
     throw error;
@@ -3533,30 +4192,126 @@ async function syncPaymentForLocalOrder(localOrder: LocalOrderRow) {
 }
 
 async function syncPendingOrders() {
-  if (!restaurantId || !isOnline) return;
+  if (!restaurantId || !isOnline) return false;
 
-  const localOrders = await localOrdersTable
-    .where("restaurant_id")
-    .equals(restaurantId)
-    .toArray();
+  if (paymentSyncInFlightRef.current) {
+    return false;
+  }
 
-  for (const localOrder of localOrders) {
-    const syncStatus = localOrder.sync_status || "synced";
+  paymentSyncInFlightRef.current = true;
+  let touchedPendingQueue = false;
 
-    if (syncStatus === "synced") continue;
+  try {
+    const localOrders = await localOrdersTable
+      .where("restaurant_id")
+      .equals(restaurantId)
+      .toArray();
 
-    // Pending payments retry full chain: save remote order, mark paid fast, deduct inventory, and lock cost snapshots.
-if (syncStatus === "pending_payment" || localOrder.is_paid === true) {
-      try {
-        await syncPaymentForLocalOrder(localOrder);
-      } catch (err) {
-        console.error("Payment sync failed:", err);
-        // Do not mark synced. It will retry next time the app comes online.
+    for (const localOrder of localOrders) {
+      const syncStatus = localOrder.sync_status || "synced";
+      const needsInventoryRetry =
+        localOrder.is_paid === true && localOrder.inventory_deducted !== true;
+
+      // Paid but not inventory-deducted orders must remain retryable even if
+      // sync_status was accidentally set to synced.
+      if (syncStatus === "synced" && needsInventoryRetry) {
+        touchedPendingQueue = true;
+
+        if (localOrder.server_id) {
+          try {
+            const inventorySynced = await runInventoryDeductionAndCostLock(
+              Number(localOrder.server_id),
+              { localOrderId: localOrder.id || null }
+            );
+
+            if (inventorySynced && localOrder.id) {
+              await localOrdersTable.update(localOrder.id, {
+                inventory_deducted: true,
+                sync_status: "synced",
+                updated_at: new Date().toISOString(),
+              });
+            } else if (localOrder.id) {
+              await localOrdersTable.update(localOrder.id, {
+                inventory_deducted: false,
+                sync_status: "pending_payment",
+                updated_at: new Date().toISOString(),
+              });
+            }
+          } catch (err) {
+            console.error("Inventory sync will retry later:", err);
+            if (localOrder.id) {
+              await localOrdersTable.update(localOrder.id, {
+                inventory_deducted: false,
+                sync_status: "pending_payment",
+                updated_at: new Date().toISOString(),
+              });
+            }
+          }
+        } else {
+          if (localOrder.id) {
+            await localOrdersTable.update(localOrder.id, {
+              inventory_deducted: false,
+              sync_status: "pending_payment",
+              updated_at: new Date().toISOString(),
+            });
+          }
+
+          try {
+            await syncPaymentForLocalOrder({
+              ...localOrder,
+              inventory_deducted: false,
+              sync_status: "pending_payment",
+            });
+          } catch (err) {
+            console.error("Payment sync will retry later:", err);
+          }
+        }
+
+        continue;
       }
-      continue;
+
+      if (syncStatus === "synced") continue;
+
+      // Pending payments retry the full chain: remote order, payment RPC, inventory deduction, and cost snapshot lock.
+      if (syncStatus === "pending_payment" || localOrder.is_paid === true) {
+        touchedPendingQueue = true;
+        try {
+          await syncPaymentForLocalOrder(localOrder);
+        } catch (err) {
+          console.error("Payment sync will retry later:", err);
+          // Never mark failed. Keep pending_payment so the auto retry loop can finish it later.
+        }
+        continue;
+      }
+
+      touchedPendingQueue = true;
+      try {
+        await syncSingleLocalOrder(localOrder.id!);
+      } catch (err) {
+        console.error("Order sync will retry later:", err);
+      }
     }
 
-    await syncSingleLocalOrder(localOrder.id!);
+    await refreshPendingPaymentQueue();
+
+    if (touchedPendingQueue) {
+      const remainingLocalOrders = await localOrdersTable
+        .where("restaurant_id")
+        .equals(restaurantId)
+        .toArray();
+      const hasRemainingPaymentQueue = remainingLocalOrders.some((order) => {
+        const status = order.sync_status || "synced";
+        return status === "pending_payment" || status === "pending_create" || (order.is_paid === true && order.inventory_deducted !== true);
+      });
+
+      if (!hasRemainingPaymentQueue) {
+        rememberPaymentSyncSuccess();
+      }
+    }
+
+    return true;
+  } finally {
+    paymentSyncInFlightRef.current = false;
   }
 }
   async function syncLocalChanges() {
@@ -3576,8 +4331,33 @@ async function refreshPendingPaymentQueue() {
       .equals(restaurantId)
       .toArray();
 
-    const pendingLocalOrders = localOrders.filter(
-      (order) => order.sync_status === "pending_payment"
+    const pendingLocalOrdersBeforeCleanup = localOrders.filter(
+      (order) => order.sync_status === "pending_payment" && order.inventory_deducted !== true
+    );
+
+    const cleanupIds = new Set<number>();
+
+    if (isOnline) {
+      await Promise.all(
+        pendingLocalOrdersBeforeCleanup.map(async (order) => {
+          const remoteOrderId = Number(order.server_id || 0);
+          if (!remoteOrderId || !order.id) return;
+
+          try {
+            const alreadyDeducted = await hasRemoteInventoryDeduction(remoteOrderId);
+            if (alreadyDeducted) {
+              cleanupIds.add(order.id);
+              await markLocalPaymentInventorySynced(remoteOrderId, order.id);
+            }
+          } catch (error) {
+            console.warn("Pending payment cleanup check failed:", error);
+          }
+        })
+      );
+    }
+
+    const pendingLocalOrders = pendingLocalOrdersBeforeCleanup.filter(
+      (order) => !order.id || !cleanupIds.has(order.id)
     );
 
     const pendingLocalOrderIds = pendingLocalOrders
@@ -3592,6 +4372,8 @@ async function refreshPendingPaymentQueue() {
     const mappedPendingOrders: OrderRow[] = pendingLocalOrders
       .map((order) => ({
         id: order.server_id || order.id || 0,
+        server_id: order.server_id ?? null,
+        client_create_id: validUuidOrNull(order.client_create_id),
         table_number: order.table_number,
         status: order.status,
         created_at: order.created_at,
@@ -3610,11 +4392,13 @@ async function refreshPendingPaymentQueue() {
         tax_amount: order.tax_amount ?? 0,
         grand_total: order.grand_total ?? null,
         remarks: order.remarks ?? null,
+        inventory_deducted: order.inventory_deducted ?? false,
         sync_status: "pending_payment" as const,
         order_items: pendingLocalItems
           .filter((item) => item.local_order_id === order.id)
           .map((item) => ({
             id: item.server_id || item.id || 0,
+            client_item_id: validUuidOrNull(item.client_item_id),
             item_name: item.item_name,
             menu_item_id: item.menu_item_id == null ? null : Number(item.menu_item_id),
             quantity: Number(item.quantity || 0),
@@ -3675,12 +4459,18 @@ async function submitTakeOrder() {
   setSubmittingTakeOrder(true);
 
   const now = new Date().toISOString();
-  const existingEditingOrder = editingOrderId
-    ? orders.find((order) => Number(order.id) === Number(editingOrderId)) || null
+  const editingOrderStableKey = editingOrderStableKeyRef.current;
+  const existingEditingOrder = editingOrderId && editingOrderStableKey
+    ? orders.find((order) => getOrderStableKey(order) === editingOrderStableKey) || null
     : null;
+  const clientCreateId = isValidUuid(existingEditingOrder?.client_create_id)
+    ? existingEditingOrder.client_create_id
+    : generateUuid();
+  const clientItemIds = validatedTakeOrderItems.map(() => generateUuid());
 
   const itemRows: OrderItem[] = validatedTakeOrderItems.map((item, index) => ({
     id: Date.now() + index,
+    client_item_id: clientItemIds[index],
     item_name: item.item_name,
     menu_item_id: item.menu_id,
     quantity: item.quantity,
@@ -3694,6 +4484,7 @@ async function submitTakeOrder() {
   const optimisticOrder: OrderRow = {
     ...(existingEditingOrder || {}),
     id: editingOrderId || Date.now(),
+    client_create_id: clientCreateId,
     table_number: normalizedPlaceNumber,
     status: "pending",
     created_at: existingEditingOrder?.created_at || now,
@@ -3710,7 +4501,7 @@ async function submitTakeOrder() {
   // Fast UI: update screen first, then save DB.
   setOrders((prev) => {
     if (editingOrderId) {
-      return prev.map((order) => Number(order.id) === Number(editingOrderId) ? optimisticOrder : order);
+      return prev.map((order) => getOrderStableKey(order) === editingOrderStableKey ? optimisticOrder : order);
     }
 
     return [optimisticOrder, ...prev];
@@ -3732,6 +4523,7 @@ async function submitTakeOrder() {
 
   const orderPayload = {
     restaurant_id: restaurantId,
+    client_create_id: clientCreateId,
     table_number: normalizedPlaceNumber,
     status: "pending",
     remarks: takeOrderRemarks || null,
@@ -3776,13 +4568,20 @@ async function submitTakeOrder() {
     );
   };
 
-  const saveOrderLocally = async () => {
+  const saveOrderLocally = async () => miniDB.transaction(
+    "rw",
+    localOrdersTable,
+    localOrderItemsTable,
+    async () => {
+    // Order and item cache writes must be atomic to prevent partial local state.
     let localOrderId: number | null = null;
     let existingLocalOrder: LocalOrderRow | null = null;
     let shouldAddLocalItems = true;
 
     if (editingOrderId) {
-      existingLocalOrder = await getLocalOrderForUiId(editingOrderId);
+      existingLocalOrder = existingEditingOrder
+        ? await getLocalOrderForUiOrder(existingEditingOrder)
+        : null;
       if (!existingLocalOrder?.id) {
         throw new Error("Local order not found");
       }
@@ -3790,6 +4589,9 @@ async function submitTakeOrder() {
       localOrderId = existingLocalOrder.id;
 
       await localOrdersTable.update(localOrderId, {
+        client_create_id: isValidUuid(existingLocalOrder.client_create_id)
+          ? existingLocalOrder.client_create_id
+          : clientCreateId,
         table_number: normalizedPlaceNumber,
         remarks: takeOrderRemarks || null,
         status: "pending",
@@ -3808,6 +4610,7 @@ async function submitTakeOrder() {
     } else {
       localOrderId = await localOrdersTable.add({
         restaurant_id: restaurantId,
+        client_create_id: clientCreateId,
         table_number: normalizedPlaceNumber,
         status: "pending",
         remarks: takeOrderRemarks || null,
@@ -3823,9 +4626,10 @@ async function submitTakeOrder() {
 
     if (shouldAddLocalItems) {
       await localOrderItemsTable.bulkAdd(
-        validatedTakeOrderItems.map((item) => ({
+        validatedTakeOrderItems.map((item, index) => ({
           local_order_id: localOrderId!,
           server_order_id: existingLocalOrder?.server_id || null,
+          client_item_id: clientItemIds[index],
           item_name: item.item_name,
           menu_item_id: item.menu_id,
           quantity: item.quantity,
@@ -3854,15 +4658,18 @@ async function submitTakeOrder() {
     );
 
     return true;
-  };
+  });
 
   try {
     if (canUseOnlineSubmit && !editingOrderId) {
       onlineShadowLocalOrderId = Number(optimisticOrder.id);
 
+      // Order and item cache writes must be atomic to prevent partial local state.
+      await miniDB.transaction("rw", localOrdersTable, localOrderItemsTable, async () => {
       await localOrdersTable.put({
-        id: onlineShadowLocalOrderId,
+        id: onlineShadowLocalOrderId!,
         restaurant_id: restaurantId,
+        client_create_id: clientCreateId,
         table_number: normalizedPlaceNumber,
         status: "pending",
         remarks: takeOrderRemarks || null,
@@ -3876,9 +4683,10 @@ async function submitTakeOrder() {
       });
 
       await localOrderItemsTable.bulkAdd(
-        validatedTakeOrderItems.map((item) => ({
+        validatedTakeOrderItems.map((item, index) => ({
           local_order_id: onlineShadowLocalOrderId!,
           server_order_id: null,
+          client_item_id: clientItemIds[index],
           item_name: item.item_name,
           menu_item_id: item.menu_id,
           quantity: item.quantity,
@@ -3890,6 +4698,7 @@ async function submitTakeOrder() {
           sync_status: "pending_create" as const,
         }))
       );
+      });
     }
     if (canUseOnlineSubmit) {
       try {
@@ -3898,14 +4707,31 @@ async function submitTakeOrder() {
         let existingLocalOrder: LocalOrderRow | null = null;
 
         if (editingOrderId) {
-          existingLocalOrder = await getLocalOrderForUiId(editingOrderId);
+          existingLocalOrder = existingEditingOrder
+            ? await getLocalOrderForUiOrder(existingEditingOrder)
+            : null;
+
+          if (existingLocalOrder?.id && !isValidUuid(existingLocalOrder.client_create_id)) {
+            // Idempotency tokens must persist across retries.
+            await localOrdersTable.update(existingLocalOrder.id, {
+              client_create_id: clientCreateId,
+              updated_at: now,
+            });
+            existingLocalOrder.client_create_id = clientCreateId;
+          }
 
           // Editing/Add Dish can open an order while it is still only a local/optimistic row.
           // Never send a Date.now() local id to Supabase as the real orders.id.
           const editingIdNumber = Number(editingOrderId);
           remoteOrderId = existingLocalOrder?.server_id || null;
 
-          if (!remoteOrderId && editingIdNumber > 0 && editingIdNumber < 1000000000000) {
+          if (
+            !remoteOrderId &&
+            existingEditingOrder &&
+            getOrderStableKey(existingEditingOrder).startsWith("server:") &&
+            editingIdNumber > 0 &&
+            editingIdNumber < 1000000000000
+          ) {
             remoteOrderId = editingIdNumber;
           }
 
@@ -3925,7 +4751,7 @@ async function submitTakeOrder() {
             .update(orderPayload)
             .eq("id", remoteOrderId)
             .eq("restaurant_id", restaurantId)
-            .select("id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, remarks, inventory_deducted")
+            .select("id, client_create_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, remarks, inventory_deducted")
             .maybeSingle();
 
           if (updateOrderError) throw updateOrderError;
@@ -3941,19 +4767,48 @@ async function submitTakeOrder() {
           const { data: insertedOrder, error: insertOrderError } = await supabase
             .from("orders")
             .insert([orderPayload])
-            .select("id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, remarks, inventory_deducted")
+            .select("id, client_create_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, remarks, inventory_deducted")
             .single();
 
           if (insertOrderError || !insertedOrder) {
-            throw insertOrderError || new Error("Failed to create order");
+            if (insertOrderError && isDuplicateConstraintError(insertOrderError)) {
+              // Duplicate client_create_id means the server order already exists;
+              // recover server_id and continue item sync.
+              const { data: recoveredOrder, error: recoveredOrderError } = await supabase
+                .from("orders")
+                .select("id, client_create_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, remarks, inventory_deducted")
+                .eq("restaurant_id", restaurantId)
+                .eq("client_create_id", clientCreateId)
+                .maybeSingle();
+
+              if (recoveredOrderError || !recoveredOrder?.id) {
+                throw recoveredOrderError || insertOrderError;
+              }
+
+              savedOrder = recoveredOrder as OrderRow;
+              remoteOrderId = Number(recoveredOrder.id);
+            } else {
+              throw insertOrderError || new Error("Failed to create order");
+            }
+          } else {
+            savedOrder = insertedOrder as OrderRow;
+            remoteOrderId = Number(insertedOrder.id);
           }
 
-          savedOrder = insertedOrder as OrderRow;
-          remoteOrderId = Number(insertedOrder.id);
+          if (onlineShadowLocalOrderId) {
+            // Save server_id immediately after remote order creation to prevent
+            // duplicate KOT/bills on retry.
+            await localOrdersTable.update(onlineShadowLocalOrderId, {
+              server_id: remoteOrderId,
+              sync_status: "pending_create",
+              updated_at: now,
+            });
+          }
         }
 
-        const itemPayload = validatedTakeOrderItems.map((item) => ({
+        const itemPayload = validatedTakeOrderItems.map((item, index) => ({
           order_id: remoteOrderId,
+          client_item_id: clientItemIds[index],
           item_name: item.item_name,
           menu_item_id: item.menu_id,
           quantity: item.quantity,
@@ -3965,19 +4820,22 @@ async function submitTakeOrder() {
         const { data: insertedItems, error: insertItemsError } = await supabase
           .from("order_items")
           .insert(itemPayload)
-          .select("id, item_name, menu_item_id, quantity, unit_price, status, menu_item_variant_id");
+          .select("id, client_item_id, item_name, menu_item_id, quantity, unit_price, status, menu_item_variant_id");
 
         if (insertItemsError) throw insertItemsError;
 
         const finalOrder: OrderRow = {
           ...(savedOrder || optimisticOrder),
+          server_id: remoteOrderId,
           order_items: editingOrderId
             ? [...(existingEditingOrder?.order_items || []), ...((insertedItems || []) as OrderItem[])]
             : ((insertedItems || []) as OrderItem[]),
         };
 
         if (onlineShadowLocalOrderId && remoteOrderId) {
-          await localOrdersTable.update(onlineShadowLocalOrderId, {
+          // Order and item cache writes must be atomic to prevent partial local state.
+          await miniDB.transaction("rw", localOrdersTable, localOrderItemsTable, async () => {
+          await localOrdersTable.update(onlineShadowLocalOrderId!, {
             server_id: remoteOrderId,
             updated_at: new Date().toISOString(),
             sync_status: "synced",
@@ -3985,13 +4843,15 @@ async function submitTakeOrder() {
 
           const shadowItems = await localOrderItemsTable
             .where("local_order_id")
-            .equals(onlineShadowLocalOrderId)
+            .equals(onlineShadowLocalOrderId!)
             .toArray();
           const insertedList = Array.isArray(insertedItems) ? insertedItems : [];
 
           for (let index = 0; index < shadowItems.length; index += 1) {
             const shadowItem = shadowItems[index];
-            const remoteItem = insertedList[index];
+            const remoteItem = insertedList.find(
+              (item) => item.client_item_id === shadowItem.client_item_id
+            ) || insertedList[index];
             if (!shadowItem.id) continue;
             await localOrderItemsTable.update(shadowItem.id, {
               server_order_id: remoteOrderId,
@@ -4000,11 +4860,12 @@ async function submitTakeOrder() {
               sync_status: "synced",
             });
           }
+          });
         }
 
         setOrders((prev) => {
           if (editingOrderId) {
-            return prev.map((order) => Number(order.id) === Number(editingOrderId) ? finalOrder : order);
+            return prev.map((order) => getOrderStableKey(order) === editingOrderStableKey ? finalOrder : order);
           }
 
           return prev.map((order) => Number(order.id) === Number(optimisticOrder.id) ? finalOrder : order);
@@ -4108,6 +4969,7 @@ async function submitTakeOrder() {
     // Ready table can still receive extra dishes later. Only paid orders are locked.
     setEditingOrderLoading(true);
     setEditingOrderId(order.id);
+    editingOrderStableKeyRef.current = getOrderStableKey(order);
     setTakeOrderTableNumber(String(order.table_number || ""));
     setTakeOrderSearch("");
     setTakeOrderRemarks(order.remarks || "");
@@ -4122,17 +4984,13 @@ async function submitTakeOrder() {
     setEditingOrderLoading(false);
   }
 
-  async function handleCancelOrder(orderId: number) {
+  async function handleCancelOrder(targetOrder: OrderRow) {
     if (!restaurantId) {
       showToast("Invalid restaurant link", "error");
       return;
     }
 
-    const targetOrder = orders.find((order) => order.id === orderId);
-    if (!targetOrder) {
-      showToast("Order not found", "error");
-      return;
-    }
+    const orderId = Number(targetOrder.id);
 
     if (targetOrder.is_paid) {
       showToast("Paid order cancel garna mildaina", "error");
@@ -4149,29 +5007,39 @@ async function submitTakeOrder() {
     if (!confirmCancel) return;
 
     try {
-      const localOrder = await getLocalOrderForUiId(orderId);
-      const remoteOrderId = localOrder?.server_id || orderId;
+      const localOrder = await getLocalOrderForUiOrder(targetOrder);
+      const remoteOrderId = Number(localOrder?.server_id || targetOrder.server_id || 0);
+      const hasConfirmedRemoteOrder = Number.isFinite(remoteOrderId) && remoteOrderId > 0;
 
-      if (isOnline) {
+      if (isOnline && hasConfirmedRemoteOrder) {
+        // Do not delete remote items before confirmed order delete; otherwise
+        // a failed cancel can leave a ghost empty order.
+        const { error: deleteOrderError, count: deletedOrderCount } = await supabase
+          .from("orders")
+          .delete({ count: "exact" })
+          .eq("id", remoteOrderId)
+          .eq("restaurant_id", restaurantId);
+
+        if (deleteOrderError) throw deleteOrderError;
+        if ((deletedOrderCount || 0) !== 1) {
+          throw new Error("Order cancel failed. Please retry.");
+        }
+
         const { error: deleteItemsError } = await supabase
           .from("order_items")
           .delete()
           .eq("order_id", remoteOrderId);
 
-        if (deleteItemsError) throw deleteItemsError;
-
-        const { error: deleteOrderError } = await supabase
-          .from("orders")
-          .delete()
-          .eq("id", remoteOrderId)
-          .eq("restaurant_id", restaurantId);
-
-        if (deleteOrderError) throw deleteOrderError;
+        if (deleteItemsError) {
+          console.warn("Remote order cancelled but stale item cleanup failed:", deleteItemsError);
+        }
 
         if (localOrder?.id) {
+          // Order and item cache writes must be atomic to prevent partial local state.
+          await miniDB.transaction("rw", localOrdersTable, localOrderItemsTable, async () => {
           const localItems = await localOrderItemsTable
             .where("local_order_id")
-            .equals(localOrder.id)
+            .equals(localOrder.id!)
             .toArray();
 
           if (localItems.length) {
@@ -4182,21 +5050,19 @@ async function submitTakeOrder() {
             );
           }
 
-          await localOrdersTable.delete(localOrder.id);
+          await localOrdersTable.delete(localOrder.id!);
+          });
         }
-      } else {
+      } else if (!hasConfirmedRemoteOrder) {
         if (!localOrder?.id) {
           throw new Error("Local order not found");
         }
 
-        if (localOrder.server_id) {
-          showToast("Saved remote order offline cancel garna mildaina", "error");
-          return;
-        }
-
+        // Order and item cache writes must be atomic to prevent partial local state.
+        await miniDB.transaction("rw", localOrdersTable, localOrderItemsTable, async () => {
         const localItems = await localOrderItemsTable
           .where("local_order_id")
-          .equals(localOrder.id)
+          .equals(localOrder.id!)
           .toArray();
 
         if (localItems.length) {
@@ -4207,10 +5073,14 @@ async function submitTakeOrder() {
           );
         }
 
-        await localOrdersTable.delete(localOrder.id);
+        await localOrdersTable.delete(localOrder.id!);
+        });
+      } else {
+        showToast("Saved remote order offline cancel garna mildaina", "error");
+        return;
       }
 
-      if (editingOrderId === orderId) {
+      if (editingOrderStableKeyRef.current === getOrderStableKey(targetOrder)) {
         resetTakeOrderForm();
         setShowTakeOrderModal(false);
       }
@@ -4275,8 +5145,7 @@ async function submitTakeOrder() {
       .filter((order) => {
         const sameTable = String(order.table_number || "").trim() === tableNo;
         const isTodayOrder = getLocalDateString(order.created_at) === todayLocalDate;
-        const isUnpaidOrPendingSync = order.is_paid !== true || order.sync_status === "pending_payment";
-        return sameTable && isTodayOrder && isUnpaidOrPendingSync;
+        return sameTable && isTodayOrder && order.is_paid !== true && order.sync_status !== "pending_payment";
       })
       .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
 
@@ -4419,52 +5288,61 @@ async function submitTakeOrder() {
         .equals(restaurantId)
         .toArray();
 
-      const affectedIds = new Set(affectedOrders.map((order) => Number(order.id)));
+      const orderLocalPairs = await Promise.all(
+        affectedOrders.map(async (order) => ({
+          order,
+          localOrder: await getLocalOrderForUiOrder(order, localOrders),
+        }))
+      );
       const now = new Date().toISOString();
 
       await Promise.all(
-        localOrders
-          .filter((localOrder) => {
-            const localUiId = Number(localOrder.id || 0);
-            const localServerId = Number(localOrder.server_id || 0);
-            return (
-              String(localOrder.table_number || "").trim() === fromTable &&
-              localOrder.is_paid !== true &&
-              localOrder.sync_status !== "pending_payment" &&
-              (affectedIds.has(localUiId) || affectedIds.has(localServerId))
-            );
-          })
-          .map((localOrder) =>
-            localOrdersTable.update(localOrder.id!, {
+        orderLocalPairs
+          .filter(({ localOrder }) => localOrder?.id)
+          .map(({ localOrder }) =>
+            localOrdersTable.update(localOrder!.id!, {
               table_number: toTable,
               updated_at: now,
-              sync_status: localOrder.sync_status === "synced" ? "pending_update" : localOrder.sync_status || "pending_update",
+              sync_status:
+                localOrder!.sync_status === "synced"
+                  ? "pending_update"
+                  : localOrder!.sync_status || (localOrder!.server_id ? "pending_update" : "pending_create"),
             })
           )
       );
 
       if (isOnline) {
-        const remoteOrderIds = affectedOrders
-          .map((order) => Number(order.id || 0))
-          .filter((id) => Number.isFinite(id) && id > 0 && id < 1000000000000);
+        // Change Table must use confirmed server_id only; local Dexie IDs can collide with server IDs.
+        const remoteOrderIds = Array.from(
+          new Set(
+            orderLocalPairs
+              .map(({ order, localOrder }) => Number(order.server_id || localOrder?.server_id || 0))
+              .filter((id) => Number.isFinite(id) && id > 0)
+          )
+        );
 
         if (remoteOrderIds.length > 0) {
-          const { error } = await supabase
+          const { error, count } = await supabase
             .from("orders")
-            .update({ table_number: toTable })
+            .update({ table_number: toTable }, { count: "exact" })
             .eq("restaurant_id", restaurantId)
             .in("id", remoteOrderIds);
 
           if (error) throw error;
-
-          const syncedLocals = await localOrdersTable
-            .where("restaurant_id")
-            .equals(restaurantId)
-            .toArray();
+          if ((count || 0) !== remoteOrderIds.length) {
+            throw new Error("Table change failed for one or more server orders");
+          }
 
           await Promise.all(
-            syncedLocals
-              .filter((localOrder) => localOrder.server_id && remoteOrderIds.includes(Number(localOrder.server_id)))
+            orderLocalPairs
+              .map(({ localOrder }) => localOrder)
+              .filter((localOrder): localOrder is LocalOrderRow =>
+                Boolean(
+                  localOrder?.id &&
+                  localOrder.server_id &&
+                  remoteOrderIds.includes(Number(localOrder.server_id))
+                )
+              )
               .map((localOrder) =>
                 localOrdersTable.update(localOrder.id!, {
                   table_number: toTable,
@@ -4476,7 +5354,8 @@ async function submitTakeOrder() {
 
           setOrders((prev) =>
             prev.map((order) =>
-              remoteOrderIds.includes(Number(order.id))
+              remoteOrderIds.includes(Number(order.server_id || 0)) ||
+              (getOrderStableKey(order).startsWith("server:") && remoteOrderIds.includes(Number(order.id || 0)))
                 ? { ...order, table_number: toTable, sync_status: order.sync_status === "pending_update" ? "synced" : order.sync_status }
                 : order
             )
@@ -5639,21 +6518,102 @@ function shouldKeepOrderOnFastScreens(order: OrderRow) {
   return Number.isFinite(createdAt) && createdAt >= twoDaysAgo;
 }
 
+function getOrderStableKey(order: OrderRow) {
+  const serverId = Number(order.server_id || 0);
+  if (Number.isFinite(serverId) && serverId > 0) return `server:${serverId}`;
+
+  const orderId = Number(order.id || 0);
+  if (!Number.isFinite(orderId) || orderId <= 0) return `local:${String(order.id)}`;
+
+  // Local Dexie auto IDs and server order IDs share numeric space, so stable keys must include source.
+  if (order.sync_status == null || order.sync_status === "synced") return `server:${orderId}`;
+  if (orderId >= 1000000000000) return `temp:${orderId}`;
+  return `local:${orderId}`;
+}
+
+function getOrderRenderKey(order: OrderRow) {
+  const stableKey = getOrderStableKey(order);
+  if (stableKey.startsWith("server:")) return `server-order-${stableKey.slice(7)}`;
+  if (stableKey.startsWith("temp:")) return `temp-order-${stableKey.slice(5)}`;
+  return `local-order-${stableKey.slice(6)}`;
+}
+
+function dedupeOrdersByStableId(sourceOrders: OrderRow[]): OrderRow[] {
+  const deduped = new Map<string, OrderRow>();
+  const duplicateIds = new Set<string>();
+
+  const getOrderTimestamp = (order: OrderRow) => {
+    const updatedAt = (order as OrderRow & { updated_at?: string | null }).updated_at;
+    const timestamp = new Date(updatedAt || order.created_at || 0).getTime();
+    return Number.isFinite(timestamp) ? timestamp : 0;
+  };
+
+  sourceOrders.forEach((order) => {
+    const stableId = getOrderStableKey(order);
+
+    const existing = deduped.get(stableId);
+    if (!existing) {
+      deduped.set(stableId, order);
+      return;
+    }
+
+    duplicateIds.add(stableId);
+
+    const existingItemCount = existing.order_items?.length || 0;
+    const nextItemCount = order.order_items?.length || 0;
+    const betterOrder =
+      nextItemCount > existingItemCount ||
+      (nextItemCount === existingItemCount && getOrderTimestamp(order) > getOrderTimestamp(existing))
+        ? order
+        : existing;
+    const otherOrder = betterOrder === order ? existing : order;
+    const inventoryDeducted =
+      existing.inventory_deducted === true || order.inventory_deducted === true;
+    const isPaid = existing.is_paid === true || order.is_paid === true;
+    let syncStatus = betterOrder.sync_status;
+
+    if (isPaid && !inventoryDeducted) {
+      syncStatus = "pending_payment";
+    } else if (
+      inventoryDeducted &&
+      syncStatus === "pending_payment" &&
+      otherOrder.sync_status !== "pending_payment"
+    ) {
+      syncStatus = otherOrder.sync_status || "synced";
+    }
+
+    deduped.set(stableId, {
+      ...otherOrder,
+      ...betterOrder,
+      is_paid: isPaid,
+      inventory_deducted: inventoryDeducted,
+      sync_status: syncStatus,
+    });
+  });
+
+  if (process.env.NODE_ENV !== "production" && duplicateIds.size > 0) {
+    console.warn("Deduped duplicate orders", Array.from(duplicateIds));
+  }
+
+  return [...deduped.values()];
+}
+
 function upsertOrderInState(nextOrder: OrderRow | null) {
   if (!nextOrder?.id) return;
 
   setOrders((prev) => {
-    const exists = prev.some((order) => Number(order.id) === Number(nextOrder.id));
+    const nextOrderKey = getOrderStableKey(nextOrder);
+    const exists = prev.some((order) => getOrderStableKey(order) === nextOrderKey);
 
     if (!shouldKeepOrderOnFastScreens(nextOrder)) {
-      return prev.filter((order) => Number(order.id) !== Number(nextOrder.id));
+      return prev.filter((order) => getOrderStableKey(order) !== nextOrderKey);
     }
 
     const nextList = exists
-      ? prev.map((order) => (Number(order.id) === Number(nextOrder.id) ? nextOrder : order))
+      ? prev.map((order) => (getOrderStableKey(order) === nextOrderKey ? nextOrder : order))
       : [nextOrder, ...prev];
 
-    return nextList.sort(
+    return dedupeOrdersByStableId(nextList).sort(
       (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     );
   });
@@ -5661,7 +6621,7 @@ function upsertOrderInState(nextOrder: OrderRow | null) {
 
 function removeOrderFromState(orderId: number) {
   if (!orderId) return;
-  setOrders((prev) => prev.filter((order) => Number(order.id) !== Number(orderId)));
+  setOrders((prev) => prev.filter((order) => getOrderStableKey(order) !== `server:${Number(orderId)}`));
 }
 
 async function cacheRemoteOrderLocally(order: OrderRow) {
@@ -5672,12 +6632,43 @@ async function cacheRemoteOrderLocally(order: OrderRow) {
     .equals(restaurantId)
     .toArray();
 
+  const remoteClientCreateId = validUuidOrNull(order.client_create_id);
   const existing = existingLocalOrders.find(
     (localOrder) => Number(localOrder.server_id || 0) === Number(order.id)
+  ) || (
+    remoteClientCreateId
+      ? existingLocalOrders.find(
+          (localOrder) =>
+            !localOrder.server_id &&
+            validUuidOrNull(localOrder.client_create_id) === remoteClientCreateId
+        )
+      : null
   );
 
   if (existing?.id) {
-    await localOrdersTable.update(existing.id, {
+    const existingSyncStatus = existing.sync_status || "synced";
+    const remoteInventoryDeducted = order.inventory_deducted === true;
+    const hasUnsyncedLocalItems =
+      existingSyncStatus === "pending_create" || existingSyncStatus === "pending_update";
+    const nextSyncStatus =
+      order.is_paid === true
+        ? remoteInventoryDeducted
+          ? "synced"
+          : "pending_payment"
+        : existingSyncStatus === "pending_create" ||
+            existingSyncStatus === "pending_update" ||
+            existingSyncStatus === "pending_payment"
+          ? existingSyncStatus
+          : "synced";
+
+    // Realtime cache must not erase the payment/inventory retry queue before
+    // inventory deduction and the cost snapshot are confirmed remotely.
+    // Order and item cache writes must be atomic to prevent partial local state.
+    await miniDB.transaction("rw", localOrdersTable, localOrderItemsTable, async () => {
+    await localOrdersTable.update(existing.id!, {
+      server_id: order.id,
+      client_create_id:
+        validUuidOrNull(order.client_create_id) || validUuidOrNull(existing.client_create_id),
       table_number: order.table_number,
       status: order.status,
       remarks: order.remarks || null,
@@ -5693,13 +6684,22 @@ async function cacheRemoteOrderLocally(order: OrderRow) {
       tax_percent: order.tax_percent ?? 0,
       tax_amount: order.tax_amount ?? 0,
       grand_total: order.grand_total ?? null,
+      ...(order.inventory_deducted !== undefined
+        ? { inventory_deducted: order.inventory_deducted }
+        : {}),
       updated_at: new Date().toISOString(),
-      sync_status: "synced",
+      sync_status: nextSyncStatus,
     });
+
+    // Preserve locally unsynced dishes. A realtime order event can arrive while
+    // pending_create/pending_update items are still waiting to reach the server.
+    if (hasUnsyncedLocalItems && !remoteInventoryDeducted) {
+      return;
+    }
 
     const oldItems = await localOrderItemsTable
       .where("local_order_id")
-      .equals(existing.id)
+      .equals(existing.id!)
       .toArray();
 
     const oldItemIds = oldItems
@@ -5716,6 +6716,7 @@ async function cacheRemoteOrderLocally(order: OrderRow) {
           local_order_id: existing.id!,
           server_order_id: order.id,
           server_id: item.id,
+          client_item_id: validUuidOrNull(item.client_item_id),
           item_name: item.item_name,
           menu_item_id: item.menu_item_id == null ? null : Number(item.menu_item_id),
           quantity: Number(item.quantity || 0),
@@ -5728,11 +6729,15 @@ async function cacheRemoteOrderLocally(order: OrderRow) {
         }))
       );
     }
+    });
     return;
   }
 
+  // Order and item cache writes must be atomic to prevent partial local state.
+  await miniDB.transaction("rw", localOrdersTable, localOrderItemsTable, async () => {
   const localOrderId = await localOrdersTable.add({
     server_id: order.id,
+    client_create_id: validUuidOrNull(order.client_create_id),
     restaurant_id: restaurantId,
     table_number: order.table_number,
     status: order.status,
@@ -5749,9 +6754,15 @@ async function cacheRemoteOrderLocally(order: OrderRow) {
     tax_percent: order.tax_percent ?? 0,
     tax_amount: order.tax_amount ?? 0,
     grand_total: order.grand_total ?? null,
+    ...(order.inventory_deducted !== undefined
+      ? { inventory_deducted: order.inventory_deducted }
+      : {}),
     created_at: order.created_at,
     updated_at: new Date().toISOString(),
-    sync_status: "synced",
+    sync_status:
+      order.is_paid === true && order.inventory_deducted !== true
+        ? "pending_payment"
+        : "synced",
   });
 
   if (order.order_items?.length) {
@@ -5760,6 +6771,7 @@ async function cacheRemoteOrderLocally(order: OrderRow) {
         local_order_id: localOrderId,
         server_order_id: order.id,
         server_id: item.id,
+        client_item_id: validUuidOrNull(item.client_item_id),
         item_name: item.item_name,
         menu_item_id: item.menu_item_id == null ? null : Number(item.menu_item_id),
         quantity: Number(item.quantity || 0),
@@ -5772,6 +6784,7 @@ async function cacheRemoteOrderLocally(order: OrderRow) {
       }))
     );
   }
+  });
 }
 
 async function fetchSingleRemoteOrder(orderId: number, delayMs = 0) {
@@ -5784,7 +6797,7 @@ async function fetchSingleRemoteOrder(orderId: number, delayMs = 0) {
   const { data, error } = await supabase
     .from("orders")
     .select(
-      "id, restaurant_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, subtotal, discount_enabled, discount_percent, discount_amount, tax_enabled, tax_percent, tax_amount, grand_total, remarks, inventory_deducted, order_items(id, item_name, menu_item_id, quantity, unit_price, status, menu_item_variant_id)"
+      "id, client_create_id, restaurant_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, subtotal, discount_enabled, discount_percent, discount_amount, tax_enabled, tax_percent, tax_amount, grand_total, remarks, inventory_deducted, order_items(id, client_item_id, item_name, menu_item_id, quantity, unit_price, status, menu_item_variant_id)"
     )
     .eq("restaurant_id", restaurantId)
     .eq("id", orderId)
@@ -5800,15 +6813,54 @@ async function fetchSingleRemoteOrder(orderId: number, delayMs = 0) {
     return;
   }
 
-  const nextOrder = { ...(data as OrderRow), sync_status: "synced" as const };
+  const nextOrder = {
+    ...(data as OrderRow),
+    server_id: Number((data as OrderRow).id),
+    sync_status: "synced" as const,
+  };
   upsertOrderInState(nextOrder);
   cacheRemoteOrderLocally(nextOrder).catch((cacheError) => {
     console.warn("cacheRemoteOrderLocally failed:", cacheError);
   });
 }
 
-async function fetchOrders() {
+async function fetchOrders(options: { fullHistory?: boolean } = {}) {
   if (!restaurantId || !isSetupDone) return;
+
+  const copyOrderFinancialFields = (
+    source: Partial<OrderRow & LocalOrderRow>,
+    fallback: Partial<OrderRow & LocalOrderRow> = {}
+  ) => {
+    const isPaid = source.is_paid ?? fallback.is_paid ?? false;
+    const inventoryDeducted =
+      source.inventory_deducted === true || fallback.inventory_deducted === true
+        ? true
+        : source.inventory_deducted ?? fallback.inventory_deducted ?? false;
+    let syncStatus = source.sync_status || fallback.sync_status || "synced";
+
+    if (isPaid === true && inventoryDeducted !== true) {
+      syncStatus = "pending_payment";
+    } else if (isPaid === true && inventoryDeducted === true) {
+      syncStatus = "synced";
+    }
+
+    // Fetch/cache mapping must preserve payment totals and inventory status across refresh/offline reload.
+    return {
+      is_paid: isPaid,
+      payment_method: source.payment_method || fallback.payment_method || null,
+      paid_at: source.paid_at || fallback.paid_at || null,
+      subtotal: source.subtotal ?? fallback.subtotal ?? null,
+      discount_enabled: source.discount_enabled ?? fallback.discount_enabled ?? false,
+      discount_percent: source.discount_percent ?? fallback.discount_percent ?? 0,
+      discount_amount: source.discount_amount ?? fallback.discount_amount ?? 0,
+      tax_enabled: source.tax_enabled ?? fallback.tax_enabled ?? false,
+      tax_percent: source.tax_percent ?? fallback.tax_percent ?? 0,
+      tax_amount: source.tax_amount ?? fallback.tax_amount ?? 0,
+      grand_total: source.grand_total ?? fallback.grand_total ?? null,
+      inventory_deducted: inventoryDeducted,
+      sync_status: syncStatus,
+    };
+  };
 
   if (!isOnline) {
     const localOrders = await localOrdersTable
@@ -5826,19 +6878,19 @@ async function fetchOrders() {
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
       .map((order) => ({
         id: order.server_id || order.id || 0,
+        server_id: order.server_id ?? null,
+        client_create_id: validUuidOrNull(order.client_create_id),
         table_number: order.table_number,
         status: order.status,
         created_at: order.created_at,
         waiter_cleared: order.waiter_cleared ?? false,
-        is_paid: order.is_paid ?? false,
-        payment_method: order.payment_method ?? null,
-        paid_at: order.paid_at ?? null,
+        ...copyOrderFinancialFields(order),
         remarks: order.remarks ?? null,
-        sync_status: order.sync_status || "synced",
         order_items: localItems
           .filter((item) => item.local_order_id === order.id)
           .map((item) => ({
             id: item.server_id || item.id || 0,
+            client_item_id: validUuidOrNull(item.client_item_id),
             item_name: item.item_name,
             menu_item_id: item.menu_item_id == null ? null : Number(item.menu_item_id),
             quantity: Number(item.quantity || 0),
@@ -5848,33 +6900,125 @@ async function fetchOrders() {
           })),
       }));
 
-    orderIdsRef.current = mappedOrders.map((order) => order.id);
-    setOrders(mappedOrders as OrderRow[]);
+    const dedupedMappedOrders = dedupeOrdersByStableId(mappedOrders as OrderRow[]).sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+    orderIdsRef.current = dedupedMappedOrders.map((order) => order.id);
+    setOrders(dedupedMappedOrders);
     return;
   }
 
-  const dashboardLikeView = miniView === "dashboard" || miniView === "order" || miniView === "manage";
+  const dashboardLikeView = !options.fullHistory && (miniView === "dashboard" || miniView === "order" || miniView === "manage");
   const dashboardCutoff = addDays(startOfDay(new Date()), -2).toISOString();
 
-  let ordersQuery = supabase
-    .from("orders")
-    .select(
-      "id, restaurant_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, subtotal, discount_enabled, discount_percent, discount_amount, tax_enabled, tax_percent, tax_amount, grand_total, remarks, inventory_deducted, order_items(id, item_name, menu_item_id, quantity, unit_price, status, menu_item_variant_id)"
-    )
-    .eq("restaurant_id", restaurantId)
-    .order("created_at", { ascending: false });
+  const ordersSelect =
+    "id, client_create_id, restaurant_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, subtotal, discount_enabled, discount_percent, discount_amount, tax_enabled, tax_percent, tax_amount, grand_total, remarks, inventory_deducted, order_items(id, client_item_id, item_name, menu_item_id, quantity, unit_price, status, menu_item_variant_id)";
+  let data: OrderRow[] | null = null;
+  let error: unknown = null;
 
-  // Fast path for daily dashboard/kitchen/order screens:
-  // fetch all unpaid bills + only recent paid bills instead of pulling the whole restaurant history.
-  if (dashboardLikeView) {
-    ordersQuery = ordersQuery
-      .or(`is_paid.eq.false,is_paid.is.null,created_at.gte.${dashboardCutoff}`)
-      .limit(350);
+  if (options.fullHistory) {
+    // Full-history reports are paginated so annual/lifetime totals are not capped at 5000 orders.
+    const batchSize = 1000;
+    const maxBatches = 100;
+    const fetchedOrders: OrderRow[] = [];
+    let hitMaxBatches = true;
+
+    for (let batchIndex = 0; batchIndex < maxBatches; batchIndex += 1) {
+      const from = batchIndex * batchSize;
+      const to = from + batchSize - 1;
+      const batchResult = await supabase
+        .from("orders")
+        .select(ordersSelect)
+        .eq("restaurant_id", restaurantId)
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .range(from, to);
+
+      if (batchResult.error) {
+        error = batchResult.error;
+        hitMaxBatches = false;
+        break;
+      }
+
+      const batchRows = ((batchResult.data || []) as OrderRow[]).map((order) => ({
+        ...order,
+        server_id: Number(order.id),
+      }));
+      fetchedOrders.push(...batchRows);
+
+      if (batchRows.length < batchSize) {
+        hitMaxBatches = false;
+        break;
+      }
+    }
+
+    if (hitMaxBatches) {
+      console.warn("Full-history order fetch reached maxBatches", maxBatches);
+    }
+
+    data = dedupeOrdersByStableId(fetchedOrders).sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
   } else {
-    ordersQuery = ordersQuery.limit(1200);
-  }
+    let ordersQuery = supabase
+      .from("orders")
+      .select(ordersSelect)
+      .eq("restaurant_id", restaurantId)
+      .order("created_at", { ascending: false });
 
-  const { data, error } = await ordersQuery;
+    // Fast path for daily dashboard/kitchen/order screens:
+    // fetch all unpaid bills + only recent paid bills instead of pulling the whole restaurant history.
+    if (dashboardLikeView) {
+      const recentResult = await ordersQuery
+        .or(`is_paid.eq.false,is_paid.is.null,created_at.gte.${dashboardCutoff}`)
+        .limit(350);
+
+      if (recentResult.error) {
+        error = recentResult.error;
+      } else {
+        // Dashboard fetch keeps paid/recent rows limited, but always includes all unpaid/open tables so occupied tables never disappear.
+        const unpaidOrders: OrderRow[] = [];
+        const unpaidBatchSize = 1000;
+        let unpaidFrom = 0;
+
+        while (true) {
+          const unpaidResult = await supabase
+            .from("orders")
+            .select(ordersSelect)
+            .eq("restaurant_id", restaurantId)
+            .or("is_paid.eq.false,is_paid.is.null")
+            .order("created_at", { ascending: false })
+            .order("id", { ascending: false })
+            .range(unpaidFrom, unpaidFrom + unpaidBatchSize - 1);
+
+          if (unpaidResult.error) {
+            error = unpaidResult.error;
+            break;
+          }
+
+          const unpaidBatch = (unpaidResult.data || []) as OrderRow[];
+          unpaidOrders.push(...unpaidBatch);
+
+          if (unpaidBatch.length < unpaidBatchSize) break;
+          unpaidFrom += unpaidBatchSize;
+        }
+
+        if (!error) {
+          data = dedupeOrdersByStableId([
+            ...((recentResult.data || []) as OrderRow[]),
+            ...unpaidOrders,
+          ]).sort(
+            (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+          );
+        }
+      }
+    } else {
+      ordersQuery = ordersQuery.limit(1200);
+      const queryResult = await ordersQuery;
+      data = (queryResult.data || null) as OrderRow[] | null;
+      error = queryResult.error;
+    }
+  }
 
   if (error) {
     console.error("fetchOrders failed:", error);
@@ -5883,7 +7027,13 @@ async function fetchOrders() {
 
   if (!data) return;
 
-  const remoteOrders = data as OrderRow[];
+  const remoteOrders = (data as OrderRow[]).map((order) => ({
+    ...order,
+    server_id: Number(order.server_id || order.id),
+  }));
+  const remoteOrderById = new Map(
+    remoteOrders.map((order) => [Number(order.id), order])
+  );
 
   const existingLocalOrders = await localOrdersTable
     .where("restaurant_id")
@@ -5911,51 +7061,91 @@ async function fetchOrders() {
   );
 
   const pendingUiOrders: OrderRow[] = pendingLocalOrders
-    .map((order) => ({
-      id: order.server_id || order.id || 0,
-      table_number: order.table_number,
-      status: order.status,
-      created_at: order.created_at,
-      waiter_cleared: order.waiter_cleared ?? false,
-      is_paid: order.is_paid ?? false,
-      payment_method: order.payment_method ?? null,
-      paid_at: order.paid_at ?? null,
-      remarks: order.remarks ?? null,
-      sync_status: order.sync_status || "synced",
-      order_items: pendingLocalItems
-        .filter((item) => item.local_order_id === order.id)
-        .map((item) => ({
-          id: item.server_id || item.id || 0,
-          item_name: item.item_name,
-          menu_item_id: item.menu_item_id == null ? null : Number(item.menu_item_id),
-          quantity: Number(item.quantity || 0),
-          unit_price: Number(item.unit_price || 0),
-          status: item.status || order.status,
-          menu_item_variant_id: item.menu_item_variant_id == null ? null : Number(item.menu_item_variant_id),
-        })),
-    }))
+    .map((order) => {
+      const remoteFallback = order.server_id
+        ? remoteOrderById.get(Number(order.server_id))
+        : undefined;
+      const financialFields =
+        remoteFallback?.is_paid === true
+          ? copyOrderFinancialFields(remoteFallback, order)
+          : copyOrderFinancialFields(order, remoteFallback);
+
+      return {
+        id: order.server_id || order.id || 0,
+        server_id: order.server_id ?? null,
+        client_create_id:
+          validUuidOrNull(order.client_create_id) || validUuidOrNull(remoteFallback?.client_create_id),
+        table_number: order.table_number,
+        status: order.status,
+        created_at: order.created_at,
+        waiter_cleared: order.waiter_cleared ?? false,
+        ...financialFields,
+        remarks: order.remarks ?? null,
+        order_items: pendingLocalItems
+          .filter((item) => item.local_order_id === order.id)
+          .map((item) => ({
+            id: item.server_id || item.id || 0,
+            client_item_id: validUuidOrNull(item.client_item_id),
+            item_name: item.item_name,
+            menu_item_id: item.menu_item_id == null ? null : Number(item.menu_item_id),
+            quantity: Number(item.quantity || 0),
+            unit_price: Number(item.unit_price || 0),
+            status: item.status || order.status,
+            menu_item_variant_id: item.menu_item_variant_id == null ? null : Number(item.menu_item_variant_id),
+          })),
+      };
+    })
     .filter((order) => Number(order.id || 0) > 0);
+
+  await Promise.all(
+    pendingLocalOrders.map(async (order) => {
+      if (!order.id || !order.server_id) return;
+      const remoteOrder = remoteOrderById.get(Number(order.server_id));
+      if (!remoteOrder) return;
+
+      const financialFields =
+        remoteOrder.is_paid === true
+          ? copyOrderFinancialFields(remoteOrder, order)
+          : copyOrderFinancialFields(order, remoteOrder);
+      await localOrdersTable.update(order.id, {
+        client_create_id:
+          validUuidOrNull(remoteOrder.client_create_id) || validUuidOrNull(order.client_create_id),
+        ...financialFields,
+        updated_at: new Date().toISOString(),
+      });
+    })
+  );
 
   const visibleRemoteOrders = remoteOrders
     .filter((order) => !pendingRemoteOrderIds.has(Number(order.id)))
-    .map((order) => ({ ...order, sync_status: "synced" as const }));
+    .map((order) => {
+      const localFallback = existingLocalOrders.find(
+        (localOrder) => Number(localOrder.server_id || 0) === Number(order.id)
+      );
+      return { ...order, ...copyOrderFinancialFields(order, localFallback) };
+    });
 
-  const mergedOrders = [...pendingUiOrders, ...visibleRemoteOrders].sort(
+  const mergedOrders = dedupeOrdersByStableId([...pendingUiOrders, ...visibleRemoteOrders]).sort(
     (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
   );
 
   orderIdsRef.current = mergedOrders.map((order) => order.id);
   setOrders(mergedOrders);
 
+  // Absence from a limited dashboard fetch does not mean the order was deleted remotely.
+  const fetchedRemoteOrderIds = new Set(remoteOrders.map((order) => Number(order.id)));
   const safeToReplaceLocalOrders = existingLocalOrders.filter((order) => {
     const syncStatus = order.sync_status || "synced";
-    return syncStatus === "synced";
+    if (syncStatus !== "synced") return false;
+    return options.fullHistory || fetchedRemoteOrderIds.has(Number(order.server_id || 0));
   });
 
   const safeToReplaceLocalOrderIds = safeToReplaceLocalOrders
     .map((order) => order.id)
     .filter((id): id is number => typeof id === "number");
 
+  // Order and item cache writes must be atomic to prevent partial local state.
+  await miniDB.transaction("rw", localOrdersTable, localOrderItemsTable, async () => {
   if (safeToReplaceLocalOrderIds.length > 0) {
     const targetLocalItemIds = allLocalItems
       .filter((item) => safeToReplaceLocalOrderIds.includes(item.local_order_id))
@@ -5971,19 +7161,22 @@ async function fetchOrders() {
 
   for (const order of remoteOrders) {
     if (pendingRemoteOrderIds.has(Number(order.id))) continue;
+    const localFallback = existingLocalOrders.find(
+      (localOrder) => Number(localOrder.server_id || 0) === Number(order.id)
+    );
+    const financialFields = copyOrderFinancialFields(order, localFallback);
     const localOrderId = await localOrdersTable.add({
       server_id: order.id,
+      client_create_id:
+        validUuidOrNull(order.client_create_id) || validUuidOrNull(localFallback?.client_create_id),
       restaurant_id: restaurantId,
       table_number: order.table_number,
       status: order.status,
       remarks: order.remarks || null,
       waiter_cleared: order.waiter_cleared ?? false,
-      is_paid: order.is_paid ?? false,
-      payment_method: order.payment_method || null,
-      paid_at: order.paid_at || null,
+      ...financialFields,
       created_at: order.created_at,
       updated_at: new Date().toISOString(),
-      sync_status: "synced",
     });
 
     if (order.order_items?.length) {
@@ -5992,6 +7185,7 @@ async function fetchOrders() {
           local_order_id: localOrderId,
           server_order_id: order.id,
           server_id: item.id,
+          client_item_id: validUuidOrNull(item.client_item_id),
           item_name: item.item_name,
           menu_item_id: item.menu_item_id == null ? null : Number(item.menu_item_id),
           quantity: Number(item.quantity || 0),
@@ -6005,6 +7199,7 @@ async function fetchOrders() {
       );
     }
   }
+  });
 }
 
 
@@ -8132,7 +9327,7 @@ async function deleteStockLink(id: number) {
   }
 }
 
-async function fetchDashboardCostSnapshots() {
+async function fetchDashboardCostSnapshots(options: { fullHistory?: boolean } = {}) {
   if (!restaurantId || !isSetupDone || !isOnline || !inventoryEnabled) {
     setOrderCostSnapshots([]);
     setOrderCostSnapshotItems([]);
@@ -8140,23 +9335,107 @@ async function fetchDashboardCostSnapshots() {
   }
 
   try {
-    const [snapshotRes, snapshotItemsRes] = await Promise.all([
-      supabase
-        .from("order_cost_snapshots")
-        .select("id, order_id, restaurant_id, total_cost, total_revenue, total_profit, created_at")
-        .eq("restaurant_id", restaurantId)
-        .order("created_at", { ascending: false })
-        .limit(300),
-      supabase
-        .from("order_cost_snapshot_items")
-        .select("id, order_id, restaurant_id, menu_item_id, menu_item_variant_id, item_name, quantity, unit_price, selling, cost, profit, materials, created_at")
-        .eq("restaurant_id", restaurantId)
-        .order("created_at", { ascending: false })
-        .limit(2000),
-    ]);
+    let rawSnapshots: any[] = [];
+    let rawSnapshotItems: any[] = [];
 
-    if (snapshotRes.error) throw snapshotRes.error;
-    if (snapshotItemsRes.error) throw snapshotItemsRes.error;
+    if (options.fullHistory) {
+      // Profit history must paginate snapshots to avoid understating yearly/lifetime profit.
+      const batchSize = 1000;
+      const maxBatches = 100;
+
+      const fetchAllSnapshots = async () => {
+        const snapshotsById = new Map<number, any>();
+        let hitMaxBatches = true;
+
+        for (let batchIndex = 0; batchIndex < maxBatches; batchIndex += 1) {
+          const from = batchIndex * batchSize;
+          const { data, error } = await supabase
+            .from("order_cost_snapshots")
+            .select("id, order_id, restaurant_id, total_cost, total_revenue, total_profit, created_at")
+            .eq("restaurant_id", restaurantId)
+            .order("created_at", { ascending: false })
+            .order("id", { ascending: false })
+            .range(from, from + batchSize - 1);
+
+          if (error) throw error;
+
+          const batchRows = data || [];
+          batchRows.forEach((snapshot) => snapshotsById.set(Number(snapshot.id), snapshot));
+
+          if (batchRows.length < batchSize) {
+            hitMaxBatches = false;
+            break;
+          }
+        }
+
+        if (hitMaxBatches) {
+          console.warn("Profit history snapshot fetch reached maxBatches", maxBatches);
+        }
+
+        return Array.from(snapshotsById.values()).sort(
+          (a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime() || Number(b.id) - Number(a.id)
+        );
+      };
+
+      const fetchAllSnapshotItems = async () => {
+        const snapshotItemsById = new Map<number, any>();
+        let hitMaxBatches = true;
+
+        for (let batchIndex = 0; batchIndex < maxBatches; batchIndex += 1) {
+          const from = batchIndex * batchSize;
+          const { data, error } = await supabase
+            .from("order_cost_snapshot_items")
+            .select("id, order_id, restaurant_id, menu_item_id, menu_item_variant_id, item_name, quantity, unit_price, selling, cost, profit, materials, created_at")
+            .eq("restaurant_id", restaurantId)
+            .order("created_at", { ascending: false })
+            .order("id", { ascending: false })
+            .range(from, from + batchSize - 1);
+
+          if (error) throw error;
+
+          const batchRows = data || [];
+          batchRows.forEach((item) => snapshotItemsById.set(Number(item.id), item));
+
+          if (batchRows.length < batchSize) {
+            hitMaxBatches = false;
+            break;
+          }
+        }
+
+        if (hitMaxBatches) {
+          console.warn("Profit history snapshot item fetch reached maxBatches", maxBatches);
+        }
+
+        return Array.from(snapshotItemsById.values()).sort(
+          (a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime() || Number(b.id) - Number(a.id)
+        );
+      };
+
+      [rawSnapshots, rawSnapshotItems] = await Promise.all([
+        fetchAllSnapshots(),
+        fetchAllSnapshotItems(),
+      ]);
+    } else {
+      const [snapshotRes, snapshotItemsRes] = await Promise.all([
+        supabase
+          .from("order_cost_snapshots")
+          .select("id, order_id, restaurant_id, total_cost, total_revenue, total_profit, created_at")
+          .eq("restaurant_id", restaurantId)
+          .order("created_at", { ascending: false })
+          .limit(300),
+        supabase
+          .from("order_cost_snapshot_items")
+          .select("id, order_id, restaurant_id, menu_item_id, menu_item_variant_id, item_name, quantity, unit_price, selling, cost, profit, materials, created_at")
+          .eq("restaurant_id", restaurantId)
+          .order("created_at", { ascending: false })
+          .limit(2000),
+      ]);
+
+      if (snapshotRes.error) throw snapshotRes.error;
+      if (snapshotItemsRes.error) throw snapshotItemsRes.error;
+      rawSnapshots = snapshotRes.data || [];
+      rawSnapshotItems = snapshotItemsRes.data || [];
+    }
 
     const parseDashboardMaterials = (value: unknown): CostInsightMaterialRow[] => {
       if (!Array.isArray(value)) return [];
@@ -8178,7 +9457,6 @@ async function fetchDashboardCostSnapshots() {
         .filter((row): row is CostInsightMaterialRow => Boolean(row));
     };
 
-    const rawSnapshots = snapshotRes.data || [];
     const snapshotOrderIds = rawSnapshots
       .map((row) => Number(row.order_id || 0))
       .filter((id) => Number.isFinite(id) && id > 0);
@@ -8186,17 +9464,21 @@ async function fetchDashboardCostSnapshots() {
     const snapshotOrdersById = new Map<number, Partial<OrderRow>>();
 
     if (snapshotOrderIds.length > 0) {
-      const { data: snapshotOrders, error: snapshotOrdersError } = await supabase
-        .from("orders")
-        .select("id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, remarks, inventory_deducted")
-        .eq("restaurant_id", restaurantId)
-        .in("id", snapshotOrderIds);
+      const uniqueSnapshotOrderIds = Array.from(new Set(snapshotOrderIds));
 
-      if (snapshotOrdersError) throw snapshotOrdersError;
+      for (let chunkStart = 0; chunkStart < uniqueSnapshotOrderIds.length; chunkStart += 500) {
+        const { data: snapshotOrders, error: snapshotOrdersError } = await supabase
+          .from("orders")
+          .select("id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, remarks, inventory_deducted")
+          .eq("restaurant_id", restaurantId)
+          .in("id", uniqueSnapshotOrderIds.slice(chunkStart, chunkStart + 500));
 
-      (snapshotOrders || []).forEach((order) => {
-        snapshotOrdersById.set(Number(order.id), order as Partial<OrderRow>);
-      });
+        if (snapshotOrdersError) throw snapshotOrdersError;
+
+        (snapshotOrders || []).forEach((order) => {
+          snapshotOrdersById.set(Number(order.id), order as Partial<OrderRow>);
+        });
+      }
     }
 
     setOrderCostSnapshots(rawSnapshots.map((row) => {
@@ -8222,7 +9504,7 @@ async function fetchDashboardCostSnapshots() {
       };
     }));
 
-    setOrderCostSnapshotItems((snapshotItemsRes.data || []).map((row) => ({
+    setOrderCostSnapshotItems(rawSnapshotItems.map((row) => ({
       id: Number(row.id),
       order_id: Number(row.order_id),
       restaurant_id: Number(row.restaurant_id),
@@ -8305,6 +9587,46 @@ async function fetchMenuVariants() {
   }, [restaurantId, isSetupDone, isOnline, orders.length]);
 
   useEffect(() => {
+    if (!restaurantId || !isSetupDone || !isOnline) return;
+
+    const runAutoPaymentSync = () => {
+      if (paymentSyncInFlightRef.current) return;
+      syncPendingOrders()
+        .then((didRun) => {
+          if (didRun) {
+            fetchOrders().catch((error) => console.warn("Post auto-sync order refresh failed", error));
+            if (popupView === "inventory") {
+              fetchInventoryData(inventoryTab).catch((error) =>
+                console.warn("Post auto-sync inventory refresh failed", error)
+              );
+            }
+          }
+        })
+        .catch((error) => console.warn("Auto payment sync failed", error));
+    };
+
+    runAutoPaymentSync();
+    paymentSyncIntervalRef.current = setInterval(runAutoPaymentSync, 30000);
+
+    return () => {
+      if (paymentSyncIntervalRef.current) {
+        clearInterval(paymentSyncIntervalRef.current);
+        paymentSyncIntervalRef.current = null;
+      }
+    };
+  }, [restaurantId, isSetupDone, isOnline, popupView, inventoryTab]);
+
+  useEffect(() => {
+    if (!restaurantId || !isSetupDone || !isOnline) return;
+    if (!["salesOverview", "paymentHistory", "report"].includes(miniView)) return;
+
+    // Sales/report screens must load paid order history, not only the fast dashboard window.
+    // Dashboard/order/manage intentionally fetch only unpaid + recent paid bills for speed.
+    // Without this refresh, yearly/lifetime sales can show only the last 1-2 days.
+    fetchOrders({ fullHistory: true });
+  }, [restaurantId, isSetupDone, isOnline, miniView, insightRange, calendarMode]);
+
+  useEffect(() => {
     if (popupView !== "inventory" && !desktopInventoryContentOpen) return;
     fetchInventoryData(inventoryTab);
   }, [popupView, desktopInventoryContentOpen, restaurantId, isSetupDone, isOnline, inventoryEnabled, inventoryTab]);
@@ -8318,8 +9640,12 @@ async function fetchMenuVariants() {
       return;
     }
 
-    fetchDashboardCostSnapshots();
-  }, [restaurantId, isSetupDone, isOnline, inventoryEnabled, orders.length]);
+    const needsFullProfitHistory =
+      ["salesOverview", "report"].includes(miniView) &&
+      ["thisYear", "previousYear", "lifetime"].includes(insightRange);
+
+    fetchDashboardCostSnapshots({ fullHistory: needsFullProfitHistory });
+  }, [restaurantId, isSetupDone, isOnline, inventoryEnabled, orders.length, miniView, insightRange]);
 
   useEffect(() => {
     if (!restaurantId || !isSetupDone || !isOnline) return;
@@ -9651,15 +10977,8 @@ showToast("Menu item added", "success");
   }, [dashboardLowStockItems]);
 
   const totalRevenueToday = useMemo(() => {
-    return todaySalesOrders.reduce((sum, order) => {
-      const revenue =
-        order.order_items?.reduce(
-          (itemSum, item) =>
-            itemSum + Number(item.quantity || 0) * Number(item.unit_price || 0),
-          0
-        ) || 0;
-      return sum + revenue;
-    }, 0);
+    // Revenue must use final paid order amount for consistency across dashboard and reports.
+    return todaySalesOrders.reduce((sum, order) => sum + getOrderAmount(order), 0);
   }, [todaySalesOrders]);
 
 
@@ -9980,7 +11299,7 @@ showToast("Menu item added", "success");
   const occupiedTableNumbers = useMemo(() => {
     return new Set(
       orders
-        .filter((order) => order.is_paid !== true)
+        .filter((order) => order.is_paid !== true && order.sync_status !== "pending_payment")
         .map((order) => String(order.table_number || "").trim())
         .filter(Boolean)
     );
@@ -10080,8 +11399,14 @@ const todayLockedCost = useMemo(() => {
 
 const todayLockedProfit = useMemo(() => {
   if (!inventoryEnabled) return 0;
-  return Math.round(todayLockedSnapshots.reduce((sum, snapshot) => sum + Number(snapshot.total_profit || 0), 0));
-}, [inventoryEnabled, todayLockedSnapshots]);
+  const todayOrdersById = new Map(todayPaidOrders.map((order) => [Number(order.id), order]));
+  return Math.round(
+    todayLockedSnapshots.reduce((sum, snapshot) => {
+      const order = todayOrdersById.get(Number(snapshot.order_id));
+      return sum + (order ? getOrderProfitFromSnapshot(order, snapshot) : Number(snapshot.total_profit || 0));
+    }, 0)
+  );
+}, [inventoryEnabled, todayLockedSnapshots, todayPaidOrders]);
 
 const todaySnapshotProcessingCount = useMemo(() => {
   if (!inventoryEnabled) return 0;
@@ -10093,6 +11418,7 @@ const todaySnapshotProcessingCount = useMemo(() => {
 const todayProfitItems = useMemo(() => {
   if (!inventoryEnabled) return [];
   const grouped = new Map<string, { item_name: string; selling: number; cost: number; profit: number; quantity: number }>();
+  const todayOrdersById = new Map(todayPaidOrders.map((order) => [Number(order.id), order]));
 
   orderCostSnapshotItems
     .filter((item) => todaySnapshotOrderIds.has(Number(item.order_id)))
@@ -10101,13 +11427,14 @@ const todayProfitItems = useMemo(() => {
       const existing = grouped.get(key) || { item_name: key, selling: 0, cost: 0, profit: 0, quantity: 0 };
       existing.selling += Number(item.selling || 0);
       existing.cost += Number(item.cost || 0);
-      existing.profit += Number(item.profit || 0);
+      const order = todayOrdersById.get(Number(item.order_id));
+      existing.profit += order ? getSnapshotItemProfitForOrder(item, order) : Number(item.profit || 0);
       existing.quantity += Number(item.quantity || 0);
       grouped.set(key, existing);
     });
 
   return Array.from(grouped.values());
-}, [inventoryEnabled, orderCostSnapshotItems, todayPaidOrderIds]);
+}, [inventoryEnabled, orderCostSnapshotItems, todayPaidOrderIds, todayPaidOrders]);
 
 const topProfitItem = useMemo(() => {
   if (!inventoryEnabled || todayProfitItems.length === 0) return null;
@@ -10127,12 +11454,7 @@ const todayPaymentBreakdown = useMemo(() => {
   };
 
   todayPaidOrders.forEach((order) => {
-    const orderTotal =
-      order.order_items?.reduce(
-        (sum, item) =>
-          sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
-        0
-      ) || 0;
+    const orderTotal = getOrderAmount(order);
 
     const method =
       order.payment_method === "qr" || order.payment_method === "card"
@@ -10153,15 +11475,7 @@ const todayPaymentBreakdown = useMemo(() => {
 }, [todayPaidOrders]);
 
   const totalRevenueYesterday = useMemo(() => {
-    return yesterdaySalesOrders.reduce((sum, order) => {
-      const revenue =
-        order.order_items?.reduce(
-          (itemSum, item) =>
-            itemSum + Number(item.quantity || 0) * Number(item.unit_price || 0),
-          0
-        ) || 0;
-      return sum + revenue;
-    }, 0);
+    return yesterdaySalesOrders.reduce((sum, order) => sum + getOrderAmount(order), 0);
   }, [yesterdaySalesOrders]);
 
   const todayProfit = useMemo(() => {
@@ -10171,17 +11485,20 @@ const todayPaymentBreakdown = useMemo(() => {
 
   const yesterdayProfit = useMemo(() => {
     if (inventoryEnabled) {
-      const yesterdayPaidOrderIds = new Set(
+      const yesterdayPaidOrdersById = new Map(
         yesterdayOrders
           .filter((order) => order.is_paid === true)
-          .map((order) => Number(order.id))
-          .filter((id) => Number.isFinite(id) && id > 0)
+          .map((order) => [Number(order.id), order] as const)
+          .filter(([id]) => Number.isFinite(id) && id > 0)
       );
 
       return Math.round(
         orderCostSnapshots
-          .filter((snapshot) => yesterdayPaidOrderIds.has(Number(snapshot.order_id)))
-          .reduce((sum, snapshot) => sum + Number(snapshot.total_profit || 0), 0)
+          .filter((snapshot) => yesterdayPaidOrdersById.has(Number(snapshot.order_id)))
+          .reduce((sum, snapshot) => {
+            const order = yesterdayPaidOrdersById.get(Number(snapshot.order_id));
+            return sum + (order ? getOrderProfitFromSnapshot(order, snapshot) : Number(snapshot.total_profit || 0));
+          }, 0)
       );
     }
 
@@ -10301,13 +11618,33 @@ const todayPaymentBreakdown = useMemo(() => {
   const bestSellingItem = salesByItem.length > 0 ? salesByItem[0] : null;
 
   useEffect(() => {
-    orderIdsRef.current = orders.map((order) => order.id);
+    orderIdsRef.current = orders
+      .filter((order) => getOrderStableKey(order).startsWith("server:"))
+      .map((order) => Number(order.server_id || order.id));
   }, [orders]);
 
   const paidOrders = useMemo(() => {
-    return orders
+    const paidById = new Map<string, OrderRow>();
+
+    orders
       .filter((order) => order.is_paid === true && Boolean(order.paid_at))
-      .sort((a, b) => new Date(b.paid_at || 0).getTime() - new Date(a.paid_at || 0).getTime());
+      .forEach((order) => {
+        const id = getOrderStableKey(order);
+
+        const existing = paidById.get(id);
+        if (!existing) {
+          paidById.set(id, order);
+          return;
+        }
+
+        const existingTime = new Date(existing.paid_at || existing.created_at || 0).getTime();
+        const nextTime = new Date(order.paid_at || order.created_at || 0).getTime();
+        if (nextTime >= existingTime) paidById.set(id, order);
+      });
+
+    return Array.from(paidById.values()).sort(
+      (a, b) => new Date(b.paid_at || 0).getTime() - new Date(a.paid_at || 0).getTime()
+    );
   }, [orders]);
 
   const reportPaidOrders = useMemo(() => {
@@ -10339,12 +11676,8 @@ const todayPaymentBreakdown = useMemo(() => {
     let totalItemsSold = 0;
 
     sourceOrders.forEach((order) => {
-      const orderTotal =
-        order.order_items?.reduce(
-          (sum, item) =>
-            sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
-          0
-        ) || 0;
+      // Revenue must use final paid order amount for consistency across dashboard and reports.
+      const orderTotal = getOrderAmount(order);
 
       totalSales += orderTotal;
 
@@ -10410,12 +11743,7 @@ const todayPaymentBreakdown = useMemo(() => {
 
     todayOrders.forEach((order) => {
       const hour = new Date(order.created_at).getHours();
-      const total =
-        order.order_items?.reduce(
-          (sum, item) =>
-            sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
-          0
-        ) || 0;
+      const total = getOrderAmount(order);
 
       salesByHour[hour] = (salesByHour[hour] || 0) + total;
     });
@@ -10463,8 +11791,7 @@ const todayPaymentBreakdown = useMemo(() => {
     };
 
     const unpaidOnly = orders.filter(
-      // Pending-payment bills must stay visible in Live Bills until server sync succeeds.
-      (order) => order.is_paid !== true || order.sync_status === "pending_payment"
+      (order) => order.is_paid !== true && order.sync_status !== "pending_payment"
     );
     const map: Record<string, GroupedTableOrder> = {};
 
@@ -10556,15 +11883,14 @@ const todayPaymentBreakdown = useMemo(() => {
       ready: 1,
     };
 
-    const todayUnpaidOnly = orders.filter((order) => {
-      const isTodayOrder = getLocalDateString(order.created_at) === todayLocalDate;
-      const isUnpaidOrPendingSync = order.is_paid !== true || order.sync_status === "pending_payment";
-      return isTodayOrder && isUnpaidOrPendingSync;
-    });
+    // Active tables represent unpaid/open tables regardless of creation date.
+    const activeUnpaidOrders = orders.filter(
+      (order) => order.is_paid !== true && order.sync_status !== "pending_payment"
+    );
 
     const map: Record<string, GroupedTableOrder> = {};
 
-    todayUnpaidOnly.forEach((order) => {
+    activeUnpaidOrders.forEach((order) => {
       const tableNo = String(order.table_number || "").trim();
       if (!tableNo) return;
 
@@ -10637,21 +11963,72 @@ const todayPaymentBreakdown = useMemo(() => {
         ...table,
         items: [...table.items].sort((a, b) => a.item_name.localeCompare(b.item_name)),
       }));
-  }, [orders, todayLocalDate]);
+  }, [orders]);
 
   const pendingPaymentOrders = useMemo(() => {
-    const byId = new Map<number, OrderRow>();
+    const byId = new Map<string, OrderRow>();
 
     [...orders, ...localPendingPaymentOrders]
       .filter((order) => order.sync_status === "pending_payment")
       .forEach((order) => {
-        byId.set(Number(order.id), order);
+        byId.set(getOrderStableKey(order), order);
       });
 
     return Array.from(byId.values()).sort(
       (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
     );
   }, [orders, localPendingPaymentOrders]);
+
+  const paymentSyncSummary = useMemo(() => {
+    const allSyncOrders = [...orders, ...localPendingPaymentOrders];
+    const pendingPaymentCount = allSyncOrders.filter((order) => order.sync_status === "pending_payment").length;
+    const pendingCreateCount = allSyncOrders.filter((order) => order.sync_status === "pending_create").length;
+    const pendingInventoryCount = allSyncOrders.filter(
+      (order) => order.is_paid === true && order.inventory_deducted !== true
+    ).length;
+    const uniquePendingIds = new Set(
+      allSyncOrders
+        .filter(
+          (order) =>
+            order.sync_status === "pending_payment" ||
+            order.sync_status === "pending_create" ||
+            (order.is_paid === true && order.inventory_deducted !== true)
+        )
+        .map((order) => getOrderStableKey(order))
+    );
+
+    return {
+      pendingPaymentCount,
+      pendingCreateCount,
+      pendingInventoryCount,
+      total: uniquePendingIds.size,
+    };
+  }, [orders, localPendingPaymentOrders]);
+
+  const paymentStatusByTable = useMemo(() => {
+    const map = new Map<string, { pendingPaymentOrders: OrderRow[]; normalUnpaidOrders: OrderRow[] }>();
+
+    orders.forEach((order) => {
+      const tableNo = String(order.table_number || "").trim();
+      if (!tableNo) return;
+
+      let status = map.get(tableNo);
+      if (!status) {
+        status = { pendingPaymentOrders: [], normalUnpaidOrders: [] };
+        map.set(tableNo, status);
+      }
+
+      if (order.sync_status === "pending_payment") {
+        status.pendingPaymentOrders.push(order);
+      }
+
+      if (order.is_paid !== true && order.sync_status !== "pending_payment") {
+        status.normalUnpaidOrders.push(order);
+      }
+    });
+
+    return map;
+  }, [orders]);
 
   useEffect(() => {
     if (pendingPaymentOrders.length === 0 && showPaymentSyncQueue) {
@@ -10667,7 +12044,8 @@ const kitchenQueue = useMemo(() => {
         .filter(
           (order) =>
             String(order.table_number || "").trim() === table.table_number &&
-            order.is_paid !== true
+            order.is_paid !== true &&
+            order.sync_status !== "pending_payment"
         )
         .sort(
           (a, b) =>
@@ -10695,8 +12073,6 @@ async function markGroupedTableAsPaid(
   tableNo: string,
   paymentMethod: "cash" | "qr" | "card"
 ) {
-  if (markingPaidTable) return;
-
   if (!restaurantId) {
     showToast("Invalid restaurant link", "error");
     return;
@@ -10708,6 +12084,18 @@ async function markGroupedTableAsPaid(
     return;
   }
 
+  if (paymentInFlightTableNumbersRef.current.has(normalizedTableNo)) {
+    showToast("Payment is already being processed", "info");
+    return;
+  }
+
+  if (markingPaidTable) return;
+
+  // Reserve table before async work to prevent double payment.
+  paymentInFlightTableNumbersRef.current.add(normalizedTableNo);
+  setMarkingPaidTable(normalizedTableNo);
+
+  try {
   const unpaidOrdersForTable = orders.filter(
     (order) =>
       String(order.table_number).trim() === normalizedTableNo &&
@@ -10715,12 +12103,45 @@ async function markGroupedTableAsPaid(
       order.sync_status !== "pending_payment"
   );
 
+  if (isOnline) {
+    const localOrdersForTable = await localOrdersTable
+      .where("restaurant_id")
+      .equals(restaurantId)
+      .toArray();
+
+    const pendingPaymentOrdersForTable = localOrdersForTable.filter(
+      (order) =>
+        String(order.table_number || "").trim() === normalizedTableNo &&
+        order.sync_status === "pending_payment"
+    );
+
+    if (pendingPaymentOrdersForTable.length > 0) {
+      setMarkingPaidTable(normalizedTableNo);
+
+      try {
+        for (const pendingOrder of pendingPaymentOrdersForTable) {
+          await syncPaymentForLocalOrder(pendingOrder);
+        }
+
+        await refreshPendingPaymentQueue();
+        fetchOrders().catch((error) => console.warn("Post-sync order refresh failed", error));
+        showToast("Pending payment synced to Supabase", "success");
+      } catch (error) {
+        console.error("Pending payment sync before table pay failed:", error);
+        showToast(getReadableError(error) || "Payment sync failed", "error");
+        return;
+      }
+
+      if (unpaidOrdersForTable.length === 0) {
+        return;
+      }
+    }
+  }
+
   if (unpaidOrdersForTable.length === 0) {
     showToast("No unpaid orders found for this table", "error");
     return;
   }
-
-  setMarkingPaidTable(normalizedTableNo);
 
   const confirmPay = await askConfirm(
     `Mark all unpaid orders for table ${normalizedTableNo} as paid with ${paymentMethod.toUpperCase()}?`,
@@ -10729,12 +12150,45 @@ async function markGroupedTableAsPaid(
   );
 
   if (!confirmPay) {
-    setMarkingPaidTable(null);
     return;
   }
 
   const now = new Date().toISOString();
   const previousOrders = orders;
+
+  const isPaymentNetworkError = (error: unknown) => {
+    let stringifiedError = "";
+
+    try {
+      stringifiedError = JSON.stringify(error) || "";
+    } catch {
+      stringifiedError = "";
+    }
+
+    const maybeError = error as { name?: unknown; message?: unknown; details?: unknown; hint?: unknown; code?: unknown };
+    const checkedText = [
+      getReadableError(error),
+      typeof maybeError?.name === "string" ? maybeError.name : "",
+      typeof maybeError?.message === "string" ? maybeError.message : "",
+      typeof maybeError?.details === "string" ? maybeError.details : "",
+      typeof maybeError?.hint === "string" ? maybeError.hint : "",
+      typeof maybeError?.code === "string" ? maybeError.code : "",
+      stringifiedError,
+    ].map((value) => String(value || "").toLowerCase());
+
+    const searchable = checkedText.join(" ");
+
+    return (
+      searchable.includes("failed to fetch") ||
+      searchable.includes("typeerror: failed to fetch") ||
+      searchable.includes("network") ||
+      searchable.includes("err_name_not_resolved") ||
+      searchable.includes("dns") ||
+      searchable.includes("load failed") ||
+      searchable.includes("timeout") ||
+      searchable.includes("timed out")
+    );
+  };
 
   try {
     const localOrders = await localOrdersTable
@@ -10749,88 +12203,20 @@ async function markGroupedTableAsPaid(
         order.sync_status !== "pending_payment"
     );
 
-    if (isOnline) {
-      const hasUnsyncedOrder = unpaidOrdersForTable.some((order) => {
-        const localOrder = targetLocalOrders.find(
-          (local) =>
-            local.server_id === Number(order.id) ||
-            local.id === Number(order.id)
-        );
+    const orderLocalPairs = await Promise.all(
+      unpaidOrdersForTable.map(async (order) => ({
+        order,
+        targetLocalOrder: await getLocalOrderForUiOrder(order, targetLocalOrders),
+      }))
+    );
 
-        return localOrder && !localOrder.server_id;
-      });
+    // Use current browser status, not only React state. PWA online state can be stale.
+    const browserOnline =
+      typeof navigator !== "undefined" ? navigator.onLine : isOnline;
+    let shouldQueuePaymentLocally = !browserOnline;
 
-      if (hasUnsyncedOrder) {
-        showToast("Order saving हुँदैछ. केही सेकेन्डपछि pay गर्नुहोस्.", "info");
-        setMarkingPaidTable(null);
-        return;
-      }
-
-      await Promise.all(
-        unpaidOrdersForTable.map(async (order) => {
-          const targetLocalOrder =
-            targetLocalOrders.find((local) => local.server_id === Number(order.id)) ||
-            targetLocalOrders.find((local) => local.id === Number(order.id)) ||
-            await getLocalOrderForUiId(order.id);
-
-          const remoteOrderId = await ensureRemoteOrderIdForPayment(Number(order.id), targetLocalOrder || null);
-
-          const { data, error } = await supabase.rpc("mark_order_paid_fast", {
-            p_order_id: remoteOrderId,
-            p_payment_method: paymentMethod,
-          });
-
-          if (error) throw error;
-
-          const result = data as { success?: boolean; message?: string } | null;
-          const alreadyPaid = String(result?.message || "").toLowerCase().includes("already paid");
-          if (!result?.success && !alreadyPaid) {
-            throw new Error(result?.message || "Table payment failed");
-          }
-
-          const orderPaymentBreakdown = getOrderPaymentBreakdown(order, normalizedTableNo);
-
-          const { error: taxDiscountUpdateError } = await supabase
-            .from("orders")
-            .update(orderPaymentBreakdown)
-            .eq("id", remoteOrderId)
-            .eq("restaurant_id", restaurantId);
-
-          if (taxDiscountUpdateError) throw taxDiscountUpdateError;
-
-          // Online table pay also creates locked inventory/cost snapshots.
-          // If this fails, local row becomes pending_payment and syncPendingOrders will retry.
-          await runInventoryDeductionAndCostLock(remoteOrderId, {
-            throwOnError: true,
-            localOrderId: targetLocalOrder?.id || null,
-          });
-
-          if (targetLocalOrder?.id) {
-            await localOrdersTable.update(targetLocalOrder.id, {
-              server_id: remoteOrderId,
-              is_paid: true,
-              payment_method: paymentMethod,
-              paid_at: now,
-              ...orderPaymentBreakdown,
-              updated_at: now,
-              sync_status: "synced",
-            });
-          }
-        })
-      );
-
-      if (popupView === "inventory") {
-        setTimeout(() => {
-          fetchInventoryData(inventoryTab);
-        }, 300);
-      }
-    } else {
-      for (const order of unpaidOrdersForTable) {
-        const targetLocalOrder =
-          targetLocalOrders.find((localOrder) => localOrder.server_id === Number(order.id)) ||
-          targetLocalOrders.find((localOrder) => localOrder.id === Number(order.id)) ||
-          await getLocalOrderForUiId(order.id);
-
+    const savePaymentsLocally = async (pairs = orderLocalPairs) => {
+      for (const { order, targetLocalOrder } of pairs) {
         if (!targetLocalOrder?.id) {
           throw new Error(`Local order not found for table ${normalizedTableNo}`);
         }
@@ -10846,58 +12232,315 @@ async function markGroupedTableAsPaid(
           sync_status: "pending_payment",
         });
       }
+    };
+
+    const runPostPaymentBackgroundTasks = (
+      paidPairs: { remoteOrderId: number; localOrderId: number | null }[]
+    ) => {
+      paidPairs.forEach(({ remoteOrderId, localOrderId }) => {
+        runInventoryDeductionAndCostLock(remoteOrderId, {
+          throwOnError: false,
+          localOrderId,
+        }).catch((error) => {
+          console.warn("Background inventory/cost lock failed after payment:", error);
+        });
+      });
+
+      refreshPendingPaymentQueue().catch((error) =>
+        console.warn("Pending payment queue refresh failed after payment", error)
+      );
+
+      setTimeout(() => {
+        fetchOrders().catch((error) => console.warn("Post-payment order refresh failed", error));
+        if (popupView === "inventory") {
+          fetchInventoryData(inventoryTab).catch((error) =>
+            console.warn("Post-payment inventory refresh failed", error)
+          );
+        }
+      }, 350);
+    };
+
+    const paidRemotePairs: { remoteOrderId: number; localOrderId: number | null }[] = [];
+    const alreadyPaidRemoteStateByUiOrderId = new Map<string, OrderRow>();
+    const succeededOrderIds: number[] = [];
+    const failedOrderIds: number[] = [];
+    const succeededOrderKeys = new Set<string>();
+    const queuedOrderKeys = new Set<string>();
+    let firstPaymentError: unknown = null;
+
+    if (!shouldQueuePaymentLocally) {
+      // Grouped payments may partially succeed; preserve successful results.
+      const paymentResults = await Promise.all(
+        orderLocalPairs.map(async ({ order, targetLocalOrder }) => {
+          const orderKey = getOrderStableKey(order);
+          let remoteOrderId = Number(order.server_id || order.id);
+
+          try {
+            remoteOrderId = await ensureRemoteOrderIdForPayment(Number(order.id), targetLocalOrder || null);
+            const orderPaymentBreakdown = getOrderPaymentBreakdown(order, normalizedTableNo);
+
+            const { data: remoteState, error: remoteStateError } = await supabase
+              .from("orders")
+              .select("is_paid, payment_method, paid_at, subtotal, discount_enabled, discount_percent, discount_amount, tax_enabled, tax_percent, tax_amount, grand_total, inventory_deducted")
+              .eq("id", remoteOrderId)
+              .eq("restaurant_id", restaurantId)
+              .maybeSingle();
+
+            if (remoteStateError) throw remoteStateError;
+
+            if (remoteState?.is_paid === true) {
+              // Already-paid remote orders must preserve original payment_method and paid_at
+              // to avoid corrupting payment reports.
+              const actualPaymentMethod = remoteState.payment_method || paymentMethod;
+              const actualPaidAt = remoteState.paid_at || targetLocalOrder?.paid_at || order.paid_at || now;
+              const actualPaymentBreakdown = {
+                subtotal: remoteState.subtotal ?? orderPaymentBreakdown.subtotal,
+                discount_enabled: remoteState.discount_enabled ?? orderPaymentBreakdown.discount_enabled,
+                discount_percent: remoteState.discount_percent ?? orderPaymentBreakdown.discount_percent,
+                discount_amount: remoteState.discount_amount ?? orderPaymentBreakdown.discount_amount,
+                tax_enabled: remoteState.tax_enabled ?? orderPaymentBreakdown.tax_enabled,
+                tax_percent: remoteState.tax_percent ?? orderPaymentBreakdown.tax_percent,
+                tax_amount: remoteState.tax_amount ?? orderPaymentBreakdown.tax_amount,
+                grand_total: remoteState.grand_total ?? orderPaymentBreakdown.grand_total,
+              };
+              const remoteInventoryDeducted = remoteState.inventory_deducted === true;
+              const actualAlreadyPaidOrder: OrderRow = {
+                ...order,
+                is_paid: true,
+                payment_method: actualPaymentMethod,
+                paid_at: actualPaidAt,
+                ...actualPaymentBreakdown,
+                inventory_deducted: remoteInventoryDeducted,
+                sync_status: remoteInventoryDeducted ? "synced" : "pending_payment",
+              };
+
+              alreadyPaidRemoteStateByUiOrderId.set(getOrderStableKey(order), actualAlreadyPaidOrder);
+
+              if (targetLocalOrder?.id) {
+                try {
+                  await localOrdersTable.update(targetLocalOrder.id, {
+                    server_id: remoteOrderId,
+                    is_paid: true,
+                    payment_method: actualPaymentMethod,
+                    paid_at: actualPaidAt,
+                    ...actualPaymentBreakdown,
+                    inventory_deducted: remoteInventoryDeducted,
+                    updated_at: now,
+                    sync_status: remoteInventoryDeducted ? "synced" : "pending_payment",
+                  });
+                } catch (localUpdateError) {
+                  console.warn("Already-paid order local cache update failed:", localUpdateError);
+                }
+              }
+
+              if (!remoteInventoryDeducted) {
+                paidRemotePairs.push({
+                  remoteOrderId,
+                  localOrderId: targetLocalOrder?.id || null,
+                });
+              }
+
+              return { orderKey, remoteOrderId, success: true as const };
+            }
+
+            // Do not mark paid if stored totals failed to update; otherwise reports can mismatch collected amount.
+            const { error: taxDiscountUpdateError } = await supabase
+              .from("orders")
+              .update(orderPaymentBreakdown)
+              .eq("id", remoteOrderId)
+              .eq("restaurant_id", restaurantId);
+
+            if (taxDiscountUpdateError) {
+              console.error("Payment breakdown update failed before payment:", taxDiscountUpdateError);
+              throw new Error("Payment total update failed. Please retry.");
+            }
+
+            const { data, error } = await supabase.rpc("mark_order_paid_fast", {
+              p_order_id: remoteOrderId,
+              p_payment_method: paymentMethod,
+            });
+
+            if (error) throw error;
+
+            const result = data as { success?: boolean; message?: string } | null;
+            const alreadyPaid = String(result?.message || "").toLowerCase().includes("already paid");
+            if (!result?.success && !alreadyPaid) {
+              throw new Error(result?.message || "Table payment failed");
+            }
+
+            paidRemotePairs.push({
+              remoteOrderId,
+              localOrderId: targetLocalOrder?.id || null,
+            });
+
+            if (targetLocalOrder?.id) {
+              // Payment RPC already succeeded, but inventory/cost lock still must finish.
+              // Keep this local row in pending_payment as a retry queue until
+              // runInventoryDeductionAndCostLock succeeds and flips it to synced.
+              try {
+                await localOrdersTable.update(targetLocalOrder.id, {
+                  server_id: remoteOrderId,
+                  is_paid: true,
+                  payment_method: paymentMethod,
+                  paid_at: now,
+                  ...orderPaymentBreakdown,
+                  inventory_deducted: false,
+                  updated_at: now,
+                  sync_status: "pending_payment",
+                });
+              } catch (localUpdateError) {
+                console.warn("Paid order local cache update failed:", localUpdateError);
+              }
+            }
+
+            return { orderKey, remoteOrderId, success: true as const };
+          } catch (error) {
+            return { orderKey, remoteOrderId, success: false as const, error };
+          }
+        })
+      );
+
+      const networkFailedPairs: typeof orderLocalPairs = [];
+
+      paymentResults.forEach((result, index) => {
+        if (result.success) {
+          succeededOrderIds.push(result.remoteOrderId);
+          succeededOrderKeys.add(result.orderKey);
+          return;
+        }
+
+        failedOrderIds.push(result.remoteOrderId);
+        firstPaymentError ||= result.error;
+
+        if (isPaymentNetworkError(result.error)) {
+          networkFailedPairs.push(orderLocalPairs[index]);
+          queuedOrderKeys.add(result.orderKey);
+        }
+      });
+
+      if (networkFailedPairs.length > 0) {
+        for (const failedPair of networkFailedPairs) {
+          try {
+            await savePaymentsLocally([failedPair]);
+          } catch (queueError) {
+            queuedOrderKeys.delete(getOrderStableKey(failedPair.order));
+            firstPaymentError ||= queueError;
+            console.error("Failed to queue individual grouped payment:", queueError);
+          }
+        }
+      }
+
+      if (succeededOrderIds.length === 0 && failedOrderIds.length > 0 && queuedOrderKeys.size === 0) {
+        throw firstPaymentError || new Error("Payment failed");
+      }
+    } else {
+      await savePaymentsLocally();
+      orderLocalPairs.forEach(({ order }) => queuedOrderKeys.add(getOrderStableKey(order)));
     }
 
     setOrders((prev) =>
-  prev.map((order) =>
-    String(order.table_number).trim() === normalizedTableNo &&
-    order.is_paid !== true
-      ? {
+      prev.map((order) => {
+        if (
+          String(order.table_number).trim() !== normalizedTableNo ||
+          order.is_paid === true
+        ) {
+          return order;
+        }
+
+        const actualAlreadyPaidOrder = alreadyPaidRemoteStateByUiOrderId.get(getOrderStableKey(order));
+        if (actualAlreadyPaidOrder) {
+          return { ...order, ...actualAlreadyPaidOrder };
+        }
+
+        const orderKey = getOrderStableKey(order);
+        if (!succeededOrderKeys.has(orderKey) && !queuedOrderKeys.has(orderKey)) {
+          return order;
+        }
+
+        return {
           ...order,
           is_paid: true,
           payment_method: paymentMethod,
           paid_at: now,
           ...getOrderPaymentBreakdown(order, normalizedTableNo),
-          sync_status: isOnline ? "synced" : "pending_payment",
-        }
-      : order
-  )
-);
+          // Online payments also stay pending until inventory deduction/cost lock succeeds.
+          // This prevents app-close/background-fail stock mismatch.
+          sync_status: "pending_payment",
+        };
+      })
+    );
 
-    const paidBillBaseOrder = unpaidOrdersForTable[0];
+    const paidOrdersForReceipt = unpaidOrdersForTable.filter((order) => {
+      const orderKey = getOrderStableKey(order);
+      return succeededOrderKeys.has(orderKey) || queuedOrderKeys.has(orderKey);
+    });
+    const paidBillBaseOrder = paidOrdersForReceipt[0];
     if (paidBillBaseOrder) {
-      const combinedPaidItems = unpaidOrdersForTable.flatMap((order, orderIndex) =>
+      const actualAlreadyPaidBaseOrder =
+        paidOrdersForReceipt.length === 1
+          ? alreadyPaidRemoteStateByUiOrderId.get(getOrderStableKey(paidBillBaseOrder))
+          : null;
+      const combinedPaidItems = paidOrdersForReceipt.flatMap((order, orderIndex) =>
         (order.order_items || []).map((item, itemIndex) => ({
           ...item,
           id: Number(order.id || 0) * 100000 + orderIndex * 1000 + itemIndex + 1,
         }))
       );
-      const combinedSubtotal = unpaidOrdersForTable.reduce((sum, order) => sum + getOrderTotal(order), 0);
+      const combinedSubtotal = paidOrdersForReceipt.reduce((sum, order) => sum + getOrderTotal(order), 0);
       const combinedBreakdown = getPaymentBreakdown(combinedSubtotal, normalizedTableNo);
 
       setSelectedPaidOrder({
         ...paidBillBaseOrder,
         table_number: normalizedTableNo,
         is_paid: true,
-        payment_method: paymentMethod,
-        paid_at: now,
-        ...combinedBreakdown,
+        payment_method: actualAlreadyPaidBaseOrder?.payment_method || paymentMethod,
+        paid_at: actualAlreadyPaidBaseOrder?.paid_at || now,
+        ...(actualAlreadyPaidBaseOrder
+          ? {
+              subtotal: actualAlreadyPaidBaseOrder.subtotal,
+              discount_enabled: actualAlreadyPaidBaseOrder.discount_enabled,
+              discount_percent: actualAlreadyPaidBaseOrder.discount_percent,
+              discount_amount: actualAlreadyPaidBaseOrder.discount_amount,
+              tax_enabled: actualAlreadyPaidBaseOrder.tax_enabled,
+              tax_percent: actualAlreadyPaidBaseOrder.tax_percent,
+              tax_amount: actualAlreadyPaidBaseOrder.tax_amount,
+              grand_total: actualAlreadyPaidBaseOrder.grand_total,
+              inventory_deducted: actualAlreadyPaidBaseOrder.inventory_deducted,
+            }
+          : combinedBreakdown),
         order_items: combinedPaidItems,
-        sync_status: isOnline ? "synced" : "pending_payment",
+        sync_status: actualAlreadyPaidBaseOrder?.sync_status || "pending_payment",
       });
     }
 
-    refreshPendingPaymentQueue();
+    if (paidRemotePairs.length > 0) {
+      runPostPaymentBackgroundTasks(paidRemotePairs);
+    } else {
+      await refreshPendingPaymentQueue().catch((error) =>
+        console.warn("Pending payment queue refresh failed after grouped payment", error)
+      );
+    }
 
-    showToast(
-      isOnline ? "Payment successful" : "Payment queued for sync",
+    if (succeededOrderIds.length > 0 && failedOrderIds.length > 0) {
+      showToast(
+        `${succeededOrderIds.length} ${succeededOrderIds.length === 1 ? "order" : "orders"} paid, ${failedOrderIds.length} ${failedOrderIds.length === 1 ? "order requires" : "orders require"} retry`,
+        "info"
+      );
+    } else {
+      showToast(
+      shouldQueuePaymentLocally || queuedOrderKeys.size > 0
+        ? "Payment queued for sync"
+        : "Payment successful — inventory sync running",
       "success"
-    );
+      );
+    }
   } catch (error) {
     console.error("markGroupedTableAsPaid failed:", error);
     setOrders(previousOrders);
     showToast(getReadableError(error) || "Payment failed", "error");
+  }
   } finally {
+    paymentInFlightTableNumbersRef.current.delete(normalizedTableNo);
     setMarkingPaidTable(null);
   }
 }
@@ -10918,7 +12561,8 @@ async function updateKitchenTableStatus(
   const targetOrders = orders.filter(
     (order) =>
       String(order.table_number || "").trim() === cleanTableNo &&
-      order.is_paid !== true
+      order.is_paid !== true &&
+      order.sync_status !== "pending_payment"
   );
 
   if (targetOrders.length === 0) {
@@ -10937,7 +12581,8 @@ async function updateKitchenTableStatus(
     prev.map((order) => {
       if (
         String(order.table_number || "").trim() !== cleanTableNo ||
-        order.is_paid === true
+        order.is_paid === true ||
+        order.sync_status === "pending_payment"
       ) {
         return order;
       }
@@ -10962,11 +12607,25 @@ async function updateKitchenTableStatus(
     const targetLocalOrders = localOrders.filter(
       (order) =>
         String(order.table_number || "").trim() === cleanTableNo &&
-        order.is_paid !== true
+        order.is_paid !== true &&
+        order.sync_status !== "pending_payment"
     );
+    const targetLocalOrderIds = targetLocalOrders
+      .map((order) => order.id)
+      .filter((id): id is number => typeof id === "number");
+    const targetLocalItems = targetLocalOrderIds.length > 0
+      ? await localOrderItemsTable
+          .where("local_order_id")
+          .anyOf(targetLocalOrderIds)
+          .toArray()
+      : [];
+    const confirmedRemoteItemCount = targetLocalItems.filter((item) => {
+      const ownerOrder = targetLocalOrders.find((order) => order.id === item.local_order_id);
+      return Number(ownerOrder?.server_id || 0) > 0 && Number(item.server_id || 0) > 0;
+    }).length;
 
     const remoteIdsFromUi = targetOrders
-      .map((order) => Number(order.id || 0))
+      .map((order) => Number(order.server_id || 0))
       .filter((id) => Number.isFinite(id) && id > 0 && id < 1000000000000);
 
     const remoteIdsFromLocal = targetLocalOrders
@@ -10979,49 +12638,66 @@ async function updateKitchenTableStatus(
       const [orderResult, itemResult] = await Promise.all([
         supabase
           .from("orders")
-          .update({ status: nextStatus })
+          .update({ status: nextStatus }, { count: "exact" })
           .in("id", remoteIds)
           .eq("restaurant_id", restaurantId),
         supabase
           .from("order_items")
-          .update({ status: nextStatus })
+          .update({ status: nextStatus }, { count: "exact" })
           .in("order_id", remoteIds),
       ]);
 
       if (orderResult.error || itemResult.error) {
         throw orderResult.error || itemResult.error;
       }
+
+      if ((orderResult.count || 0) !== remoteIds.length) {
+        throw new Error("Kitchen status update failed for one or more server orders");
+      }
+
+      if (confirmedRemoteItemCount > 0 && (itemResult.count || 0) === 0) {
+        throw new Error("Kitchen status update failed for server order items");
+      }
     }
 
     // Keep local cache consistent in both online and offline mode.
+    // Order and item cache writes must be atomic to prevent partial local state.
+    await miniDB.transaction("rw", localOrdersTable, localOrderItemsTable, async () => {
     for (const localOrder of targetLocalOrders) {
+      const hasConfirmedRemoteOrder = Number(localOrder.server_id || 0) > 0;
+      const nextOrderSyncStatus =
+        isOnline && hasConfirmedRemoteOrder
+          ? "synced"
+          : hasConfirmedRemoteOrder
+            ? "pending_update"
+            : "pending_create";
+
+      // Kitchen status updates must not clear pending_create without a confirmed remote order.
       await localOrdersTable.update(localOrder.id!, {
         status: nextStatus,
         updated_at: now,
-        sync_status: isOnline
-          ? "synced"
-          : localOrder.server_id
-            ? "pending_update"
-            : "pending_create",
+        sync_status: nextOrderSyncStatus,
       });
 
-      const localItems = await localOrderItemsTable
-        .where("local_order_id")
-        .equals(localOrder.id!)
-        .toArray();
+      const localItems = targetLocalItems.filter((item) => item.local_order_id === localOrder.id);
 
       for (const item of localItems) {
+        const hasConfirmedRemoteItem = hasConfirmedRemoteOrder && Number(item.server_id || 0) > 0;
+        const nextItemSyncStatus =
+          isOnline && hasConfirmedRemoteItem
+            ? "synced"
+            : hasConfirmedRemoteItem
+              ? "pending_update"
+              : "pending_create";
+
         await localOrderItemsTable.update(item.id!, {
           status: nextStatus,
           updated_at: now,
-          sync_status: isOnline
-            ? "synced"
-            : item.server_id
-              ? "pending_update"
-              : "pending_create",
+          sync_status: nextItemSyncStatus,
         });
       }
     }
+    });
 
     showToast(`Table ${cleanTableNo} moved to ${nextStatus}`, "success");
   } catch (error) {
@@ -11061,9 +12737,7 @@ async function updateKitchenTableStatus(
 
   const activeOrders = useMemo(() => {
     return orders
-      // Pending-payment bills must stay visible until server sync succeeds.
-      // Otherwise the restaurant takes money and the bill appears to disappear.
-      .filter((order) => order.is_paid !== true || order.sync_status === "pending_payment")
+      .filter((order) => order.is_paid !== true && order.sync_status !== "pending_payment")
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   }, [orders]);
 
@@ -11076,6 +12750,92 @@ async function updateKitchenTableStatus(
       return String(order.table_number || "").toLowerCase().includes(q) || itemText.includes(q);
     });
   }, [activeOrders, tableSearch]);
+
+async function retryAllPendingPaymentSync() {
+  if (!restaurantId) {
+    showToast("Invalid restaurant link", "error");
+    return;
+  }
+
+  if (!isOnline) {
+    showToast("Internet connect भएपछि auto sync हुन्छ", "info");
+    return;
+  }
+
+  if (paymentSyncInFlightRef.current) {
+    showToast("Sync already running", "info");
+    return;
+  }
+
+  try {
+    const didRun = await syncPendingOrders();
+    if (didRun) {
+      await refreshPendingPaymentQueue();
+      fetchOrders().catch((error) => console.warn("Post retry order refresh failed", error));
+      if (popupView === "inventory") {
+        fetchInventoryData(inventoryTab).catch((error) =>
+          console.warn("Post retry inventory refresh failed", error)
+        );
+      }
+      showToast("Sync retry started", "success");
+    }
+  } catch (error) {
+    console.error("retryAllPendingPaymentSync failed:", error);
+    showToast(getReadableError(error) || "Sync retry failed", "error");
+  }
+}
+
+function renderPaymentSyncStatusBox(compact = false) {
+  const hasPending = paymentSyncSummary.total > 0;
+
+  return (
+    <div
+      className={`rounded-[20px] border p-3 shadow-sm ${
+        hasPending
+          ? "border-amber-200 bg-amber-50 text-amber-900"
+          : "border-emerald-200 bg-emerald-50 text-emerald-900"
+      } ${compact ? "space-y-2" : "space-y-3"}`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-black uppercase tracking-[0.14em]">
+            {hasPending ? "Payment Sync Pending" : "All payments synced"}
+          </p>
+          <p className="mt-1 text-xs font-semibold opacity-80">
+            {hasPending
+              ? `${paymentSyncSummary.total} payment/order sync pending. Keep internet on.`
+              : `Last sync: ${formatLastPaymentSyncTime(lastPaymentSyncTime)}`}
+          </p>
+        </div>
+        {hasPending && (
+          <span className="shrink-0 rounded-full bg-white/70 px-2.5 py-1 text-[10px] font-black">
+            {isOnline ? "Auto retry on" : "Offline"}
+          </span>
+        )}
+      </div>
+
+      {hasPending && (
+        <div className="flex flex-wrap items-center gap-2 text-[11px] font-bold">
+          <span className="rounded-full bg-white/70 px-2.5 py-1">Payment: {paymentSyncSummary.pendingPaymentCount}</span>
+          <span className="rounded-full bg-white/70 px-2.5 py-1">Order: {paymentSyncSummary.pendingCreateCount}</span>
+          <span className="rounded-full bg-white/70 px-2.5 py-1">Inventory: {paymentSyncSummary.pendingInventoryCount}</span>
+          <span className="ml-auto text-[10px] opacity-75">Last sync: {formatLastPaymentSyncTime(lastPaymentSyncTime)}</span>
+        </div>
+      )}
+
+      {hasPending && (
+        <button
+          type="button"
+          onClick={retryAllPendingPaymentSync}
+          disabled={!isOnline || paymentSyncInFlightRef.current}
+          className="w-full rounded-2xl bg-slate-950 py-2 text-xs font-black text-white disabled:bg-slate-300 disabled:text-slate-500"
+        >
+          {!isOnline ? "Online भएपछि auto sync हुन्छ" : paymentSyncInFlightRef.current ? "Syncing..." : "Retry Sync"}
+        </button>
+      )}
+    </div>
+  );
+}
 
 async function retryPendingPaymentSync(order: OrderRow) {
   if (!restaurantId) {
@@ -11091,16 +12851,18 @@ async function retryPendingPaymentSync(order: OrderRow) {
   if (retryingPaymentSyncOrderId === order.id) return;
 
   setRetryingPaymentSyncOrderId(order.id);
+  const retryOrderKey = getOrderStableKey(order);
 
   try {
-    const localOrder = await getLocalOrderForUiId(order.id);
+    const localOrder = await getLocalOrderForUiOrder(order);
 
     if (!localOrder?.id) {
       throw new Error("Local pending payment order not found");
     }
 
     await syncPaymentForLocalOrder(localOrder);
-    setOrders((prev) => prev.filter((item) => Number(item.id) !== Number(order.id)));
+    rememberPaymentSyncSuccess();
+    setOrders((prev) => prev.filter((item) => getOrderStableKey(item) !== retryOrderKey));
     await refreshPendingPaymentQueue();
 
     if (popupView === "inventory") {
@@ -11449,10 +13211,93 @@ async function retryPendingPaymentSync(order: OrderRow) {
   ];
 
   function getOrderAmount(order: OrderRow) {
+    const grandTotal = Number(order.grand_total || 0);
+    if (Number.isFinite(grandTotal) && grandTotal > 0) return grandTotal;
+
+    const subtotal = Number(order.subtotal || 0);
+    if (Number.isFinite(subtotal) && subtotal > 0) return subtotal;
+
     return (order.order_items || []).reduce(
       (sum, item) => sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
       0
     );
+  }
+
+  function getOrderNetSalesBeforeTax(order: OrderRow, fallbackSubtotal?: number | null) {
+    const storedSubtotal = Number(order.subtotal);
+    let subtotal: number | null =
+      order.subtotal != null && Number.isFinite(storedSubtotal)
+        ? storedSubtotal
+        : null;
+
+    if (subtotal == null && (order.order_items || []).length > 0) {
+      subtotal = (order.order_items || []).reduce(
+        (sum, item) => sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
+        0
+      );
+    }
+
+    if (subtotal == null && fallbackSubtotal != null && Number.isFinite(Number(fallbackSubtotal))) {
+      subtotal = Number(fallbackSubtotal);
+    }
+
+    if (subtotal == null) {
+      const grandTotal = Number(order.grand_total);
+      const taxAmount = Number(order.tax_amount);
+      if (
+        order.grand_total != null &&
+        order.tax_amount != null &&
+        Number.isFinite(grandTotal) &&
+        Number.isFinite(taxAmount)
+      ) {
+        return Math.max(grandTotal - taxAmount, 0);
+      }
+      return null;
+    }
+
+    const storedDiscountAmount = Number(order.discount_amount);
+    const discountPercent = Number(order.discount_percent || 0);
+    const discountAmount =
+      order.discount_amount != null && Number.isFinite(storedDiscountAmount)
+        ? Math.max(storedDiscountAmount, 0)
+        : discountPercent > 0
+          ? Math.round((subtotal * discountPercent) / 100)
+          : 0;
+
+    return Math.max(subtotal - discountAmount, 0);
+  }
+
+  function getOrderProfitFromSnapshot(
+    order: OrderRow,
+    snapshot: OrderCostSnapshot | null | undefined,
+    fallbackSubtotal?: number | null
+  ) {
+    if (!snapshot) return 0;
+    const netSales = getOrderNetSalesBeforeTax(order, fallbackSubtotal);
+
+    // Profit uses net sales before tax for consistency across dashboard, reports, exports, and Cost Insight.
+    return netSales == null
+      ? Number(snapshot.total_profit || 0)
+      : netSales - Number(snapshot.total_cost || 0);
+  }
+
+  function getSnapshotItemProfitForOrder(item: OrderCostSnapshotItem, order: OrderRow) {
+    const netSales = getOrderNetSalesBeforeTax(order);
+    const storedSubtotal = Number(order.subtotal);
+    const grossSubtotal =
+      order.subtotal != null && Number.isFinite(storedSubtotal)
+        ? storedSubtotal
+        : (order.order_items || []).reduce(
+            (sum, orderItem) => sum + Number(orderItem.quantity || 0) * Number(orderItem.unit_price || 0),
+            0
+          );
+
+    if (netSales == null || grossSubtotal <= 0) {
+      return Number(item.profit || 0);
+    }
+
+    const itemGrossSales = Number(item.selling || Number(item.quantity || 0) * Number(item.unit_price || 0));
+    return itemGrossSales * (netSales / grossSubtotal) - Number(item.cost || 0);
   }
 
   function getBsApproxParts(dateInput: Date | string) {
@@ -11622,6 +13467,10 @@ async function retryPendingPaymentSync(order: OrderRow) {
     }
     setInsightRange(range);
     setSalesPeriod(mapInsightRangeToSalesPeriod(range));
+
+    if (restaurantId && isSetupDone && isOnline) {
+      fetchOrders({ fullHistory: true });
+    }
   }
 
   const selectedSalesOrders = useMemo(() => {
@@ -11702,6 +13551,12 @@ async function retryPendingPaymentSync(order: OrderRow) {
     const now = new Date();
     const todayStart = startOfDay(now);
     const currentMeta = getSalesCalendarMeta(now);
+    const thisWeekStart = getWeekStart(now);
+
+    if (insightRange === "custom") {
+      // Custom same-length comparison is intentionally not implemented here.
+      return [];
+    }
 
     return paidOrders.filter((order) => {
       const rawDate = order.paid_at;
@@ -11709,40 +13564,48 @@ async function retryPendingPaymentSync(order: OrderRow) {
       const paidDate = startOfDay(new Date(rawDate));
       const meta = getSalesCalendarMeta(rawDate);
 
-      if (salesPeriod === "day") {
-        const prevDay = addDays(todayStart, -1);
+      // Comparison range follows selected insightRange, not generic salesPeriod.
+      if (insightRange === "today" || insightRange === "yesterday") {
+        const comparisonDay = addDays(todayStart, insightRange === "today" ? -1 : -2);
+        const comparisonMeta = getSalesCalendarMeta(comparisonDay);
         return calendarMode === "ad"
-          ? getLocalDateString(rawDate) === getLocalDateString(prevDay.toISOString())
-          : meta.bsYear === currentMeta.bsYear && meta.bsMonthIndex === currentMeta.bsMonthIndex && meta.bsDay === currentMeta.bsDay - 1;
+          ? getLocalDateString(rawDate) === getLocalDateString(comparisonDay.toISOString())
+          : meta.bsDateKey === comparisonMeta.bsDateKey;
       }
 
-      if (salesPeriod === "week") {
-        const currentWeekStart = addDays(todayStart, -6);
-        const previousWeekStart = addDays(currentWeekStart, -7);
-        const previousWeekEnd = addDays(currentWeekStart, -1);
-        return paidDate >= previousWeekStart && paidDate <= previousWeekEnd;
+      if (insightRange === "thisWeek" || insightRange === "lastWeek") {
+        const comparisonWeekStart = addDays(
+          thisWeekStart,
+          insightRange === "thisWeek" ? -7 : -14
+        );
+        const comparisonWeekEnd = addDays(comparisonWeekStart, 6);
+        return paidDate >= comparisonWeekStart && paidDate <= comparisonWeekEnd;
       }
 
-      if (salesPeriod === "month") {
+      if (insightRange === "thisMonth" || insightRange === "lastMonth") {
         if (calendarMode === "ad") {
-          return paidDate.getFullYear() === new Date(now.getFullYear(), now.getMonth() - 1, 1).getFullYear() && paidDate.getMonth() === new Date(now.getFullYear(), now.getMonth() - 1, 1).getMonth();
+          const monthOffset = insightRange === "thisMonth" ? -1 : -2;
+          const comparisonMonth = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+          return paidDate.getFullYear() === comparisonMonth.getFullYear() && paidDate.getMonth() === comparisonMonth.getMonth();
         }
-        let prevMonthIndex = currentMeta.bsMonthIndex - 1;
-        let prevYear = currentMeta.bsYear;
-        if (prevMonthIndex < 0) {
-          prevMonthIndex = 11;
-          prevYear -= 1;
+        const monthOffset = insightRange === "thisMonth" ? 1 : 2;
+        let comparisonMonthIndex = currentMeta.bsMonthIndex - monthOffset;
+        let comparisonYear = currentMeta.bsYear;
+        while (comparisonMonthIndex < 0) {
+          comparisonMonthIndex += 12;
+          comparisonYear -= 1;
         }
-        return meta.bsYear === prevYear && meta.bsMonthIndex === prevMonthIndex;
+        return meta.bsYear === comparisonYear && meta.bsMonthIndex === comparisonMonthIndex;
       }
 
+      const yearOffset = insightRange === "previousYear" ? 2 : 1;
       if (calendarMode === "ad") {
-        return paidDate.getFullYear() === now.getFullYear() - 1;
+        return paidDate.getFullYear() === now.getFullYear() - yearOffset;
       }
 
-      return meta.bsYear === currentMeta.bsYear - 1;
+      return meta.bsYear === currentMeta.bsYear - yearOffset;
     });
-  }, [paidOrders, salesPeriod, calendarMode]);
+  }, [paidOrders, insightRange, calendarMode, todayLocalDate]);
 
   const selectedSalesSummary = useMemo(() => {
     const totalSales = selectedSalesOrders.reduce((sum, order) => sum + getOrderAmount(order), 0);
@@ -11753,11 +13616,16 @@ async function retryPendingPaymentSync(order: OrderRow) {
     const previousOrderIds = new Set(
       previousSalesOrders.map((order) => Number(order.id)).filter((id) => Number.isFinite(id) && id > 0)
     );
+    const selectedOrdersById = new Map(selectedSalesOrders.map((order) => [Number(order.id), order]));
+    const previousOrdersById = new Map(previousSalesOrders.map((order) => [Number(order.id), order]));
     const totalProfit = inventoryEnabled
       ? Math.round(
           orderCostSnapshots
             .filter((snapshot) => selectedOrderIds.has(Number(snapshot.order_id)))
-            .reduce((sum, snapshot) => sum + Number(snapshot.total_profit || 0), 0)
+            .reduce((sum, snapshot) => {
+              const order = selectedOrdersById.get(Number(snapshot.order_id));
+              return sum + (order ? getOrderProfitFromSnapshot(order, snapshot) : Number(snapshot.total_profit || 0));
+            }, 0)
         )
       : Math.round(totalSales * (Number(profitPercent || 0) / 100));
     const totalCost = inventoryEnabled
@@ -11771,7 +13639,10 @@ async function retryPendingPaymentSync(order: OrderRow) {
       ? Math.round(
           orderCostSnapshots
             .filter((snapshot) => previousOrderIds.has(Number(snapshot.order_id)))
-            .reduce((sum, snapshot) => sum + Number(snapshot.total_profit || 0), 0)
+            .reduce((sum, snapshot) => {
+              const order = previousOrdersById.get(Number(snapshot.order_id));
+              return sum + (order ? getOrderProfitFromSnapshot(order, snapshot) : Number(snapshot.total_profit || 0));
+            }, 0)
         )
       : Math.round(previousSales * (Number(profitPercent || 0) / 100));
     const totalOrders = selectedSalesOrders.length;
@@ -11806,7 +13677,8 @@ async function retryPendingPaymentSync(order: OrderRow) {
             .reduce((map, item) => {
               const key = String(item.item_name || "Unknown item");
               const existing = map.get(key) || { item_name: key, profit: 0 };
-              existing.profit += Number(item.profit || 0);
+              const order = selectedOrdersById.get(Number(item.order_id));
+              existing.profit += order ? getSnapshotItemProfitForOrder(item, order) : Number(item.profit || 0);
               map.set(key, existing);
               return map;
             }, new Map<string, { item_name: string; profit: number }>())
@@ -12202,16 +14074,32 @@ async function retryPendingPaymentSync(order: OrderRow) {
 
     const orderById = new Map<number, OrderRow>();
     orders.forEach((order) => {
-      const orderId = Number(order.id || 0);
+      const orderId = getOrderStableKey(order).startsWith("server:")
+        ? Number(order.server_id || order.id || 0)
+        : 0;
       if (Number.isFinite(orderId) && orderId > 0) {
         orderById.set(orderId, order);
       }
     });
 
-    const todayCostInsightSnapshots = orderCostSnapshots.filter((snapshot) => {
+    const todayCostInsightSnapshotMap = new Map<number, OrderCostSnapshot>();
+    orderCostSnapshots.forEach((snapshot) => {
       const dateSource = snapshot.order_paid_at || snapshot.created_at;
-      return Boolean(dateSource) && getLocalDateString(String(dateSource)) === getTodayLocalDate();
+      if (!dateSource || getLocalDateString(String(dateSource)) !== getTodayLocalDate()) return;
+
+      const orderId = Number(snapshot.order_id);
+      if (!Number.isFinite(orderId) || orderId <= 0) return;
+
+      const existing = todayCostInsightSnapshotMap.get(orderId);
+      const existingTime = existing ? new Date(existing.order_paid_at || existing.created_at || 0).getTime() : 0;
+      const currentTime = new Date(snapshot.order_paid_at || snapshot.created_at || 0).getTime();
+
+      if (!existing || currentTime >= existingTime) {
+        todayCostInsightSnapshotMap.set(orderId, snapshot);
+      }
     });
+
+    const todayCostInsightSnapshots = Array.from(todayCostInsightSnapshotMap.values());
 
     const costInsightBills = todayCostInsightSnapshots
       .map((snapshot) => {
@@ -12232,15 +14120,68 @@ async function retryPendingPaymentSync(order: OrderRow) {
         };
 
         const itemBreakdowns = buildLockedItemBreakdowns(orderId);
+        const lockedItemSubtotal = itemBreakdowns.reduce(
+          (sum, item) => sum + Number(item.selling || 0),
+          0
+        );
+        const storedSubtotal = Number(order.subtotal);
+        const subtotal =
+          order.subtotal != null && Number.isFinite(storedSubtotal)
+            ? storedSubtotal
+            : lockedItemSubtotal > 0
+              ? lockedItemSubtotal
+              : Number(snapshot.total_revenue || 0);
+        const storedDiscountAmount = Number(order.discount_amount);
+        const discountPercent = Number(order.discount_percent || 0);
+        const discountAmount =
+          order.discount_amount != null && Number.isFinite(storedDiscountAmount)
+            ? Math.max(storedDiscountAmount, 0)
+            : discountPercent > 0
+              ? Math.round((subtotal * discountPercent) / 100)
+              : 0;
+        const netSales = Math.max(subtotal - discountAmount, 0);
+        const storedTaxAmount = Number(order.tax_amount);
+        const taxPercent = Number(order.tax_percent || 0);
+        const taxAmount =
+          order.tax_amount != null && Number.isFinite(storedTaxAmount)
+            ? Math.max(storedTaxAmount, 0)
+            : taxPercent > 0
+              ? Math.round((netSales * taxPercent) / 100)
+              : 0;
+        const storedGrandTotal = Number(order.grand_total);
+        const grandTotal =
+          order.grand_total != null && Number.isFinite(storedGrandTotal)
+            ? storedGrandTotal
+            : netSales + taxAmount;
+        const lockedCost = Number(snapshot.total_cost || 0);
+        const recomputedNetSales = getOrderNetSalesBeforeTax(
+          order,
+          lockedItemSubtotal > 0 ? lockedItemSubtotal : null
+        );
+        const netProfit = recomputedNetSales == null
+          ? Number(snapshot.total_profit || 0)
+          : recomputedNetSales - lockedCost;
+        const adjustedItemBreakdowns =
+          recomputedNetSales != null && lockedItemSubtotal > 0
+            ? itemBreakdowns.map((item) => ({
+                ...item,
+                profit: Number(item.selling || 0) * (recomputedNetSales / lockedItemSubtotal) - Number(item.cost || 0),
+              }))
+            : itemBreakdowns;
 
         return {
           table_number: String(order.table_number || snapshot.table_number || "").trim() || `Order ${orderId}`,
           order_ids: [orderId],
-          selling: Number(snapshot.total_revenue || 0),
-          cost: Number(snapshot.total_cost || 0),
-          profit: Number(snapshot.total_profit || 0),
-          materials: buildLockedMaterialsSummary(itemBreakdowns),
-          itemBreakdowns,
+          subtotal,
+          discount_amount: discountAmount,
+          net_sales: netSales,
+          tax_amount: taxAmount,
+          grand_total: grandTotal,
+          selling: netSales,
+          cost: lockedCost,
+          profit: netProfit,
+          materials: buildLockedMaterialsSummary(adjustedItemBreakdowns),
+          itemBreakdowns: adjustedItemBreakdowns,
           orders: [order],
           cost_locked: Boolean(costSnapshotByOrderId.get(orderId)),
         } as CostInsightBill;
@@ -13066,7 +15007,7 @@ function renderDesktopTopbar() {
             }}
           >
             <p>{hoveredHourlyPoint.label}</p>
-            <p>Rs. {hoveredHourlyPoint.sales}</p>
+            <p>Rs. {formatMoney(hoveredHourlyPoint.sales)}</p>
           </div>
         )}
 
@@ -13248,7 +15189,7 @@ function renderDesktopTopbar() {
             }}
           >
             <p className="font-black">{hoveredTrendPoint.label}</p>
-            <p className="mt-0.5 font-semibold text-slate-200">Rs. {hoveredTrendPoint.sales}</p>
+            <p className="mt-0.5 font-semibold text-slate-200">Rs. {formatMoney(hoveredTrendPoint.sales)}</p>
           </div>
         )}
 
@@ -13379,7 +15320,7 @@ function renderDesktopTopbar() {
                     <div className={`h-2.5 rounded-full ${fillClass}`} style={{ width: `${width}%` }} />
                   </div>
                   <div className="text-right text-[10px] font-semibold text-slate-600">
-                    {point.sales > 0 ? `Rs. ${point.sales}` : "-"}
+                    {point.sales > 0 ? `Rs. ${formatMoney(point.sales)}` : "-"}
                   </div>
                 </div>
               );
@@ -13706,26 +15647,19 @@ function renderDashboardView() {
                 `${unpaidTablesCount} unpaid table(s)`
               )}
 
-              {inventoryEnabled
-                ? posSummaryCard(
-                    "Low Stock",
-                    `${dashboardLowStockItems.length}`,
-                    dashboardLowStockItems.length > 0 ? "⚠️" : "✅",
-                    dashboardLowStockItems.length > 0 ? "bg-rose-50 text-rose-700" : "bg-emerald-50 text-emerald-700",
-                    dashboardCriticalLowStockCount > 0
-                      ? `${dashboardCriticalLowStockCount} critical item(s)`
-                      : dashboardLowStockItems.length > 0
-                        ? "Tap to view items"
-                        : "Stock healthy",
-                    () => setShowDashboardLowStockModal(true)
-                  )
-                : posSummaryCard(
-                    "Best Seller",
-                    bestSellingItem ? bestSellingItem.item_name : "-",
-                    "🔥",
-                    "bg-purple-50 text-purple-700",
-                    bestSellingItem ? `${bestSellingItem.total_quantity} sold today` : "No sales yet"
-                  )}
+              {inventoryEnabled &&
+                posSummaryCard(
+                  "Low Stock",
+                  `${dashboardLowStockItems.length}`,
+                  dashboardLowStockItems.length > 0 ? "⚠️" : "✅",
+                  dashboardLowStockItems.length > 0 ? "bg-rose-50 text-rose-700" : "bg-emerald-50 text-emerald-700",
+                  dashboardCriticalLowStockCount > 0
+                    ? `${dashboardCriticalLowStockCount} critical item(s)`
+                    : dashboardLowStockItems.length > 0
+                      ? "Tap to view items"
+                      : "Stock healthy",
+                  () => setShowDashboardLowStockModal(true)
+                )}
 
               {posSummaryCard(
                 "Items Sold",
@@ -13761,17 +15695,16 @@ function renderDashboardView() {
                 salesVsYesterday.text
               )}
 
-              {posSummaryCard(
-                inventoryEnabled ? "Today Profit" : "Est. Profit",
-                `Rs. ${todayProfit}`,
-                "💸",
-                "bg-teal-50 text-teal-700",
-                inventoryEnabled
-                  ? todaySnapshotProcessingCount > 0
+              {inventoryEnabled &&
+                posSummaryCard(
+                  "Today Profit",
+                  `Rs. ${todayProfit}`,
+                  "💸",
+                  "bg-teal-50 text-teal-700",
+                  todaySnapshotProcessingCount > 0
                     ? `${todaySnapshotProcessingCount} payment processing...`
                     : profitVsYesterday.text
-                  : profitVsYesterday.text
-              )}
+                )}
 
               {posSummaryCard(
                 "Unpaid Amount",
@@ -13781,21 +15714,14 @@ function renderDashboardView() {
                 `${unpaidTablesCount} unpaid table(s)`
               )}
 
-              {inventoryEnabled
-                ? posSummaryCard(
-                    "Today Cost",
-                    `Rs. ${todayLockedCost}`,
-                    "📦",
-                    "bg-amber-50 text-amber-700",
-                    "Locked after payment"
-                  )
-                : posSummaryCard(
-                    "Items Sold",
-                    `${totalItemsSoldToday}`,
-                    "🧾",
-                    "bg-orange-50 text-orange-700",
-                    bestSellingItem ? `Best: ${bestSellingItem.item_name}` : "No sold items yet"
-                  )}
+              {inventoryEnabled &&
+                posSummaryCard(
+                  "Today Cost",
+                  `Rs. ${todayLockedCost}`,
+                  "📦",
+                  "bg-amber-50 text-amber-700",
+                  "Locked after payment"
+                )}
 
               {inventoryEnabled
                 ? posSummaryCard(
@@ -13829,7 +15755,9 @@ function renderDashboardView() {
           )}
         </div>
 
-        {showDashboardLowStockModal && (
+        {renderPaymentSyncStatusBox()}
+
+        {inventoryEnabled && showDashboardLowStockModal && (
           <div className="fixed inset-0 z-[9998] flex items-end justify-center bg-slate-950/45 px-3 pb-3 backdrop-blur-sm">
             <div className="max-h-[82vh] w-full max-w-md overflow-hidden rounded-[28px] bg-white shadow-[0_24px_80px_rgba(15,23,42,0.28)]">
               <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
@@ -14013,7 +15941,7 @@ function renderDashboardView() {
 
           {dashboardMobileTab === "unpaid" ? (
             todayDashboardGroupedTableOrders.length === 0 ? (
-              <p className="rounded-2xl bg-slate-50 py-5 text-center text-sm font-semibold text-slate-400">No unpaid tables today.</p>
+              <p className="rounded-2xl bg-slate-50 py-5 text-center text-sm font-semibold text-slate-400">No active unpaid tables.</p>
             ) : (
               <div className="space-y-2.5">
                 {todayDashboardGroupedTableOrders.slice(0, 5).map((table) => (
@@ -14041,15 +15969,11 @@ function renderDashboardView() {
             ) : (
               <div className="space-y-2.5">
                 {todayPaidOrders.slice(0, 5).map((order) => {
-                  const total =
-                    order.order_items?.reduce(
-                      (sum, item) => sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
-                      0
-                    ) || 0;
+                  const total = getOrderAmount(order);
 
                   return (
                     <button
-                      key={`paid-${order.id}`}
+                      key={`paid-${getOrderRenderKey(order)}`}
                       type="button"
                       onClick={() => openPaidOrderBill(order)}
                       className="flex w-full items-center justify-between gap-3 rounded-2xl border border-emerald-100 bg-emerald-50/70 px-3.5 py-3 text-left transition active:scale-[0.99] active:bg-emerald-100"
@@ -14074,17 +15998,13 @@ function renderDashboardView() {
           ) : (
             <div className="space-y-3">
               {recentActivity.slice(0, 5).map((order) => {
-                const total =
-                  order.order_items?.reduce(
-                    (sum, item) => sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
-                    0
-                  ) || 0;
+                const total = getOrderAmount(order);
                 const firstItem = order.order_items?.[0];
                 const itemCount = order.order_items?.length || 0;
 
                 return (
                   <button
-                    key={order.id}
+                    key={getOrderRenderKey(order)}
                     type="button"
                     onClick={() => openDashboardOrderShortcut(order)}
                     className="flex w-full items-start gap-3 rounded-2xl border border-slate-100 bg-slate-50 px-3.5 py-3 text-left transition active:scale-[0.99] active:bg-slate-100"
@@ -14212,12 +16132,12 @@ function renderDashboardView() {
               const shortLabel = salesPeriod === "year" ? point.label.slice(0, 3) : point.label;
 
               return (
-                <div key={`insight-vertical-${point.fullLabel}-${index}`} className="grid grid-cols-[64px_1fr_82px] items-center gap-3 rounded-[18px] border border-slate-100 bg-slate-50 px-3 py-2.5">
+                <div key={`insight-vertical-${point.fullLabel}-${index}`} className="grid grid-cols-[64px_minmax(0,1fr)_minmax(0,82px)] items-center gap-3 rounded-[18px] border border-slate-100 bg-slate-50 px-3 py-2.5">
                   <p className="truncate text-sm font-black text-slate-600">{shortLabel}</p>
-                  <div className="h-3 overflow-hidden rounded-full bg-white ring-1 ring-slate-200">
+                  <div className="min-w-0 h-3 overflow-hidden rounded-full bg-white ring-1 ring-slate-200">
                     <div className="h-full rounded-full bg-slate-900/80" style={{ width: `${percent}%` }} />
                   </div>
-                  <p className="text-right text-[11px] font-black text-slate-950">Rs. {value}</p>
+                  <p className="min-w-0 truncate text-right text-[11px] font-black text-slate-950">Rs. {formatMoney(value)}</p>
                 </div>
               );
             })}
@@ -14227,7 +16147,8 @@ function renderDashboardView() {
     };
 
     return (
-      <div className="space-y-3 pb-4 lg:min-h-[calc(100vh-92px)] lg:space-y-4 lg:rounded-[30px] lg:border lg:border-slate-200 lg:bg-white lg:p-4 lg:shadow-[0_18px_55px_rgba(15,23,42,0.06)]">
+      <div className="min-w-0 space-y-3 overflow-x-hidden pb-4 lg:min-h-[calc(100vh-92px)] lg:space-y-4 lg:rounded-[30px] lg:border lg:border-slate-200 lg:bg-white lg:p-4 lg:shadow-[0_18px_55px_rgba(15,23,42,0.06)]">
+        {/* Sales overview hides horizontal overflow because long formatted money values must not drag the page sideways. */}
         <div className="rounded-[24px] border border-slate-200 bg-white p-2.5 shadow-[0_10px_32px_rgba(15,23,42,0.07)] lg:rounded-[22px] lg:bg-white lg:p-3 lg:text-slate-950 lg:shadow-[0_12px_35px_rgba(15,23,42,0.06)]">
           <div className="flex items-center gap-2 lg:justify-between">
             <div className="relative min-w-0 flex-1">
@@ -14271,13 +16192,13 @@ function renderDashboardView() {
         <div className="grid grid-cols-4 gap-3 lg:grid-cols-12 lg:gap-3">
           <div className="col-span-4 rounded-[32px] border border-slate-200 bg-white p-5 shadow-[0_18px_55px_rgba(15,23,42,0.09)] lg:col-span-4 lg:min-h-[118px] lg:rounded-[24px] lg:bg-white lg:p-4 lg:text-slate-950 lg:shadow-[0_12px_36px_rgba(15,23,42,0.06)]">
             <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400 lg:text-red-500">Total Sales</p>
-            <p className="mt-2 text-4xl font-black tracking-tight text-slate-950 lg:mt-2 lg:text-3xl lg:text-red-600">Rs. {selectedSalesSummary.totalSales}</p>
+            <p className="mt-2 break-words text-4xl font-black tracking-tight text-slate-950 lg:mt-2 lg:text-3xl lg:text-red-600">Rs. {formatMoney(selectedSalesSummary.totalSales)}</p>
             <p className="mt-2 text-xs font-bold text-slate-500 lg:mt-1 lg:text-xs lg:text-slate-500">{getInsightRangeDisplayLabel()} • {selectedSalesSummary.totalOrders} paid order(s)</p>
           </div>
 
           <div className="col-span-2 rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2 lg:rounded-[22px] lg:p-3.5 lg:shadow-[0_10px_30px_rgba(15,23,42,0.05)]">
             <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Profit</p>
-            <p className="mt-2 text-2xl font-black text-slate-950 lg:text-xl lg:text-red-600">Rs. {selectedSalesSummary.totalProfit}</p>
+            <p className="mt-2 text-2xl font-black text-slate-950 lg:text-xl lg:text-red-600">Rs. {formatMoney(selectedSalesSummary.totalProfit)}</p>
             <p className="mt-1 text-[11px] font-bold text-slate-500">{inventoryEnabled ? "Real cost" : "Estimated"}</p>
           </div>
 
@@ -14289,12 +16210,12 @@ function renderDashboardView() {
 
           <div className="col-span-2 rounded-[22px] border border-slate-200 bg-white p-3.5 shadow-sm lg:col-span-2 lg:rounded-[22px] lg:p-3.5 lg:shadow-[0_10px_30px_rgba(15,23,42,0.05)]">
             <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Avg Order</p>
-            <p className="mt-1 text-lg font-black text-slate-950 lg:text-base lg:text-red-600">Rs. {selectedSalesSummary.avgOrderValue}</p>
+            <p className="mt-1 text-lg font-black text-slate-950 lg:text-base lg:text-red-600">Rs. {formatMoney(selectedSalesSummary.avgOrderValue)}</p>
           </div>
 
           <div className="col-span-2 rounded-[22px] border border-slate-200 bg-white p-3.5 shadow-sm lg:col-span-2 lg:rounded-[22px] lg:p-3.5 lg:shadow-[0_10px_30px_rgba(15,23,42,0.05)]">
             <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Cost</p>
-            <p className="mt-1 text-lg font-black text-slate-950 lg:text-base lg:text-red-600">Rs. {selectedSalesSummary.totalCost}</p>
+            <p className="mt-1 text-lg font-black text-slate-950 lg:text-base lg:text-red-600">Rs. {formatMoney(selectedSalesSummary.totalCost)}</p>
           </div>
         </div>
 
@@ -14321,7 +16242,7 @@ function renderDashboardView() {
               <h3 className="text-sm font-black text-slate-950">Payment Split</h3>
               <p className="text-[11px] font-semibold text-slate-500">Cash, QR and card split</p>
             </div>
-            <span className="rounded-full bg-slate-100 px-3 py-1 text-[10px] font-black text-slate-500">Rs. {paymentTotal}</span>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-[10px] font-black text-slate-500">Rs. {formatMoney(paymentTotal)}</span>
           </div>
 
           <div className="space-y-3">
@@ -14332,7 +16253,7 @@ function renderDashboardView() {
                   <div className="flex items-center justify-between gap-3">
                     <p className="text-sm font-black text-slate-800">{row.label}</p>
                     <div className="text-right">
-                      <p className="text-sm font-black text-slate-950">Rs. {row.value}</p>
+                      <p className="text-sm font-black text-slate-950">Rs. {formatMoney(row.value)}</p>
                       <p className="text-[11px] font-bold text-slate-500">{share}%</p>
                     </div>
                   </div>
@@ -14390,8 +16311,8 @@ function renderDashboardView() {
                     </div>
                     <p className="mt-1 text-xs font-bold text-slate-500">{item.total_quantity} sold</p>
                   </div>
-                  <div className="shrink-0 text-right">
-                    <p className={`${index === 0 ? "text-base" : "text-sm"} font-black text-slate-950`}>Rs. {item.total_revenue}</p>
+                  <div className="min-w-0 max-w-[120px] text-right sm:max-w-none">
+                    <p className={`${index === 0 ? "text-base" : "text-sm"} truncate font-black text-slate-950`}>Rs. {formatMoney(item.total_revenue)}</p>
                     <p className="mt-0.5 text-[10px] font-bold text-slate-400">Total</p>
                   </div>
                 </div>
@@ -14784,9 +16705,31 @@ function renderDashboardView() {
           <h3 className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">
             {section.title}
           </h3>
-          <span className="rounded-full bg-slate-50 px-2.5 py-1 text-[10px] font-black text-slate-500 ring-1 ring-slate-100">
-            {section.items.length}
-          </span>
+          {section.title === "INVENTORY" ? (
+            <button
+              type="button"
+              disabled={savingInventoryEnabled || !isOnline}
+              onClick={(event) => {
+                event.stopPropagation();
+                toggleInventoryEnabled();
+              }}
+              className={`relative h-4 w-8 shrink-0 rounded-full p-[2px] opacity-25 transition hover:opacity-70 active:scale-[0.96] ${
+                inventoryEnabled ? "bg-emerald-500" : "bg-slate-300"
+              } ${savingInventoryEnabled || !isOnline ? "cursor-not-allowed opacity-15" : ""}`}
+              aria-label={inventoryEnabled ? "Disable inventory deduction" : "Enable inventory deduction"}
+              title={inventoryEnabled ? "Inventory deduction ON" : "Inventory deduction OFF"}
+            >
+              <span
+                className={`block h-3 w-3 rounded-full bg-white shadow-sm transition-transform ${
+                  inventoryEnabled ? "translate-x-4" : "translate-x-0"
+                }`}
+              />
+            </button>
+          ) : (
+            <span className="rounded-full bg-slate-50 px-2.5 py-1 text-[10px] font-black text-slate-500 ring-1 ring-slate-100">
+              {section.items.length}
+            </span>
+          )}
         </div>
         <div className={`grid gap-2.5 ${compact ? "grid-cols-1" : "grid-cols-2 lg:grid-cols-3"}`}>
           {section.items.map((item) => (
@@ -14818,9 +16761,32 @@ function renderDashboardView() {
         <div className="space-y-5 lg:hidden">
           {manageSections.map((section) => (
             <section key={`manage-section-${section.title}`}>
-              <h3 className="mb-2.5 px-1 text-[14px] font-black uppercase tracking-[0.16em] text-slate-900">
-                {section.title}
-              </h3>
+              <div className="mb-2.5 flex items-center justify-between gap-2 px-1">
+                <h3 className="text-[14px] font-black uppercase tracking-[0.16em] text-slate-900">
+                  {section.title}
+                </h3>
+                {section.title === "INVENTORY" ? (
+                  <button
+                    type="button"
+                    disabled={savingInventoryEnabled || !isOnline}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggleInventoryEnabled();
+                    }}
+                    className={`relative h-4 w-8 shrink-0 rounded-full p-[2px] opacity-20 transition active:scale-[0.96] ${
+                      inventoryEnabled ? "bg-emerald-500" : "bg-slate-300"
+                    } ${savingInventoryEnabled || !isOnline ? "cursor-not-allowed opacity-10" : ""}`}
+                    aria-label={inventoryEnabled ? "Disable inventory deduction" : "Enable inventory deduction"}
+                    title={inventoryEnabled ? "Inventory deduction ON" : "Inventory deduction OFF"}
+                  >
+                    <span
+                      className={`block h-3 w-3 rounded-full bg-white shadow-sm transition-transform ${
+                        inventoryEnabled ? "translate-x-4" : "translate-x-0"
+                      }`}
+                    />
+                  </button>
+                ) : null}
+              </div>
               <div className="grid grid-cols-2 gap-2.5">
                 {section.items.map((item) => (
                   <button
@@ -14953,9 +16919,9 @@ function renderDashboardView() {
                     const itemCount = (order.order_items || []).reduce((sum, item) => sum + Number(item.quantity || 0), 0);
                     return (
                       <button
-                        key={`desktop-table-${order.id}`}
+                        key={`desktop-table-${getOrderRenderKey(order)}`}
                         type="button"
-                        onClick={() => setSelectedTableOrderId(Number(order.id))}
+                        onClick={() => setSelectedTableOrderId(getOrderStableKey(order))}
                         className="rounded-[26px] bg-red-950 p-5 text-left shadow-[0_18px_42px_rgba(127,29,29,0.24)] ring-1 ring-red-900 transition hover:-translate-y-0.5 hover:shadow-[0_24px_55px_rgba(127,29,29,0.28)]"
                       >
                         <div className="flex items-start justify-between gap-3">
@@ -15005,7 +16971,7 @@ function renderDashboardView() {
                       const isPendingPaymentSync = order.sync_status === "pending_payment";
                       const isLockedOrder = displayStatus === "ready" || isPendingPaymentSync;
                       return (
-                        <div key={`desktop-order-${order.id}`} className="grid grid-cols-[1.1fr_1.3fr_0.8fr_0.9fr_1.2fr] items-center gap-4 px-5 py-4 transition hover:bg-slate-50/80">
+                        <div key={`desktop-order-${getOrderRenderKey(order)}`} className="grid grid-cols-[1.1fr_1.3fr_0.8fr_0.9fr_1.2fr] items-center gap-4 px-5 py-4 transition hover:bg-slate-50/80">
                           <div>
                             <p className="text-base font-black text-slate-950">Table {order.table_number}</p>
                             <p className="mt-1 text-xs font-semibold text-slate-500">
@@ -15018,7 +16984,7 @@ function renderDashboardView() {
                             ) : (
                               <div className="space-y-1">
                                 {itemPreview.map((item) => (
-                                  <p key={`desktop-order-item-${order.id}-${item.id}`} className="truncate text-sm font-bold text-slate-800">
+                                  <p key={`desktop-order-item-${getOrderRenderKey(order)}-${item.id}`} className="truncate text-sm font-bold text-slate-800">
                                     {item.item_name} × {item.quantity}
                                   </p>
                                 ))}
@@ -15036,7 +17002,7 @@ function renderDashboardView() {
                             <button type="button" onClick={() => openOrderReport(order, "kot")} className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-black text-slate-700">KOT</button>
                             <button type="button" onClick={() => openOrderReport(order)} className="rounded-xl bg-blue-50 px-3 py-2 text-xs font-black text-blue-700">Bill</button>
                             <button type="button" disabled={editingOrderLoading || isLockedOrder} onClick={() => handleEditOrder(order)} className={`rounded-xl px-3 py-2 text-xs font-black ${editingOrderLoading || isLockedOrder ? "bg-slate-200 text-slate-400" : "bg-white text-slate-700 ring-1 ring-slate-200"}`}>Edit</button>
-                            <button type="button" disabled={isLockedOrder} onClick={() => handleCancelOrder(order.id)} className={`rounded-xl px-3 py-2 text-xs font-black ${isLockedOrder ? "bg-slate-200 text-slate-400" : "bg-rose-50 text-rose-600 ring-1 ring-rose-100"}`}>Cancel</button>
+                            <button type="button" disabled={isLockedOrder} onClick={() => handleCancelOrder(order)} className={`rounded-xl px-3 py-2 text-xs font-black ${isLockedOrder ? "bg-slate-200 text-slate-400" : "bg-rose-50 text-rose-600 ring-1 ring-rose-100"}`}>Cancel</button>
                           </div>
                         </div>
                       );
@@ -15087,7 +17053,7 @@ function renderDashboardView() {
           <div className="rounded-[28px] border border-slate-200/80 bg-white p-4 shadow-[0_12px_34px_rgba(15,23,42,0.06)]">
             {(() => {
               const selectedTableOrder = selectedTableOrderId
-                ? activeOrders.find((order) => Number(order.id) === Number(selectedTableOrderId)) || null
+                ? activeOrders.find((order) => getOrderStableKey(order) === selectedTableOrderId) || null
                 : null;
 
               if (selectedTableOrder) {
@@ -15198,9 +17164,9 @@ function renderDashboardView() {
 
                         return (
                           <button
-                            key={`active-table-${order.id}`}
+                            key={`active-table-${getOrderRenderKey(order)}`}
                             type="button"
-                            onClick={() => setSelectedTableOrderId(Number(order.id))}
+                            onClick={() => setSelectedTableOrderId(getOrderStableKey(order))}
                             className="min-h-[118px] rounded-[22px] bg-red-950 p-3 text-left shadow-[0_16px_34px_rgba(127,29,29,0.28)] ring-1 ring-red-900 transition active:scale-[0.98]"
                           >
                             <div className="flex items-start justify-between gap-2">
@@ -15275,7 +17241,7 @@ function renderDashboardView() {
 
                 return (
                   <div
-                    key={order.id}
+                    key={getOrderRenderKey(order)}
                     role="button"
                     tabIndex={0}
                     onClick={() => openOrderReport(order)}
@@ -15337,7 +17303,7 @@ function renderDashboardView() {
                     <div className="mt-2 min-h-[16px]">
                       {isPendingPaymentSync ? (
                         <p className="text-[9px] font-semibold text-amber-700">
-                          Payment pending sync — tap bill to view customer bill
+                          Payment done — inventory sync pending
                         </p>
                       ) : isLockedOrder ? (
                         <p className="text-[9px] font-semibold text-slate-500">
@@ -15415,7 +17381,7 @@ function renderDashboardView() {
                         type="button"
                         onClick={(event) => {
                           event.stopPropagation();
-                          handleCancelOrder(order.id);
+                          handleCancelOrder(order);
                         }}
                         disabled={isLockedOrder}
                         className={`rounded-[12px] py-2 text-[10px] font-semibold ${
@@ -15460,7 +17426,7 @@ function renderDashboardView() {
 
                   return (
                     <div
-                      key={`payment-sync-modal-${order.id}`}
+                      key={`payment-sync-modal-${getOrderRenderKey(order)}`}
                       className="rounded-[20px] border border-amber-200 bg-amber-50/70 p-3"
                     >
                       <div className="flex items-start justify-between gap-3">
@@ -15517,6 +17483,8 @@ function renderBillingView() {
           "💳"
         )}
 
+        {renderPaymentSyncStatusBox(true)}
+
         <div className="grid grid-cols-2 gap-3">
           {statCard("Unpaid Tables", unpaidTablesCount, "🪑", "bg-amber-50 border border-amber-200")}
           {statCard("Unpaid Amount", `Rs. ${unpaidAmount}`, "⏳", "bg-rose-50 border border-rose-200")}
@@ -15545,18 +17513,10 @@ function renderBillingView() {
               const selectedPaymentMethod =
                 tablePaymentMethods[table.table_number] || "cash";
               const paymentBreakdown = getPaymentBreakdown(Number(table.total || 0), table.table_number);
-              const tablePendingPaymentOrders = orders.filter(
-                (order) =>
-                  String(order.table_number || "").trim() === table.table_number &&
-                  order.sync_status === "pending_payment"
-              );
+              const tablePaymentStatus = paymentStatusByTable.get(table.table_number);
+              const tablePendingPaymentOrders = tablePaymentStatus?.pendingPaymentOrders || [];
               const tableHasPendingPaymentSync = tablePendingPaymentOrders.length > 0;
-              const tableNormalUnpaidOrders = orders.filter(
-                (order) =>
-                  String(order.table_number || "").trim() === table.table_number &&
-                  order.is_paid !== true &&
-                  order.sync_status !== "pending_payment"
-              );
+              const tableNormalUnpaidOrders = tablePaymentStatus?.normalUnpaidOrders || [];
               const tableOnlyPendingPaymentSync =
                 tableHasPendingPaymentSync && tableNormalUnpaidOrders.length === 0;
 
@@ -15805,11 +17765,49 @@ function renderBillingView() {
           ) : (
             <div className="grid grid-cols-2 gap-3">
               {paidOrders.map((order) => {
-                const orderTotal = getOrderTotal(order);
+                const itemSubtotal = (order.order_items || []).reduce(
+                  (sum, item) => sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
+                  0
+                );
+                const storedSubtotal = Number(order.subtotal);
+                const subtotal =
+                  order.subtotal != null && Number.isFinite(storedSubtotal)
+                    ? storedSubtotal
+                    : itemSubtotal;
+                const storedDiscountAmount = Number(order.discount_amount);
+                const discountPercent = Number(order.discount_percent || 0);
+                const discountAmount =
+                  order.discount_amount != null && Number.isFinite(storedDiscountAmount)
+                    ? Math.max(storedDiscountAmount, 0)
+                    : discountPercent > 0
+                      ? Math.round((subtotal * discountPercent) / 100)
+                      : 0;
+                const netSales = Math.max(subtotal - discountAmount, 0);
+                const storedTaxAmount = Number(order.tax_amount);
+                const taxPercent = Number(order.tax_percent || 0);
+                const taxAmount =
+                  order.tax_amount != null && Number.isFinite(storedTaxAmount)
+                    ? Math.max(storedTaxAmount, 0)
+                    : taxPercent > 0
+                      ? Math.round((netSales * taxPercent) / 100)
+                      : 0;
+                const storedGrandTotal = Number(order.grand_total);
+                const grandTotal =
+                  order.grand_total != null && Number.isFinite(storedGrandTotal)
+                    ? storedGrandTotal
+                    : netSales + taxAmount;
+                // Payment history cards show final paid total so owner sees actual collected revenue without opening details.
+                const paidTotal = getOrderAmount({
+                  ...order,
+                  subtotal,
+                  discount_amount: discountAmount,
+                  tax_amount: taxAmount,
+                  grand_total: grandTotal,
+                });
 
                 return (
                   <button
-                    key={order.id}
+                    key={getOrderRenderKey(order)}
                     type="button"
                     onClick={() => openPaidOrderBill(order)}
                     className="rounded-[18px] border border-slate-200 bg-slate-50 p-3 text-left space-y-2 transition hover:border-blue-300 hover:bg-blue-50"
@@ -15856,8 +17854,8 @@ function renderBillingView() {
 
                     <div className="grid grid-cols-2 gap-2 border-t border-slate-200 pt-2">
                       <div className="rounded-xl bg-white p-2">
-                        <p className="text-[10px] text-slate-500">Total</p>
-                        <p className="text-xs font-bold text-slate-900">Rs. {orderTotal}</p>
+                        <p className="text-[10px] text-slate-500">Paid Total</p>
+                        <p className="text-base font-black text-slate-900">Rs. {paidTotal}</p>
                       </div>
 
                       <div className="rounded-xl bg-white p-2">
@@ -15865,6 +17863,25 @@ function renderBillingView() {
                         <p className="text-xs font-bold text-slate-900">
                           {formatPaymentMethod(order.payment_method)}
                         </p>
+                      </div>
+
+                      <div className="col-span-2 space-y-1 rounded-xl bg-white p-2 text-[11px] font-semibold text-slate-700">
+                        <div className="flex items-center justify-between gap-2">
+                          <span>Subtotal</span>
+                          <span className="font-bold text-slate-900">Rs. {subtotal}</span>
+                        </div>
+                        {discountAmount > 0 ? (
+                          <div className="flex items-center justify-between gap-2">
+                            <span>Discount</span>
+                            <span className="font-bold text-rose-600">- Rs. {discountAmount}</span>
+                          </div>
+                        ) : null}
+                        {taxAmount > 0 ? (
+                          <div className="flex items-center justify-between gap-2">
+                            <span>Tax</span>
+                            <span className="font-bold text-slate-900">Rs. {taxAmount}</span>
+                          </div>
+                        ) : null}
                       </div>
 
                       <div className="col-span-2 rounded-xl bg-white p-2">
@@ -17471,7 +19488,7 @@ function renderBillingView() {
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="rounded-[24px] border border-blue-100 bg-blue-50 p-4">
-                  <p className="text-[10px] font-black uppercase tracking-wide text-blue-600">Total Sales</p>
+                  <p className="text-[10px] font-black uppercase tracking-wide text-blue-600">Total Net Sales</p>
                   <p className="mt-1 text-lg font-black text-slate-950">Rs. {formatMoney(costInsightTotalSales)}</p>
                 </div>
                 <div className="rounded-[24px] border border-rose-100 bg-rose-50 p-4">
@@ -17516,7 +19533,11 @@ function renderBillingView() {
                         <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-black text-slate-600">{bill.orders[0]?.paid_at || bill.orders[0]?.created_at ? new Date(bill.orders[0]?.paid_at || bill.orders[0]?.created_at || "").toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Bill"}</span>
                       </div>
                       <div className="mt-3 space-y-1 text-[11px] font-bold text-slate-600">
-                        <div className="flex justify-between gap-2"><span>Selling</span><span className="text-slate-950">{bill.cost_locked ? `Rs. ${formatMoney(bill.selling)}` : "Processing..."}</span></div>
+                        <div className="flex justify-between gap-2"><span>Subtotal</span><span className="text-slate-950">{bill.cost_locked ? `Rs. ${formatMoney(bill.subtotal)}` : "Processing..."}</span></div>
+                        {bill.cost_locked && bill.discount_amount > 0 ? <div className="flex justify-between gap-2"><span>Discount</span><span className="text-rose-600">- Rs. {formatMoney(bill.discount_amount)}</span></div> : null}
+                        <div className="flex justify-between gap-2"><span>Net Sales</span><span className="text-slate-950">{bill.cost_locked ? `Rs. ${formatMoney(bill.net_sales)}` : "Processing..."}</span></div>
+                        {bill.cost_locked && bill.tax_amount > 0 ? <div className="flex justify-between gap-2"><span>Tax</span><span className="text-slate-950">Rs. {formatMoney(bill.tax_amount)}</span></div> : null}
+                        <div className="flex justify-between gap-2"><span>Grand Total</span><span className="text-slate-950">{bill.cost_locked ? `Rs. ${formatMoney(bill.grand_total)}` : "Processing..."}</span></div>
                         <div className="flex justify-between gap-2"><span>Cost</span><span className="text-rose-600">{bill.cost_locked ? `Rs. ${formatMoney(bill.cost)}` : "Processing..."}</span></div>
                         <div className="flex justify-between gap-2 border-t border-slate-100 pt-1"><span>Profit</span><span className="text-emerald-700">{bill.cost_locked ? `Rs. ${formatMoney(bill.profit)}` : "Processing..."}</span></div>
                       </div>
@@ -18431,9 +20452,8 @@ function renderBillingView() {
                             </div>
 
                             {rawBuilderRows.map((row, index) => {
-                              const selectedIds = rawBuilderRows
-                                .filter((entry) => entry.rowId !== row.rowId && entry.inventoryId)
-                                .map((entry) => entry.inventoryId);
+                              const selectedIds = rawBuilderSelectedInventoryIdsByRowId.get(row.rowId) || new Set<string>();
+                              const rowInventoryOptions = getRecipeBuilderInventoryOptions("raw", row.category);
                               return (
                                 <div key={row.rowId} className="grid grid-cols-[105px_1fr_82px_30px] gap-2">
                                   <select
@@ -18454,11 +20474,8 @@ function renderBillingView() {
                                     className="h-10 min-w-0 rounded-xl border border-slate-200 bg-white px-2 text-xs font-bold text-slate-900 outline-none focus:border-red-300 focus:ring-2 focus:ring-red-50"
                                   >
                                     <option value="">Raw item</option>
-                                    {inventoryItems
-                                      .filter((item) => item.item_type === "raw")
-                                      .filter((item) => !row.category || row.category === "all" || (item.category || "Other") === row.category)
-                                      .map((item) => (
-                                      <option key={`raw-builder-option-${row.rowId}-${item.id}`} value={item.id} disabled={selectedIds.includes(String(item.id))}>
+                                    {rowInventoryOptions.map((item) => (
+                                      <option key={`raw-builder-option-${row.rowId}-${item.id}`} value={item.id} disabled={selectedIds.has(String(item.id))}>
                                         {item.item_name} • {item.category || "Other"} ({item.unit})
                                       </option>
                                     ))}
@@ -18504,9 +20521,8 @@ function renderBillingView() {
                             </div>
 
                             {directBuilderRows.map((row) => {
-                              const selectedIds = directBuilderRows
-                                .filter((entry) => entry.rowId !== row.rowId && entry.inventoryId)
-                                .map((entry) => entry.inventoryId);
+                              const selectedIds = directBuilderSelectedInventoryIdsByRowId.get(row.rowId) || new Set<string>();
+                              const rowInventoryOptions = getRecipeBuilderInventoryOptions("direct", row.category);
                               return (
                                 <div key={row.rowId} className="grid grid-cols-[105px_1fr_82px_30px] gap-2">
                                   <select
@@ -18527,11 +20543,8 @@ function renderBillingView() {
                                     className="h-10 min-w-0 rounded-xl border border-slate-200 bg-white px-2 text-xs font-bold text-slate-900 outline-none focus:border-red-300 focus:ring-2 focus:ring-red-50"
                                   >
                                     <option value="">Direct item</option>
-                                    {inventoryItems
-                                      .filter((item) => item.item_type === "direct")
-                                      .filter((item) => !row.category || row.category === "all" || (item.category || "Other") === row.category)
-                                      .map((item) => (
-                                      <option key={`direct-builder-option-${row.rowId}-${item.id}`} value={item.id} disabled={selectedIds.includes(String(item.id))}>
+                                    {rowInventoryOptions.map((item) => (
+                                      <option key={`direct-builder-option-${row.rowId}-${item.id}`} value={item.id} disabled={selectedIds.has(String(item.id))}>
                                         {item.item_name} • {item.category || "Other"} ({item.unit})
                                       </option>
                                     ))}
@@ -19122,8 +21135,8 @@ function renderBillingView() {
 
                 <div className="mt-4 grid grid-cols-3 gap-2">
                   <div className="rounded-[22px] bg-blue-50 p-3 ring-1 ring-blue-100">
-                    <p className="text-[9px] font-black uppercase tracking-wide text-blue-600">Selling</p>
-                    <p className="mt-1 text-base font-black text-slate-950">{selectedCostInsightBill.cost_locked ? `Rs. ${formatMoney(selectedCostInsightBill.selling)}` : "Processing..."}</p>
+                    <p className="text-[9px] font-black uppercase tracking-wide text-blue-600">Net Sales</p>
+                    <p className="mt-1 text-base font-black text-slate-950">{selectedCostInsightBill.cost_locked ? `Rs. ${formatMoney(selectedCostInsightBill.net_sales)}` : "Processing..."}</p>
                   </div>
                   <div className="rounded-[22px] bg-rose-50 p-3 ring-1 ring-rose-100">
                     <p className="text-[9px] font-black uppercase tracking-wide text-rose-600">Cost</p>
@@ -19237,8 +21250,28 @@ function renderBillingView() {
                   <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/50">Locked table summary</p>
                   <div className="mt-3 space-y-2 text-sm font-bold">
                     <div className="flex items-center justify-between gap-3">
-                      <span className="text-white/65">Total Selling</span>
-                      <span>{selectedCostInsightBill.cost_locked ? `Rs. ${formatMoney(selectedCostInsightBill.selling)}` : "Processing..."}</span>
+                      <span className="text-white/65">Subtotal</span>
+                      <span>{selectedCostInsightBill.cost_locked ? `Rs. ${formatMoney(selectedCostInsightBill.subtotal)}` : "Processing..."}</span>
+                    </div>
+                    {selectedCostInsightBill.cost_locked && selectedCostInsightBill.discount_amount > 0 ? (
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-white/65">Discount</span>
+                        <span className="text-rose-300">- Rs. {formatMoney(selectedCostInsightBill.discount_amount)}</span>
+                      </div>
+                    ) : null}
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-white/65">Net Sales</span>
+                      <span>{selectedCostInsightBill.cost_locked ? `Rs. ${formatMoney(selectedCostInsightBill.net_sales)}` : "Processing..."}</span>
+                    </div>
+                    {selectedCostInsightBill.cost_locked && selectedCostInsightBill.tax_amount > 0 ? (
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-white/65">Tax</span>
+                        <span>Rs. {formatMoney(selectedCostInsightBill.tax_amount)}</span>
+                      </div>
+                    ) : null}
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-white/65">Grand Total</span>
+                      <span>{selectedCostInsightBill.cost_locked ? `Rs. ${formatMoney(selectedCostInsightBill.grand_total)}` : "Processing..."}</span>
                     </div>
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-white/65">Inventory Cost</span>
@@ -20122,7 +22155,7 @@ if (showSplash) {
           )}
 
 
-          <div ref={contentScrollRef} className={`min-h-0 flex-1 overflow-y-auto overscroll-contain lg:px-8 lg:py-7 xl:px-10 ${popupView || desktopInventoryContentOpen || miniView === "report" || miniView === "paymentHistory" ? "pb-4 lg:pb-8" : "pb-24 lg:pb-8"}`}>
+          <div ref={contentScrollRef} className={`min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain lg:px-8 lg:py-7 xl:px-10 ${popupView || desktopInventoryContentOpen || miniView === "report" || miniView === "paymentHistory" ? "pb-4 lg:pb-8" : "pb-24 lg:pb-8"}`}>
             {isSwitching ? (
               <div className="flex h-full items-center justify-center text-sm text-slate-400">
                 Loading...
@@ -21629,7 +23662,7 @@ if (showSplash) {
                         <h3 className="text-2xl font-black text-slate-950">Payments</h3>
                         {isPendingPaymentBill ? (
                           <div className="rounded-[22px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-black text-amber-800">
-                            Payment queued - paid locally. Sync pending.
+                            Payment completed. Inventory sync pending.
                           </div>
                         ) : null}
                         <div className="rounded-[28px] bg-white p-5 shadow-sm ring-1 ring-slate-100">
