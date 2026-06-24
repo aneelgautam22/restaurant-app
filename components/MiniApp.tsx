@@ -15755,7 +15755,8 @@ function renderDashboardView() {
           )}
         </div>
 
-        {renderPaymentSyncStatusBox()}
+        {/* Dashboard only shows sync UI when action is needed; full sync controls live in Order/Billing. */}
+        {paymentSyncSummary.total > 0 ? renderPaymentSyncStatusBox() : null}
 
         {inventoryEnabled && showDashboardLowStockModal && (
           <div className="fixed inset-0 z-[9998] flex items-end justify-center bg-slate-950/45 px-3 pb-3 backdrop-blur-sm">
