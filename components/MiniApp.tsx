@@ -11224,7 +11224,7 @@ showToast("Menu item added", "success");
     return todaySalesOrders.reduce((sum, order) => {
       const qty =
         order.order_items?.reduce(
-          (itemSum, item) => itemSum + Number(item.quantity || 0),
+          (itemSum, item) => item.voided === true ? itemSum : itemSum + Number(item.quantity || 0),
           0
         ) || 0;
       return sum + qty;
@@ -11579,7 +11579,7 @@ showToast("Menu item added", "success");
   const occupiedTableNumbers = useMemo(() => {
     return new Set(
       orders
-        .filter((order) => order.is_paid !== true && order.sync_status !== "pending_payment")
+        .filter((order) => !isOrderCancelled(order) && order.is_paid !== true && order.sync_status !== "pending_payment")
         .map((order) => String(order.table_number || "").trim())
         .filter(Boolean)
     );
@@ -11927,6 +11927,48 @@ const todayPaymentBreakdown = useMemo(() => {
     );
   }, [orders]);
 
+  const paymentHistoryOrders = useMemo(() => {
+    const historyById = new Map<string, OrderRow>();
+
+    orders
+      .filter((order) => order.is_paid === true || isOrderCancelled(order))
+      .forEach((order) => {
+        const id = getOrderStableKey(order);
+        const existing = historyById.get(id);
+        const nextTime = new Date(
+          order.is_paid === true
+            ? order.paid_at || order.created_at || 0
+            : order.cancelled_at || order.created_at || 0
+        ).getTime();
+
+        if (!existing) {
+          historyById.set(id, order);
+          return;
+        }
+
+        const existingTime = new Date(
+          existing.is_paid === true
+            ? existing.paid_at || existing.created_at || 0
+            : existing.cancelled_at || existing.created_at || 0
+        ).getTime();
+        if (nextTime >= existingTime) historyById.set(id, order);
+      });
+
+    return Array.from(historyById.values()).sort((a, b) => {
+      const aTime = new Date(
+        a.is_paid === true
+          ? a.paid_at || a.created_at || 0
+          : a.cancelled_at || a.created_at || 0
+      ).getTime();
+      const bTime = new Date(
+        b.is_paid === true
+          ? b.paid_at || b.created_at || 0
+          : b.cancelled_at || b.created_at || 0
+      ).getTime();
+      return bTime - aTime;
+    });
+  }, [orders]);
+
   const reportPaidOrders = useMemo(() => {
     return paidOrders.filter(
       (order) =>
@@ -12105,6 +12147,7 @@ const todayPaymentBreakdown = useMemo(() => {
       }
 
       order.order_items?.forEach((item) => {
+        if (item.voided === true) return;
         const quantity = Number(item.quantity || 0);
         const unitPrice = Number(item.unit_price || 0);
         const lineTotal = quantity * unitPrice;
@@ -12200,6 +12243,7 @@ const todayPaymentBreakdown = useMemo(() => {
       }
 
       order.order_items?.forEach((item) => {
+        if (item.voided === true) return;
         const quantity = Number(item.quantity || 0);
         const unitPrice = Number(item.unit_price || 0);
         const lineTotal = quantity * unitPrice;
@@ -13997,12 +14041,16 @@ async function retryPendingPaymentSync(order: OrderRow) {
     selectedSalesOrders.forEach((order) => {
       const method = order.payment_method === "qr" || order.payment_method === "card" ? order.payment_method : "cash";
       paymentTotals[method] += getOrderAmount(order);
-      totalItemsSold += (order.order_items || []).reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+      totalItemsSold += (order.order_items || []).reduce(
+        (sum, item) => item.voided === true ? sum : sum + Number(item.quantity || 0),
+        0
+      );
     });
 
     const itemMap: Record<string, SalesItem> = {};
     selectedSalesOrders.forEach((order) => {
       order.order_items?.forEach((item) => {
+        if (item.voided === true) return;
         if (!itemMap[item.item_name]) {
           itemMap[item.item_name] = { item_name: item.item_name, total_quantity: 0, total_revenue: 0 };
         }
@@ -18117,11 +18165,58 @@ function renderBillingView() {
         )}
 
         <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm">
-          {paidOrders.length === 0 ? (
-            <p className="text-sm text-slate-500">No paid orders yet.</p>
+          {paymentHistoryOrders.length === 0 ? (
+            <p className="text-sm text-slate-500">No paid or cancelled orders yet.</p>
           ) : (
             <div className="grid grid-cols-2 gap-3">
-              {paidOrders.map((order) => {
+              {paymentHistoryOrders.map((order) => {
+                const cancelled = isOrderCancelled(order);
+
+                if (cancelled) {
+                  return (
+                    <div
+                      key={getOrderRenderKey(order)}
+                      className="rounded-[18px] border border-rose-200 bg-rose-50 p-3 text-left space-y-2"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-bold text-slate-900">
+                            Table {order.table_number}
+                          </p>
+                          <p className="text-[11px] text-slate-500">Audit record</p>
+                        </div>
+
+                        <span className="shrink-0 rounded-full bg-rose-100 px-2 py-1 text-[10px] font-semibold text-rose-700">
+                          🔴 Cancelled
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-2 border-t border-rose-100 pt-2">
+                        <div className="rounded-xl bg-white p-2">
+                          <p className="text-[10px] text-slate-500">Order Time</p>
+                          <p className="text-[11px] font-semibold text-slate-900">
+                            {order.created_at ? new Date(order.created_at).toLocaleString() : "-"}
+                          </p>
+                        </div>
+
+                        <div className="rounded-xl bg-white p-2">
+                          <p className="text-[10px] text-slate-500">Cancelled Time</p>
+                          <p className="text-[11px] font-semibold text-slate-900">
+                            {order.cancelled_at ? new Date(order.cancelled_at).toLocaleString() : "-"}
+                          </p>
+                        </div>
+
+                        <div className="rounded-xl bg-white p-2">
+                          <p className="text-[10px] text-slate-500">Cancel Reason</p>
+                          <p className="text-[11px] font-semibold text-slate-900">
+                            {order.cancel_reason?.trim() || "No reason provided"}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
                 const itemSubtotal = (order.order_items || []).reduce(
                   (sum, item) => sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
                   0
@@ -18178,7 +18273,7 @@ function renderBillingView() {
                       </div>
 
                       <span className="shrink-0 rounded-full bg-green-100 px-2 py-1 text-[10px] font-semibold text-green-700">
-                        Paid
+                        🟢 Paid
                       </span>
                     </div>
 
