@@ -55,7 +55,7 @@ function HomePageContent() {
 
     const { data, error } = await supabase
       .from("restaurants")
-      .select("*")
+      .select("id, name, app_type")
       .eq("id", Number(finalRestaurantId))
       .single();
 

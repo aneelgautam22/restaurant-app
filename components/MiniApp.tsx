@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import AppSplash from "@/components/AppSplash";
+import ManageUtilities from "@/components/ManageUtilities";
+import { getHeaderDateLabels } from "@/lib/header-calendar";
 import { QRCodeCanvas } from "qrcode.react";
 import jsPDF from "jspdf";
 import { miniDB } from "@/lib/mini-db";
@@ -130,6 +132,11 @@ type OrderItem = {
   unit_price?: number | null;
   status?: string | null;
   menu_item_variant_id?: number | null;
+  kot_printed?: boolean | null;
+  kot_printed_at?: string | null;
+  voided?: boolean | null;
+  voided_at?: string | null;
+  void_reason?: string | null;
 };
 
 type OrderRow = {
@@ -153,6 +160,9 @@ type OrderRow = {
   grand_total?: number | null;
   remarks?: string | null;
   inventory_deducted?: boolean | null;
+  cancelled?: boolean | null;
+  cancelled_at?: string | null;
+  cancel_reason?: string | null;
   sync_status?: "synced" | "pending_create" | "pending_update" | "pending_payment" | "pending_delete";
   order_items?: OrderItem[];
 };
@@ -218,6 +228,9 @@ type GroupedTableOrder = {
     quantity: number;
     total: number;
     status: KitchenStatusKey;
+    order_item_ids?: number[];
+    kot_printed?: boolean;
+    kot_printed_at?: string | null;
   }[];
   total: number;
   unpaid_orders_count: number;
@@ -235,6 +248,9 @@ type BillReceiptTable = {
     quantity: number;
     total: number;
     statuses: string[];
+    order_item_ids?: number[];
+    kot_printed?: boolean;
+    kot_printed_at?: string | null;
   }[];
   total: number;
   subtotal?: number;
@@ -428,6 +444,9 @@ type LocalOrderRow = {
   grand_total?: number | null;
   remarks?: string | null;
   inventory_deducted?: boolean | null;
+  cancelled?: boolean | null;
+  cancelled_at?: string | null;
+  cancel_reason?: string | null;
   sync_status?: "synced" | "pending_create" | "pending_update" | "pending_payment" | "pending_delete";
 };
 
@@ -443,6 +462,11 @@ type LocalOrderItemRow = {
   unit_price?: number | null;
   status?: string | null;
   menu_item_variant_id?: number | null;
+  kot_printed?: boolean | null;
+  kot_printed_at?: string | null;
+  voided?: boolean | null;
+  voided_at?: string | null;
+  void_reason?: string | null;
   created_at?: string;
   updated_at?: string;
   sync_status?: "synced" | "pending_create" | "pending_update" | "pending_delete";
@@ -745,6 +769,7 @@ export default function MiniApp({
 
   const [restaurantName, setRestaurantName] = useState("");
   const [restaurantLogoUrl, setRestaurantLogoUrl] = useState("");
+  const headerDateLabels = useMemo(() => getHeaderDateLabels(), []);
   const [restaurantLogoFile, setRestaurantLogoFile] = useState<File | null>(null);
   const [restaurantLogoPreview, setRestaurantLogoPreview] = useState<string | null>(null);
   const [savingRestaurantLogo, setSavingRestaurantLogo] = useState(false);
@@ -2386,7 +2411,12 @@ async function uploadRestaurantLogoImage(file: File) {
             quantity,
             unit_price,
             menu_item_id,
-            menu_item_variant_id
+            menu_item_variant_id,
+            kot_printed,
+            kot_printed_at,
+            voided,
+            voided_at,
+            void_reason
           )
         `
         )
@@ -3958,6 +3988,25 @@ async function runInventoryDeductionAndCostLock(
     return false;
   }
 
+  if (!inventoryEnabled) {
+    if (isOnline) {
+      const { error } = await supabase
+        .from("orders")
+        .update({ inventory_deducted: true })
+        .eq("id", remoteOrderId)
+        .eq("restaurant_id", restaurantId);
+
+      if (error) {
+        if (options.throwOnError) throw error;
+        console.warn("Inventory-off payment cleanup failed:", error);
+        return false;
+      }
+    }
+
+    await markLocalPaymentInventorySynced(remoteOrderId, options.localOrderId || null);
+    return true;
+  }
+
   if (!isOnline) {
     if (options.throwOnError) throw new Error("Offline: inventory deduction will retry when online");
     return false;
@@ -4131,35 +4180,38 @@ async function syncPaymentForLocalOrder(localOrder: LocalOrderRow) {
         ? localOrder.payment_method
         : "cash";
 
-    // Totals must be stored before marking paid to avoid paid orders with stale revenue.
-    const { error: paymentBreakdownUpdateError } = await supabase
-      .from("orders")
-      .update({
-        subtotal: Number(localOrder.subtotal || 0),
-        discount_enabled: Boolean(localOrder.discount_enabled),
-        discount_percent: Number(localOrder.discount_percent || 0),
-        discount_amount: Number(localOrder.discount_amount || 0),
-        tax_enabled: Boolean(localOrder.tax_enabled),
-        tax_percent: Number(localOrder.tax_percent || 0),
-        tax_amount: Number(localOrder.tax_amount || 0),
-        grand_total: Number(localOrder.grand_total || 0),
-      })
-      .eq("id", remoteOrderId)
-      .eq("restaurant_id", restaurantId);
-
-    if (paymentBreakdownUpdateError) throw paymentBreakdownUpdateError;
-
     const { data, error } = await supabase.rpc("mark_order_paid_fast", {
       p_order_id: remoteOrderId,
       p_payment_method: paymentMethod,
+      p_subtotal: Number(localOrder.subtotal || 0),
+      p_discount_enabled: Boolean(localOrder.discount_enabled),
+      p_discount_percent: Number(localOrder.discount_percent || 0),
+      p_discount_amount: Number(localOrder.discount_amount || 0),
+      p_tax_enabled: Boolean(localOrder.tax_enabled),
+      p_tax_percent: Number(localOrder.tax_percent || 0),
+      p_tax_amount: Number(localOrder.tax_amount || 0),
+      p_grand_total: Number(localOrder.grand_total || 0),
     });
 
     if (error) throw error;
 
-    const result = data as { success?: boolean; message?: string };
+    const result = data as {
+      success?: boolean;
+      message?: string;
+      payment_method?: string | null;
+      paid_at?: string | null;
+    };
+    const alreadyPaid = String(result?.message || "").toLowerCase().includes("already paid");
+    const actualPaymentMethod =
+      alreadyPaid && (result?.payment_method === "qr" || result?.payment_method === "card" || result?.payment_method === "cash")
+        ? result.payment_method
+        : paymentMethod;
+    const actualPaidAt =
+      alreadyPaid && result?.paid_at
+        ? result.paid_at
+        : localOrder.paid_at || new Date().toISOString();
 
     if (!result?.success) {
-      const alreadyPaid = String(result?.message || "").toLowerCase().includes("already paid");
       if (!alreadyPaid) {
         throw new Error(result?.message || "Payment sync failed");
       }
@@ -4175,8 +4227,8 @@ async function syncPaymentForLocalOrder(localOrder: LocalOrderRow) {
     await localOrdersTable.update(localOrder.id, {
       server_id: remoteOrderId,
       is_paid: true,
-      payment_method: paymentMethod,
-      paid_at: localOrder.paid_at || new Date().toISOString(),
+      payment_method: actualPaymentMethod,
+      paid_at: actualPaidAt,
       updated_at: new Date().toISOString(),
       sync_status: "synced",
     });
@@ -4209,6 +4261,8 @@ async function syncPendingOrders() {
 
     for (const localOrder of localOrders) {
       const syncStatus = localOrder.sync_status || "synced";
+      if (isOrderCancelled(localOrder)) continue;
+
       const needsInventoryRetry =
         localOrder.is_paid === true && localOrder.inventory_deducted !== true;
 
@@ -4301,6 +4355,7 @@ async function syncPendingOrders() {
         .toArray();
       const hasRemainingPaymentQueue = remainingLocalOrders.some((order) => {
         const status = order.sync_status || "synced";
+        if (isOrderCancelled(order)) return false;
         return status === "pending_payment" || status === "pending_create" || (order.is_paid === true && order.inventory_deducted !== true);
       });
 
@@ -4332,7 +4387,7 @@ async function refreshPendingPaymentQueue() {
       .toArray();
 
     const pendingLocalOrdersBeforeCleanup = localOrders.filter(
-      (order) => order.sync_status === "pending_payment" && order.inventory_deducted !== true
+      (order) => !isOrderCancelled(order) && order.sync_status === "pending_payment" && order.inventory_deducted !== true
     );
 
     const cleanupIds = new Set<number>();
@@ -4479,6 +4534,11 @@ async function submitTakeOrder() {
     // Existing ready/preparing items stay untouched and remain inside the same customer bill.
     status: "pending",
     menu_item_variant_id: item.variant_id ?? null,
+    kot_printed: false,
+    kot_printed_at: null,
+    voided: false,
+    voided_at: null,
+    void_reason: null,
   }));
 
   const optimisticOrder: OrderRow = {
@@ -4492,6 +4552,9 @@ async function submitTakeOrder() {
     is_paid: false,
     payment_method: null,
     paid_at: null,
+    cancelled: false,
+    cancelled_at: null,
+    cancel_reason: null,
     remarks: takeOrderRemarks || null,
     order_items: editingOrderId ? [...(existingEditingOrder?.order_items || []), ...itemRows] : itemRows,
   };
@@ -4599,6 +4662,9 @@ async function submitTakeOrder() {
         is_paid: false,
         payment_method: null,
         paid_at: null,
+        cancelled: false,
+        cancelled_at: null,
+        cancel_reason: null,
         updated_at: now,
         sync_status: existingLocalOrder.server_id ? "pending_update" : "pending_create",
       });
@@ -4618,6 +4684,9 @@ async function submitTakeOrder() {
         is_paid: false,
         payment_method: null,
         paid_at: null,
+        cancelled: false,
+        cancelled_at: null,
+        cancel_reason: null,
         created_at: now,
         updated_at: now,
         sync_status: "pending_create",
@@ -4636,6 +4705,11 @@ async function submitTakeOrder() {
           unit_price: item.price,
           status: "pending",
           menu_item_variant_id: item.variant_id ?? null,
+          kot_printed: false,
+          kot_printed_at: null,
+          voided: false,
+          voided_at: null,
+          void_reason: null,
           created_at: now,
           updated_at: now,
           sync_status: existingLocalOrder?.server_id ? "pending_update" : "pending_create",
@@ -4677,6 +4751,9 @@ async function submitTakeOrder() {
         is_paid: false,
         payment_method: null,
         paid_at: null,
+        cancelled: false,
+        cancelled_at: null,
+        cancel_reason: null,
         created_at: now,
         updated_at: now,
         sync_status: "pending_create",
@@ -4693,6 +4770,11 @@ async function submitTakeOrder() {
           unit_price: item.price,
           status: "pending",
           menu_item_variant_id: item.variant_id ?? null,
+          kot_printed: false,
+          kot_printed_at: null,
+          voided: false,
+          voided_at: null,
+          void_reason: null,
           created_at: now,
           updated_at: now,
           sync_status: "pending_create" as const,
@@ -4751,7 +4833,7 @@ async function submitTakeOrder() {
             .update(orderPayload)
             .eq("id", remoteOrderId)
             .eq("restaurant_id", restaurantId)
-            .select("id, client_create_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, remarks, inventory_deducted")
+            .select("id, client_create_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, remarks, inventory_deducted, cancelled, cancelled_at, cancel_reason")
             .maybeSingle();
 
           if (updateOrderError) throw updateOrderError;
@@ -4767,7 +4849,7 @@ async function submitTakeOrder() {
           const { data: insertedOrder, error: insertOrderError } = await supabase
             .from("orders")
             .insert([orderPayload])
-            .select("id, client_create_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, remarks, inventory_deducted")
+            .select("id, client_create_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, remarks, inventory_deducted, cancelled, cancelled_at, cancel_reason")
             .single();
 
           if (insertOrderError || !insertedOrder) {
@@ -4776,7 +4858,7 @@ async function submitTakeOrder() {
               // recover server_id and continue item sync.
               const { data: recoveredOrder, error: recoveredOrderError } = await supabase
                 .from("orders")
-                .select("id, client_create_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, remarks, inventory_deducted")
+                .select("id, client_create_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, remarks, inventory_deducted, cancelled, cancelled_at, cancel_reason")
                 .eq("restaurant_id", restaurantId)
                 .eq("client_create_id", clientCreateId)
                 .maybeSingle();
@@ -4815,12 +4897,17 @@ async function submitTakeOrder() {
           unit_price: item.price,
           status: "pending",
           menu_item_variant_id: item.variant_id ?? null,
+          kot_printed: false,
+          kot_printed_at: null,
+          voided: false,
+          voided_at: null,
+          void_reason: null,
         }));
 
         const { data: insertedItems, error: insertItemsError } = await supabase
           .from("order_items")
           .insert(itemPayload)
-          .select("id, client_item_id, item_name, menu_item_id, quantity, unit_price, status, menu_item_variant_id");
+          .select("id, client_item_id, item_name, menu_item_id, quantity, unit_price, status, menu_item_variant_id, kot_printed, kot_printed_at, voided, voided_at, void_reason");
 
         if (insertItemsError) throw insertItemsError;
 
@@ -4997,9 +5084,14 @@ async function submitTakeOrder() {
       return;
     }
 
-    const currentStatus = getOrderDisplayStatus(targetOrder);
-    if (currentStatus === "ready") {
-      showToast("Ready bhayeko order cancel garna mildaina", "error");
+    if (isOrderCancelled(targetOrder)) {
+      showToast("Order already cancelled", "info");
+      return;
+    }
+
+    const reason = window.prompt(`Cancel order for table ${targetOrder.table_number}? Reason required:`)?.trim();
+    if (!reason) {
+      showToast("Cancel reason required", "error");
       return;
     }
 
@@ -5007,50 +5099,28 @@ async function submitTakeOrder() {
     if (!confirmCancel) return;
 
     try {
+      const cancelledAt = new Date().toISOString();
       const localOrder = await getLocalOrderForUiOrder(targetOrder);
       const remoteOrderId = Number(localOrder?.server_id || targetOrder.server_id || 0);
       const hasConfirmedRemoteOrder = Number.isFinite(remoteOrderId) && remoteOrderId > 0;
 
       if (isOnline && hasConfirmedRemoteOrder) {
-        // Do not delete remote items before confirmed order delete; otherwise
-        // a failed cancel can leave a ghost empty order.
-        const { error: deleteOrderError, count: deletedOrderCount } = await supabase
-          .from("orders")
-          .delete({ count: "exact" })
-          .eq("id", remoteOrderId)
-          .eq("restaurant_id", restaurantId);
+        const { error } = await supabase.rpc("cancel_unpaid_order", {
+          p_restaurant_id: Number(restaurantId),
+          p_order_id: remoteOrderId,
+          p_reason: reason,
+        });
 
-        if (deleteOrderError) throw deleteOrderError;
-        if ((deletedOrderCount || 0) !== 1) {
-          throw new Error("Order cancel failed. Please retry.");
-        }
-
-        const { error: deleteItemsError } = await supabase
-          .from("order_items")
-          .delete()
-          .eq("order_id", remoteOrderId);
-
-        if (deleteItemsError) {
-          console.warn("Remote order cancelled but stale item cleanup failed:", deleteItemsError);
-        }
+        if (error) throw error;
 
         if (localOrder?.id) {
-          // Order and item cache writes must be atomic to prevent partial local state.
-          await miniDB.transaction("rw", localOrdersTable, localOrderItemsTable, async () => {
-          const localItems = await localOrderItemsTable
-            .where("local_order_id")
-            .equals(localOrder.id!)
-            .toArray();
-
-          if (localItems.length) {
-            await localOrderItemsTable.bulkDelete(
-              localItems
-                .map((item) => item.id)
-                .filter((id): id is number => typeof id === "number")
-            );
-          }
-
-          await localOrdersTable.delete(localOrder.id!);
+          await localOrdersTable.update(localOrder.id, {
+            status: "cancelled",
+            cancelled: true,
+            cancelled_at: cancelledAt,
+            cancel_reason: reason,
+            updated_at: cancelledAt,
+            sync_status: "synced",
           });
         }
       } else if (!hasConfirmedRemoteOrder) {
@@ -5058,22 +5128,13 @@ async function submitTakeOrder() {
           throw new Error("Local order not found");
         }
 
-        // Order and item cache writes must be atomic to prevent partial local state.
-        await miniDB.transaction("rw", localOrdersTable, localOrderItemsTable, async () => {
-        const localItems = await localOrderItemsTable
-          .where("local_order_id")
-          .equals(localOrder.id!)
-          .toArray();
-
-        if (localItems.length) {
-          await localOrderItemsTable.bulkDelete(
-            localItems
-              .map((item) => item.id)
-              .filter((id): id is number => typeof id === "number")
-          );
-        }
-
-        await localOrdersTable.delete(localOrder.id!);
+        await localOrdersTable.update(localOrder.id, {
+          status: "cancelled",
+          cancelled: true,
+          cancelled_at: cancelledAt,
+          cancel_reason: reason,
+          updated_at: cancelledAt,
+          sync_status: "synced",
         });
       } else {
         showToast("Saved remote order offline cancel garna mildaina", "error");
@@ -5085,11 +5146,24 @@ async function submitTakeOrder() {
         setShowTakeOrderModal(false);
       }
 
-      await fetchOrders();
+      setOrders((prev) => prev.filter((order) => getOrderStableKey(order) !== getOrderStableKey(targetOrder)));
+      if (selectedTableOrderId === getOrderStableKey(targetOrder)) {
+        setSelectedTableOrderId(null);
+      }
+      if (reportOrder && getOrderStableKey(reportOrder) === getOrderStableKey(targetOrder)) {
+        setReportOrder(null);
+      }
+      if (selectedPaidOrder && getOrderStableKey(selectedPaidOrder) === getOrderStableKey(targetOrder)) {
+        setSelectedPaidOrder(null);
+      }
+
+      if (isOnline) {
+        fetchOrders().catch((refreshError) => console.warn("Post-cancel order refresh failed:", refreshError));
+      }
       showToast(isOnline ? "Order cancelled" : "Order cancelled offline", "success");
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error("handleCancelOrder failed:", error);
-      showToast(error?.message || "Failed to cancel order", "error");
+      showToast(getReadableError(error) || "Failed to cancel order", "error");
     }
   }
 
@@ -5120,9 +5194,110 @@ async function submitTakeOrder() {
   function getOrderTotal(order: OrderRow | null) {
     if (!order) return 0;
     return (order.order_items || []).reduce(
-      (sum, item) => sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
+      (sum, item) =>
+        item.voided === true
+          ? sum
+          : sum + Number(item.quantity || 0) * Number(item.unit_price || 0),
       0
     );
+  }
+
+  async function voidOrderItemBeforePayment(order: OrderRow, item: OrderItem) {
+    if (!restaurantId) {
+      showToast("Invalid restaurant link", "error");
+      return;
+    }
+
+    if (order.is_paid === true || order.sync_status === "pending_payment") {
+      showToast("Paid or syncing bill item void garna mildaina", "error");
+      return;
+    }
+
+    if (item.voided === true) {
+      showToast("Item already voided", "info");
+      return;
+    }
+
+    const reason = window.prompt(`Void ${item.item_name}? Reason required:`)?.trim();
+    if (!reason) {
+      showToast("Void reason required", "error");
+      return;
+    }
+
+    const confirmVoid = await askConfirm(`Void ${item.item_name}?`, "Void item", "Cancel");
+    if (!confirmVoid) return;
+
+    const voidedAt = new Date().toISOString();
+    const itemId = Number(item.id);
+    const orderId = Number(order.id);
+
+    try {
+      const localOrders = await localOrdersTable
+        .where("restaurant_id")
+        .equals(restaurantId)
+        .toArray();
+      const localOrder =
+        localOrders.find((entry) => Number(entry.server_id || 0) === orderId) ||
+        localOrders.find((entry) => Number(entry.id || 0) === orderId);
+      const localItems = localOrder?.id
+        ? await localOrderItemsTable.where("local_order_id").equals(localOrder.id).toArray()
+        : [];
+      const localItem =
+        localItems.find((entry) => Number(entry.server_id || 0) === itemId) ||
+        localItems.find((entry) => Number(entry.id || 0) === itemId);
+      const remoteOrderId = Number(localOrder?.server_id || order.server_id || order.id || 0);
+      const remoteItemId = Number(localItem?.server_id || item.id || 0);
+      const hasRemoteItem =
+        Number.isFinite(remoteOrderId) &&
+        remoteOrderId > 0 &&
+        Number.isFinite(remoteItemId) &&
+        remoteItemId > 0 &&
+        isOnline;
+
+      if (hasRemoteItem) {
+        const { error } = await supabase.rpc("void_order_item_before_payment", {
+          p_restaurant_id: Number(restaurantId),
+          p_order_id: remoteOrderId,
+          p_order_item_id: remoteItemId,
+          p_reason: reason,
+        });
+
+        if (error) throw error;
+      } else if (Number(localOrder?.server_id || order.server_id || 0) > 0 && !isOnline) {
+        showToast("Saved order item void garna internet chaincha", "error");
+        return;
+      }
+
+      setOrders((prev) =>
+        prev.map((entry) =>
+          getOrderStableKey(entry) === getOrderStableKey(order)
+            ? {
+                ...entry,
+                order_items: (entry.order_items || []).map((entryItem) =>
+                  Number(entryItem.id) === itemId
+                    ? { ...entryItem, voided: true, voided_at: voidedAt, void_reason: reason }
+                    : entryItem
+                ),
+              }
+            : entry
+        )
+      );
+
+      if (localItem?.id) {
+        await localOrderItemsTable.update(localItem.id, {
+          voided: true,
+          voided_at: voidedAt,
+          void_reason: reason,
+          updated_at: voidedAt,
+        });
+      }
+
+      showToast("Item voided", "success");
+      if (isOnline) scheduleOrdersRefresh(300);
+    } catch (error) {
+      console.error("voidOrderItemBeforePayment failed:", error);
+      showToast(getReadableError(error) || "Failed to void item", "error");
+    }
   }
 
   function getOrderFinalTotal(order: OrderRow | null) {
@@ -5387,9 +5562,13 @@ async function submitTakeOrder() {
       quantity: Number(item.quantity || 0),
       total: Number(item.quantity || 0) * Number(item.unit_price || 0),
       statuses: [item.status || order.status || "pending"],
+      order_item_ids: Number.isFinite(Number(item.id)) ? [Number(item.id)] : [],
+      kot_printed: item.kot_printed === true,
+      kot_printed_at: item.kot_printed_at || null,
     }));
 
-    const rawSubtotal = items.reduce((sum, item) => sum + Number(item.total || 0), 0);
+    const activeItems = items.filter((_, index) => (order.order_items || [])[index]?.voided !== true);
+    const rawSubtotal = activeItems.reduce((sum, item) => sum + Number(item.total || 0), 0);
     const subtotal = Number(order.subtotal || rawSubtotal);
     const discountAmount = Number(order.discount_amount || 0);
     const taxAmount = Number(order.tax_amount || 0);
@@ -5399,7 +5578,7 @@ async function submitTakeOrder() {
       table_number: String(order.table_number || ""),
       order_ids: [order.id],
       remarks: order.remarks && order.remarks.trim() ? [order.remarks.trim()] : [],
-      items,
+      items: activeItems,
       total: rawSubtotal,
       subtotal,
       discount_enabled: Boolean(order.discount_enabled),
@@ -5425,12 +5604,39 @@ async function submitTakeOrder() {
       )
       .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
 
-    const items = table.items.map((item) => ({
-      item_name: item.item_name,
-      quantity: Number(item.quantity || 0),
-      total: Number(item.total || 0),
-      statuses: [item.status || table.table_status || "pending"],
-    }));
+    const kotItemMap = new Map<string, BillReceiptTable["items"][number]>();
+
+    sourceOrders.forEach((order) => {
+      (order.order_items || []).forEach((item) => {
+        if (item.voided === true) return;
+        const status = item.status || order.status || "pending";
+        const printed = item.kot_printed === true;
+        const key = `${item.item_name}::${status}::${printed ? "printed" : "new"}`;
+        const quantity = Number(item.quantity || 0);
+        const total = quantity * Number(item.unit_price || 0);
+        const existing = kotItemMap.get(key);
+        const itemId = Number(item.id);
+
+        if (existing) {
+          existing.quantity += quantity;
+          existing.total += total;
+          if (Number.isFinite(itemId)) existing.order_item_ids = [...(existing.order_item_ids || []), itemId];
+          return;
+        }
+
+        kotItemMap.set(key, {
+          item_name: item.item_name,
+          quantity,
+          total,
+          statuses: [status],
+          order_item_ids: Number.isFinite(itemId) ? [itemId] : [],
+          kot_printed: printed,
+          kot_printed_at: item.kot_printed_at || null,
+        });
+      });
+    });
+
+    const items = Array.from(kotItemMap.values());
 
     return {
       table_number: String(table.table_number || ""),
@@ -5449,7 +5655,7 @@ async function submitTakeOrder() {
   }
 
   function getActiveKotItems(items: BillReceiptTable["items"]) {
-    return items.filter((item) => !isReadyReceiptItem(item));
+    return items.filter((item) => !isReadyReceiptItem(item) && item.kot_printed !== true);
   }
 
   function getReadyKotItems(items: BillReceiptTable["items"]) {
@@ -5466,6 +5672,68 @@ async function submitTakeOrder() {
       items: activeItems,
       total: activeItems.reduce((sum, item) => sum + Number(item.total || 0), 0),
     };
+  }
+
+  async function markKotItemsPrinted(table: BillReceiptTable) {
+    const itemIds = Array.from(
+      new Set(
+        table.items
+          .flatMap((item) => item.order_item_ids || [])
+          .map((id) => Number(id))
+          .filter((id) => Number.isFinite(id) && id > 0)
+      )
+    );
+
+    if (itemIds.length === 0) return;
+
+    const printedAt = new Date().toISOString();
+    const itemIdSet = new Set(itemIds);
+
+    setOrders((prev) =>
+      prev.map((order) => ({
+        ...order,
+        order_items: (order.order_items || []).map((item) =>
+          itemIdSet.has(Number(item.id))
+            ? { ...item, kot_printed: true, kot_printed_at: printedAt }
+            : item
+        ),
+      }))
+    );
+
+    setSelectedKitchenKotTable((current) =>
+      current
+        ? {
+            ...current,
+            items: current.items.map((item) =>
+              (item.order_item_ids || []).some((id) => itemIdSet.has(Number(id)))
+                ? { ...item, kot_printed: true, kot_printed_at: printedAt }
+                : item
+            ),
+          }
+        : current
+    );
+
+    const localItems = await localOrderItemsTable.toArray();
+    await Promise.all(
+      localItems
+        .filter((item) => itemIdSet.has(Number(item.id)) || itemIdSet.has(Number(item.server_id)))
+        .map((item) =>
+          localOrderItemsTable.update(item.id!, {
+            kot_printed: true,
+            kot_printed_at: printedAt,
+            updated_at: printedAt,
+          })
+        )
+    );
+
+    if (isOnline) {
+      const { error } = await supabase
+        .from("order_items")
+        .update({ kot_printed: true, kot_printed_at: printedAt })
+        .in("id", itemIds);
+
+      if (error) throw error;
+    }
   }
 
   const reportOrderBillTable = useMemo(() => convertOrderToBillReceipt(reportOrder), [reportOrder]);
@@ -5919,13 +6187,21 @@ async function submitTakeOrder() {
     const printableTable = getPrintableBillTable(table, type);
 
     if (type === "kot" && printableTable.items.length === 0) {
-      showToast("New KOT item छैन. Ready items print हुँदैनन्.", "info");
+      showToast("New unprinted KOT item छैन. Ready/printed items print हुँदैनन्.", "info");
       return;
     }
 
     const printTarget = openPrintWindow(printableTable, type, true);
     if (!printTarget) {
       showToast("Bill print garna milena", "error");
+      return;
+    }
+
+    if (type === "kot") {
+      markKotItemsPrinted(printableTable).catch((error) => {
+        console.error("Failed to mark KOT items printed:", error);
+        showToast("KOT print भयो, तर printed state save भएन", "error");
+      });
     }
   }
   function loadImageForPdf(src: string) {
@@ -6511,11 +6787,17 @@ function shouldKeepOrderOnFastScreens(order: OrderRow) {
   const dashboardLikeView = miniView === "dashboard" || miniView === "order" || miniView === "manage";
   if (!dashboardLikeView) return true;
 
+  if (isOrderCancelled(order)) return false;
+
   if (order.is_paid !== true) return true;
 
   const twoDaysAgo = addDays(startOfDay(new Date()), -2).getTime();
   const createdAt = new Date(order.created_at || 0).getTime();
   return Number.isFinite(createdAt) && createdAt >= twoDaysAgo;
+}
+
+function isOrderCancelled(order: Pick<OrderRow, "cancelled" | "status"> | Pick<LocalOrderRow, "cancelled" | "status"> | null | undefined) {
+  return order?.cancelled === true || String(order?.status || "").toLowerCase() === "cancelled";
 }
 
 function getOrderStableKey(order: OrderRow) {
@@ -6570,9 +6852,12 @@ function dedupeOrdersByStableId(sourceOrders: OrderRow[]): OrderRow[] {
     const inventoryDeducted =
       existing.inventory_deducted === true || order.inventory_deducted === true;
     const isPaid = existing.is_paid === true || order.is_paid === true;
+    const cancelled = isOrderCancelled(existing) || isOrderCancelled(order);
     let syncStatus = betterOrder.sync_status;
 
-    if (isPaid && !inventoryDeducted) {
+    if (cancelled) {
+      syncStatus = "synced";
+    } else if (isPaid && !inventoryDeducted) {
       syncStatus = "pending_payment";
     } else if (
       inventoryDeducted &&
@@ -6587,6 +6872,10 @@ function dedupeOrdersByStableId(sourceOrders: OrderRow[]): OrderRow[] {
       ...betterOrder,
       is_paid: isPaid,
       inventory_deducted: inventoryDeducted,
+      cancelled,
+      cancelled_at: betterOrder.cancelled_at || otherOrder.cancelled_at || null,
+      cancel_reason: betterOrder.cancel_reason || otherOrder.cancel_reason || null,
+      status: cancelled ? "cancelled" : betterOrder.status,
       sync_status: syncStatus,
     });
   });
@@ -6651,7 +6940,9 @@ async function cacheRemoteOrderLocally(order: OrderRow) {
     const hasUnsyncedLocalItems =
       existingSyncStatus === "pending_create" || existingSyncStatus === "pending_update";
     const nextSyncStatus =
-      order.is_paid === true
+      isOrderCancelled(order)
+        ? "synced"
+        : order.is_paid === true
         ? remoteInventoryDeducted
           ? "synced"
           : "pending_payment"
@@ -6676,6 +6967,9 @@ async function cacheRemoteOrderLocally(order: OrderRow) {
       is_paid: order.is_paid ?? false,
       payment_method: order.payment_method || null,
       paid_at: order.paid_at || null,
+      cancelled: order.cancelled === true,
+      cancelled_at: order.cancelled_at || null,
+      cancel_reason: order.cancel_reason || null,
       subtotal: order.subtotal ?? null,
       discount_enabled: order.discount_enabled ?? false,
       discount_percent: order.discount_percent ?? 0,
@@ -6723,6 +7017,11 @@ async function cacheRemoteOrderLocally(order: OrderRow) {
           unit_price: Number(item.unit_price || 0),
           status: item.status || order.status,
           menu_item_variant_id: item.menu_item_variant_id == null ? null : Number(item.menu_item_variant_id),
+          kot_printed: item.kot_printed === true,
+          kot_printed_at: item.kot_printed_at || null,
+          voided: item.voided === true,
+          voided_at: item.voided_at || null,
+          void_reason: item.void_reason || null,
           created_at: order.created_at,
           updated_at: new Date().toISOString(),
           sync_status: "synced" as const,
@@ -6746,6 +7045,9 @@ async function cacheRemoteOrderLocally(order: OrderRow) {
     is_paid: order.is_paid ?? false,
     payment_method: order.payment_method || null,
     paid_at: order.paid_at || null,
+    cancelled: order.cancelled === true,
+    cancelled_at: order.cancelled_at || null,
+    cancel_reason: order.cancel_reason || null,
     subtotal: order.subtotal ?? null,
     discount_enabled: order.discount_enabled ?? false,
     discount_percent: order.discount_percent ?? 0,
@@ -6778,6 +7080,11 @@ async function cacheRemoteOrderLocally(order: OrderRow) {
         unit_price: Number(item.unit_price || 0),
         status: item.status || order.status,
         menu_item_variant_id: item.menu_item_variant_id == null ? null : Number(item.menu_item_variant_id),
+        kot_printed: item.kot_printed === true,
+        kot_printed_at: item.kot_printed_at || null,
+        voided: item.voided === true,
+        voided_at: item.voided_at || null,
+        void_reason: item.void_reason || null,
         created_at: order.created_at,
         updated_at: new Date().toISOString(),
         sync_status: "synced" as const,
@@ -6797,7 +7104,7 @@ async function fetchSingleRemoteOrder(orderId: number, delayMs = 0) {
   const { data, error } = await supabase
     .from("orders")
     .select(
-      "id, client_create_id, restaurant_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, subtotal, discount_enabled, discount_percent, discount_amount, tax_enabled, tax_percent, tax_amount, grand_total, remarks, inventory_deducted, order_items(id, client_item_id, item_name, menu_item_id, quantity, unit_price, status, menu_item_variant_id)"
+      "id, client_create_id, restaurant_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, subtotal, discount_enabled, discount_percent, discount_amount, tax_enabled, tax_percent, tax_amount, grand_total, remarks, inventory_deducted, cancelled, cancelled_at, cancel_reason, order_items(id, client_item_id, item_name, menu_item_id, quantity, unit_price, status, menu_item_variant_id, kot_printed, kot_printed_at, voided, voided_at, void_reason)"
     )
     .eq("restaurant_id", restaurantId)
     .eq("id", orderId)
@@ -6884,6 +7191,9 @@ async function fetchOrders(options: { fullHistory?: boolean } = {}) {
         status: order.status,
         created_at: order.created_at,
         waiter_cleared: order.waiter_cleared ?? false,
+        cancelled: order.cancelled === true,
+        cancelled_at: order.cancelled_at || null,
+        cancel_reason: order.cancel_reason || null,
         ...copyOrderFinancialFields(order),
         remarks: order.remarks ?? null,
         order_items: localItems
@@ -6897,6 +7207,11 @@ async function fetchOrders(options: { fullHistory?: boolean } = {}) {
             unit_price: Number(item.unit_price || 0),
             status: item.status || order.status,
             menu_item_variant_id: item.menu_item_variant_id == null ? null : Number(item.menu_item_variant_id),
+            kot_printed: item.kot_printed === true,
+            kot_printed_at: item.kot_printed_at || null,
+            voided: item.voided === true,
+            voided_at: item.voided_at || null,
+            void_reason: item.void_reason || null,
           })),
       }));
 
@@ -6912,7 +7227,7 @@ async function fetchOrders(options: { fullHistory?: boolean } = {}) {
   const dashboardCutoff = addDays(startOfDay(new Date()), -2).toISOString();
 
   const ordersSelect =
-    "id, client_create_id, restaurant_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, subtotal, discount_enabled, discount_percent, discount_amount, tax_enabled, tax_percent, tax_amount, grand_total, remarks, inventory_deducted, order_items(id, client_item_id, item_name, menu_item_id, quantity, unit_price, status, menu_item_variant_id)";
+    "id, client_create_id, restaurant_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, subtotal, discount_enabled, discount_percent, discount_amount, tax_enabled, tax_percent, tax_amount, grand_total, remarks, inventory_deducted, cancelled, cancelled_at, cancel_reason, order_items(id, client_item_id, item_name, menu_item_id, quantity, unit_price, status, menu_item_variant_id, kot_printed, kot_printed_at, voided, voided_at, void_reason)";
   let data: OrderRow[] | null = null;
   let error: unknown = null;
 
@@ -7092,6 +7407,11 @@ async function fetchOrders(options: { fullHistory?: boolean } = {}) {
             unit_price: Number(item.unit_price || 0),
             status: item.status || order.status,
             menu_item_variant_id: item.menu_item_variant_id == null ? null : Number(item.menu_item_variant_id),
+            kot_printed: item.kot_printed === true,
+            kot_printed_at: item.kot_printed_at || null,
+            voided: item.voided === true,
+            voided_at: item.voided_at || null,
+            void_reason: item.void_reason || null,
           })),
       };
     })
@@ -7174,6 +7494,9 @@ async function fetchOrders(options: { fullHistory?: boolean } = {}) {
       status: order.status,
       remarks: order.remarks || null,
       waiter_cleared: order.waiter_cleared ?? false,
+      cancelled: order.cancelled === true,
+      cancelled_at: order.cancelled_at || null,
+      cancel_reason: order.cancel_reason || null,
       ...financialFields,
       created_at: order.created_at,
       updated_at: new Date().toISOString(),
@@ -7192,6 +7515,11 @@ async function fetchOrders(options: { fullHistory?: boolean } = {}) {
           unit_price: Number(item.unit_price || 0),
           status: item.status || order.status,
           menu_item_variant_id: item.menu_item_variant_id == null ? null : Number(item.menu_item_variant_id),
+          kot_printed: item.kot_printed === true,
+          kot_printed_at: item.kot_printed_at || null,
+          voided: item.voided === true,
+          voided_at: item.voided_at || null,
+          void_reason: item.void_reason || null,
           created_at: order.created_at,
           updated_at: new Date().toISOString(),
           sync_status: "synced",
@@ -8928,23 +9256,14 @@ async function restockInventoryItem(e: React.FormEvent) {
       throw new Error("Inventory item not found");
     }
 
-    const nextStock = Number(targetItem.current_stock || 0) + quantityToAdd;
     const nextCost =
       restockCostPerUnit === ""
         ? targetItem.cost_per_unit ?? null
         : Number(restockCostPerUnit);
 
-    const { error: updateError } = await supabase
-      .from("inventory_items")
-      .update({
-        current_stock: nextStock,
-        cost_per_unit: nextCost,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", inventoryId)
-      .eq("restaurant_id", restaurantId);
-
-    if (updateError) throw updateError;
+    if (nextCost !== null && (!Number.isFinite(nextCost) || nextCost < 0)) {
+      throw new Error("Valid rate hala");
+    }
 
     const selectedSupplierId = restockSupplierId ? Number(restockSupplierId) : null;
     const selectedSupplierName = selectedSupplierId ? getSupplierNameById(selectedSupplierId) : restockSupplier.trim();
@@ -8961,44 +9280,25 @@ async function restockInventoryItem(e: React.FormEvent) {
       throw new Error("Paid amount total amount bhanda dherai huna mildaina");
     }
 
-    const dueAmount = totalAmount - paidAmount;
+    const transactionNote =
+      selectedSupplierName || cleanNote
+        ? `${selectedSupplierName ? `Supplier: ${selectedSupplierName}` : ""}${
+            selectedSupplierName && cleanNote ? " | " : ""
+          }${cleanNote || `Stock added for ${targetItem.item_name}`}`
+        : `Stock added for ${targetItem.item_name}`;
 
-    const transactionPayload = {
-      restaurant_id: restaurantId,
-      inventory_item_id: inventoryId,
-      transaction_type: "purchase",
-      quantity: quantityToAdd,
-      note:
-        selectedSupplierName || cleanNote
-          ? `${selectedSupplierName ? `Supplier: ${selectedSupplierName}` : ""}${
-              selectedSupplierName && cleanNote ? " | " : ""
-            }${cleanNote || `Stock added for ${targetItem.item_name}`}`
-          : `Stock added for ${targetItem.item_name}`,
-    };
+    const { error } = await supabase.rpc("restock_inventory_item_atomic", {
+      p_restaurant_id: Number(restaurantId),
+      p_inventory_item_id: inventoryId,
+      p_quantity: quantityToAdd,
+      p_cost_per_unit: nextCost,
+      p_transaction_note: transactionNote,
+      p_supplier_id: selectedSupplierId,
+      p_purchase_note: cleanNote || null,
+      p_paid_amount: paidAmount,
+    });
 
-    const { error: txError } = await supabase
-      .from("inventory_transactions")
-      .insert([transactionPayload]);
-
-    if (txError) throw txError;
-
-    if (selectedSupplierId) {
-      const { error: purchaseError } = await supabase.from("supplier_purchases").insert([
-        {
-          restaurant_id: restaurantId,
-          supplier_id: selectedSupplierId,
-          inventory_item_id: inventoryId,
-          quantity: quantityToAdd,
-          unit_cost: effectiveUnitCost,
-          total_amount: totalAmount,
-          paid_amount: paidAmount,
-          due_amount: dueAmount,
-          note: cleanNote || null,
-        },
-      ]);
-
-      if (purchaseError) throw purchaseError;
-    }
+    if (error) throw error;
 
     showToast("Stock added", "success");
     setRestockInventoryItemId("");
@@ -9009,20 +9309,23 @@ async function restockInventoryItem(e: React.FormEvent) {
     setRestockSupplierId("");
     setRestockPaidAmount("");
     await fetchInventoryData();
-  } catch (error: any) {
-    console.error("Failed to restock inventory", {
-      message: error?.message,
-      details: error?.details,
-      hint: error?.hint,
-      code: error?.code,
-      raw: error,
-    });
-    showToast("Failed to add stock", "error");
+  } catch (error: unknown) {
+    const readable = getReadableError(error);
+    console.error("Failed to restock inventory", readable, error);
+
+    if (readable.includes("paid_amount_exceeds_total")) {
+      showToast("Paid amount total amount bhanda dherai huna mildaina", "error");
+    } else if (readable.includes("invalid_paid_amount")) {
+      showToast("Valid paid amount hala", "error");
+    } else if (readable.includes("invalid_restock_cost")) {
+      showToast("Valid rate hala", "error");
+    } else {
+      showToast("Failed to add stock", "error");
+    }
   } finally {
     setSavingInventory(false);
   }
 }
-
 async function adjustInventoryStock(e: React.FormEvent) {
   e.preventDefault();
 
@@ -9045,38 +9348,16 @@ async function adjustInventoryStock(e: React.FormEvent) {
     const targetItem = inventoryItemById.get(inventoryId);
     if (!targetItem) throw new Error("Inventory item not found");
 
-    const signedQty = adjustmentMode === "minus" ? -qty : qty;
-    const nextStock = Number(targetItem.current_stock || 0) + signedQty;
+    const note = adjustmentReason.trim() || `Manual ${adjustmentMode === "minus" ? "minus" : "plus"} adjustment for ${targetItem.item_name}`;
+    const { error } = await supabase.rpc("adjust_inventory_stock_atomic", {
+      p_restaurant_id: Number(restaurantId),
+      p_inventory_item_id: inventoryId,
+      p_quantity: qty,
+      p_mode: adjustmentMode,
+      p_note: note,
+    });
 
-    if (nextStock < 0) {
-      showToast("Yo adjustment le stock negative huncha", "error");
-      return;
-    }
-
-    const { error: updateError } = await supabase
-      .from("inventory_items")
-      .update({
-        current_stock: nextStock,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", inventoryId)
-      .eq("restaurant_id", restaurantId);
-
-    if (updateError) throw updateError;
-
-    const { error: txError } = await supabase
-      .from("inventory_transactions")
-      .insert([
-        {
-          restaurant_id: restaurantId,
-          inventory_item_id: inventoryId,
-          transaction_type: adjustmentMode === "minus" ? "adjustment_minus" : "adjustment_add",
-          quantity: qty,
-          note: adjustmentReason.trim() || `Manual ${adjustmentMode === "minus" ? "minus" : "plus"} adjustment for ${targetItem.item_name}`,
-        },
-      ]);
-
-    if (txError) throw txError;
+    if (error) throw error;
 
     showToast("Manual adjustment saved", "success");
     setAdjustmentInventoryItemId("");
@@ -9084,20 +9365,19 @@ async function adjustInventoryStock(e: React.FormEvent) {
     setAdjustmentMode("minus");
     setAdjustmentReason("");
     await fetchInventoryData();
-  } catch (error: any) {
-    console.error("Failed to adjust inventory", {
-      message: error?.message,
-      details: error?.details,
-      hint: error?.hint,
-      code: error?.code,
-      raw: error,
-    });
-    showToast("Failed to save adjustment", "error");
+  } catch (error: unknown) {
+    const readable = getReadableError(error);
+    console.error("Failed to adjust inventory", readable, error);
+
+    if (readable.includes("negative_stock_not_allowed")) {
+      showToast("Yo adjustment le stock negative huncha", "error");
+    } else {
+      showToast("Failed to save adjustment", "error");
+    }
   } finally {
     setSavingInventory(false);
   }
 }
-
 async function updateInventoryItem(e: React.FormEvent) {
   e.preventDefault();
 
@@ -11689,6 +11969,7 @@ const todayPaymentBreakdown = useMemo(() => {
       paymentTotals[method] += orderTotal;
 
       order.order_items?.forEach((item) => {
+        if (item.voided === true) return;
         const quantity = Number(item.quantity || 0);
         const revenue = quantity * Number(item.unit_price || 0);
 
@@ -11791,7 +12072,7 @@ const todayPaymentBreakdown = useMemo(() => {
     };
 
     const unpaidOnly = orders.filter(
-      (order) => order.is_paid !== true && order.sync_status !== "pending_payment"
+      (order) => !isOrderCancelled(order) && order.is_paid !== true && order.sync_status !== "pending_payment"
     );
     const map: Record<string, GroupedTableOrder> = {};
 
@@ -11885,7 +12166,7 @@ const todayPaymentBreakdown = useMemo(() => {
 
     // Active tables represent unpaid/open tables regardless of creation date.
     const activeUnpaidOrders = orders.filter(
-      (order) => order.is_paid !== true && order.sync_status !== "pending_payment"
+      (order) => !isOrderCancelled(order) && order.is_paid !== true && order.sync_status !== "pending_payment"
     );
 
     const map: Record<string, GroupedTableOrder> = {};
@@ -11980,7 +12261,7 @@ const todayPaymentBreakdown = useMemo(() => {
   }, [orders, localPendingPaymentOrders]);
 
   const paymentSyncSummary = useMemo(() => {
-    const allSyncOrders = [...orders, ...localPendingPaymentOrders];
+    const allSyncOrders = [...orders, ...localPendingPaymentOrders].filter((order) => !isOrderCancelled(order));
     const pendingPaymentCount = allSyncOrders.filter((order) => order.sync_status === "pending_payment").length;
     const pendingCreateCount = allSyncOrders.filter((order) => order.sync_status === "pending_create").length;
     const pendingInventoryCount = allSyncOrders.filter(
@@ -12213,7 +12494,7 @@ async function markGroupedTableAsPaid(
     // Use current browser status, not only React state. PWA online state can be stale.
     const browserOnline =
       typeof navigator !== "undefined" ? navigator.onLine : isOnline;
-    let shouldQueuePaymentLocally = !browserOnline;
+    const shouldQueuePaymentLocally = !browserOnline;
 
     const savePaymentsLocally = async (pairs = orderLocalPairs) => {
       for (const { order, targetLocalOrder } of pairs) {
@@ -12343,29 +12624,93 @@ async function markGroupedTableAsPaid(
               return { orderKey, remoteOrderId, success: true as const };
             }
 
-            // Do not mark paid if stored totals failed to update; otherwise reports can mismatch collected amount.
-            const { error: taxDiscountUpdateError } = await supabase
-              .from("orders")
-              .update(orderPaymentBreakdown)
-              .eq("id", remoteOrderId)
-              .eq("restaurant_id", restaurantId);
-
-            if (taxDiscountUpdateError) {
-              console.error("Payment breakdown update failed before payment:", taxDiscountUpdateError);
-              throw new Error("Payment total update failed. Please retry.");
-            }
-
             const { data, error } = await supabase.rpc("mark_order_paid_fast", {
               p_order_id: remoteOrderId,
               p_payment_method: paymentMethod,
+              p_subtotal: Number(orderPaymentBreakdown.subtotal || 0),
+              p_discount_enabled: Boolean(orderPaymentBreakdown.discount_enabled),
+              p_discount_percent: Number(orderPaymentBreakdown.discount_percent || 0),
+              p_discount_amount: Number(orderPaymentBreakdown.discount_amount || 0),
+              p_tax_enabled: Boolean(orderPaymentBreakdown.tax_enabled),
+              p_tax_percent: Number(orderPaymentBreakdown.tax_percent || 0),
+              p_tax_amount: Number(orderPaymentBreakdown.tax_amount || 0),
+              p_grand_total: Number(orderPaymentBreakdown.grand_total || 0),
             });
 
             if (error) throw error;
 
-            const result = data as { success?: boolean; message?: string } | null;
+            const result = data as {
+              success?: boolean;
+              message?: string;
+              payment_method?: string | null;
+              paid_at?: string | null;
+              subtotal?: number | null;
+              discount_enabled?: boolean | null;
+              discount_percent?: number | null;
+              discount_amount?: number | null;
+              tax_enabled?: boolean | null;
+              tax_percent?: number | null;
+              tax_amount?: number | null;
+              grand_total?: number | null;
+              inventory_deducted?: boolean | null;
+            } | null;
             const alreadyPaid = String(result?.message || "").toLowerCase().includes("already paid");
             if (!result?.success && !alreadyPaid) {
               throw new Error(result?.message || "Table payment failed");
+            }
+
+            if (alreadyPaid) {
+              const actualPaymentMethod =
+                result?.payment_method === "qr" || result?.payment_method === "card" || result?.payment_method === "cash"
+                  ? result.payment_method
+                  : paymentMethod;
+              const actualPaidAt = result?.paid_at || targetLocalOrder?.paid_at || order.paid_at || now;
+              const actualPaymentBreakdown = {
+                subtotal: result?.subtotal ?? orderPaymentBreakdown.subtotal,
+                discount_enabled: result?.discount_enabled ?? orderPaymentBreakdown.discount_enabled,
+                discount_percent: result?.discount_percent ?? orderPaymentBreakdown.discount_percent,
+                discount_amount: result?.discount_amount ?? orderPaymentBreakdown.discount_amount,
+                tax_enabled: result?.tax_enabled ?? orderPaymentBreakdown.tax_enabled,
+                tax_percent: result?.tax_percent ?? orderPaymentBreakdown.tax_percent,
+                tax_amount: result?.tax_amount ?? orderPaymentBreakdown.tax_amount,
+                grand_total: result?.grand_total ?? orderPaymentBreakdown.grand_total,
+              };
+              const remoteInventoryDeducted = result?.inventory_deducted === true;
+              alreadyPaidRemoteStateByUiOrderId.set(orderKey, {
+                ...order,
+                is_paid: true,
+                payment_method: actualPaymentMethod,
+                paid_at: actualPaidAt,
+                ...actualPaymentBreakdown,
+                inventory_deducted: remoteInventoryDeducted,
+                sync_status: remoteInventoryDeducted ? "synced" : "pending_payment",
+              });
+
+              if (targetLocalOrder?.id) {
+                try {
+                  await localOrdersTable.update(targetLocalOrder.id, {
+                    server_id: remoteOrderId,
+                    is_paid: true,
+                    payment_method: actualPaymentMethod,
+                    paid_at: actualPaidAt,
+                    ...actualPaymentBreakdown,
+                    inventory_deducted: remoteInventoryDeducted,
+                    updated_at: now,
+                    sync_status: remoteInventoryDeducted ? "synced" : "pending_payment",
+                  });
+                } catch (localUpdateError) {
+                  console.warn("Already-paid order local cache update failed:", localUpdateError);
+                }
+              }
+
+              if (!remoteInventoryDeducted) {
+                paidRemotePairs.push({
+                  remoteOrderId,
+                  localOrderId: targetLocalOrder?.id || null,
+                });
+              }
+
+              return { orderKey, remoteOrderId, success: true as const };
             }
 
             paidRemotePairs.push({
@@ -12737,7 +13082,7 @@ async function updateKitchenTableStatus(
 
   const activeOrders = useMemo(() => {
     return orders
-      .filter((order) => order.is_paid !== true && order.sync_status !== "pending_payment")
+      .filter((order) => !isOrderCancelled(order) && order.is_paid !== true && order.sync_status !== "pending_payment")
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   }, [orders]);
 
@@ -16810,6 +17155,7 @@ function renderDashboardView() {
               </div>
             </section>
           ))}
+          <ManageUtilities />
         </div>
 
         <div className="hidden lg:block">
@@ -16845,6 +17191,7 @@ function renderDashboardView() {
               {renderManageSection(financeSection, true)}
               {renderManageSection(brandSection, true)}
               {renderManageSection(taxSection, true)}
+              <ManageUtilities />
             </div>
           </div>
         </div>
@@ -17059,7 +17406,7 @@ function renderDashboardView() {
 
               if (selectedTableOrder) {
                 const selectedTotal = getOrderTotal(selectedTableOrder);
-                const selectedItems = selectedTableOrder.order_items || [];
+                const selectedItems = (selectedTableOrder.order_items || []).filter((item) => item.voided !== true);
                 const selectedStatus = getOrderDisplayStatus(selectedTableOrder);
                 const canAddDish = !selectedTableOrder.is_paid && selectedTableOrder.sync_status !== "pending_payment";
 
@@ -17092,7 +17439,7 @@ function renderDashboardView() {
                         </div>
                       ) : (
                         selectedItems.map((item) => (
-                          <div key={`table-detail-item-${item.id}`} className="grid grid-cols-[1fr_auto] items-center gap-3 rounded-[18px] bg-slate-50 px-3 py-3 ring-1 ring-slate-200/80">
+                          <div key={`table-detail-item-${item.id}`} className="grid grid-cols-[1fr_auto_auto] items-center gap-3 rounded-[18px] bg-slate-50 px-3 py-3 ring-1 ring-slate-200/80">
                             <div className="min-w-0">
                               <p className="truncate text-sm font-black text-slate-900">{item.item_name}</p>
                               <p className="mt-1 text-[11px] font-semibold text-slate-500">
@@ -17102,6 +17449,14 @@ function renderDashboardView() {
                             <p className="text-sm font-black text-slate-950">
                               Rs. {Number(item.quantity || 0) * Number(item.unit_price || 0)}
                             </p>
+                            <button
+                              type="button"
+                              disabled={!canAddDish}
+                              onClick={() => voidOrderItemBeforePayment(selectedTableOrder, item)}
+                              className="rounded-xl bg-rose-50 px-3 py-2 text-[11px] font-black text-rose-600 ring-1 ring-rose-100 disabled:bg-slate-100 disabled:text-slate-400 disabled:ring-slate-200"
+                            >
+                              Void
+                            </button>
                           </div>
                         ))
                       )}
@@ -17231,7 +17586,8 @@ function renderDashboardView() {
                 const itemPreview = (order.order_items || []).slice(0, 3);
                 const moreCount = Math.max((order.order_items || []).length - 3, 0);
                 const isPendingPaymentSync = order.sync_status === "pending_payment";
-                const isLockedOrder = displayStatus === "ready" || isPendingPaymentSync;
+                const isEditLockedOrder = displayStatus === "ready" || isPendingPaymentSync;
+                const isCancelLockedOrder = isPendingPaymentSync || order.is_paid === true;
 
                 const statusClass =
                   isPendingPaymentSync
@@ -17306,9 +17662,9 @@ function renderDashboardView() {
                         <p className="text-[9px] font-semibold text-amber-700">
                           Payment done — inventory sync pending
                         </p>
-                      ) : isLockedOrder ? (
+                      ) : isEditLockedOrder ? (
                         <p className="text-[9px] font-semibold text-slate-500">
-                          Ready: edit/cancel locked
+                          Ready: edit locked
                         </p>
                       ) : order.remarks ? (
                         <p className="truncate text-[9px] font-medium text-amber-700">Remark: {order.remarks}</p>
@@ -17369,9 +17725,9 @@ function renderDashboardView() {
                           event.stopPropagation();
                           handleEditOrder(order);
                         }}
-                        disabled={editingOrderLoading || isLockedOrder}
+                        disabled={editingOrderLoading || isEditLockedOrder}
                         className={`rounded-[12px] py-2 text-[10px] font-semibold ${
-                          editingOrderLoading || isLockedOrder
+                          editingOrderLoading || isEditLockedOrder
                             ? "bg-slate-200 text-slate-400"
                             : "bg-white text-slate-700 ring-1 ring-slate-200"
                         }`}
@@ -17384,9 +17740,9 @@ function renderDashboardView() {
                           event.stopPropagation();
                           handleCancelOrder(order);
                         }}
-                        disabled={isLockedOrder}
+                        disabled={isCancelLockedOrder}
                         className={`rounded-[12px] py-2 text-[10px] font-semibold ${
-                          isLockedOrder
+                          isCancelLockedOrder
                             ? "bg-slate-200 text-slate-400"
                             : "bg-rose-50 text-rose-600 ring-1 ring-rose-100"
                         }`}
@@ -22144,10 +22500,14 @@ if (showSplash) {
                     <h1 className="truncate text-[20px] font-black leading-tight">
                       {restaurantName || "Restaurant"}
                     </h1>
-                    <p className="mt-1 text-[12px] font-black text-red-600">{isStaffMode ? "Staff Panel" : "Dashboard"}</p>
-                    <p className="text-[11px] font-semibold text-slate-400">
-                      {new Date().toLocaleDateString()}
+                    <p className="mt-1 truncate text-[11px] font-black leading-tight text-red-600">
+                      {headerDateLabels.mainLabel}
                     </p>
+                    {headerDateLabels.note ? (
+                      <p className="truncate text-[11px] font-semibold leading-tight text-slate-400">
+                        {headerDateLabels.note}
+                      </p>
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -23145,7 +23505,7 @@ if (showSplash) {
                         {(reportOrder.order_items || []).length === 0 ? (
                           <p className="text-sm text-slate-500">No order items found.</p>
                         ) : (
-                          (reportOrder.order_items || []).map((item) => (
+                          (reportOrder.order_items || []).filter((item) => item.voided !== true).map((item) => (
                             <div
                               key={`report-item-${item.id}`}
                               className="grid grid-cols-[1fr_56px_80px] items-start gap-2 text-[15px] text-slate-900"
@@ -23180,7 +23540,7 @@ if (showSplash) {
                           <span>Items</span>
                           <span className="font-bold">
                             {(reportOrder.order_items || []).reduce(
-                              (sum, item) => sum + Number(item.quantity || 0),
+                              (sum, item) => item.voided === true ? sum : sum + Number(item.quantity || 0),
                               0
                             )}
                           </span>
@@ -23381,7 +23741,7 @@ if (showSplash) {
                 total: Number(item.total || 0),
                 statuses: [item.status || selectedTable.table_status || "pending"],
               }))
-            : (selectedPaidOrder.order_items || []).map((item) => ({
+            : (selectedPaidOrder.order_items || []).filter((item) => item.voided !== true).map((item) => ({
                 item_name: item.item_name,
                 quantity: Number(item.quantity || 0),
                 total: Number(item.quantity || 0) * Number(item.unit_price || 0),
@@ -23946,3 +24306,4 @@ if (showSplash) {
     </>
   );
 }
+

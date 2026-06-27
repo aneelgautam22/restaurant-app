@@ -76,8 +76,8 @@ self.addEventListener("push", (event) => {
   event.waitUntil(
     self.registration.showNotification(data.title, {
       body: data.body,
-      icon: "/icon-192.png",
-      badge: "/icon-192.png",
+      icon: "/icon-192-v2.png",
+      badge: "/icon-192-v2.png",
       vibrate: [200, 100, 200],
       requireInteraction: true,
       data: {
@@ -92,8 +92,8 @@ self.addEventListener("message", (event) => {
     event.waitUntil(
       self.registration.showNotification("TEST 🔔", {
         body: "Push working from SW!",
-        icon: "/icon-192.png",
-        badge: "/icon-192.png",
+        icon: "/icon-192-v2.png",
+        badge: "/icon-192-v2.png",
         vibrate: [200, 100, 200],
         requireInteraction: true,
         data: {
