@@ -149,7 +149,14 @@ type OrderRow = {
   waiter_cleared?: boolean | null;
   is_paid?: boolean | null;
   payment_method?: string | null;
+  payment_status?: string | null;
   paid_at?: string | null;
+  customer_id?: number | null;
+  customer_name?: string | null;
+  customer_phone?: string | null;
+  credit_amount?: number | null;
+  loyalty_points_used?: number | null;
+  loyalty_points_earned?: number | null;
   subtotal?: number | null;
   discount_enabled?: boolean | null;
   discount_percent?: number | null;
@@ -182,7 +189,8 @@ type MiniView =
   | "report"
   | "paymentHistory";
 
-type PopupView = "menuItems" | "inventory" | "passwords" | "settings" | "taxDiscount" | null;
+type PopupView = "menuItems" | "inventory" | "customers" | "passwords" | "settings" | "taxDiscount" | null;
+type PaymentMethod = "cash" | "qr" | "card" | "credit";
 type SalesPeriod = "day" | "week" | "month" | "year";
 type InsightRange = "today" | "yesterday" | "thisWeek" | "lastWeek" | "thisMonth" | "lastMonth" | "thisYear" | "previousYear" | "lifetime" | "custom";
 type OwnerCsvPeriod = "day" | "week" | "month";
@@ -264,7 +272,14 @@ type BillReceiptTable = {
   paid_amount?: number;
   due_amount?: number;
   payment_method?: string | null;
+  payment_status?: string | null;
   paid_at?: string | null;
+  customer_id?: number | null;
+  customer_name?: string | null;
+  customer_phone?: string | null;
+  credit_amount?: number | null;
+  loyalty_points_used?: number | null;
+  loyalty_points_earned?: number | null;
   unpaid_orders_count: number;
   sourceOrders: OrderRow[];
 };
@@ -392,6 +407,107 @@ type SupplierPayment = {
   created_at?: string;
 };
 
+type Customer = {
+  id: number;
+  restaurant_id?: number;
+  name: string;
+  phone?: string | null;
+  address?: string | null;
+  credit_limit?: number | null;
+  loyalty_points?: number | null;
+  visits?: number | null;
+  total_spent?: number | null;
+  last_visit?: string | null;
+  note?: string | null;
+  is_active?: boolean | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
+type CustomerPayment = {
+  id: number;
+  restaurant_id?: number;
+  customer_id: number;
+  amount: number;
+  payment_method?: string | null;
+  note?: string | null;
+  created_at?: string;
+};
+
+type CustomerCreditLedger = {
+  id: number;
+  restaurant_id?: number;
+  customer_id: number;
+  order_id?: number | null;
+  payment_id?: number | null;
+  entry_type: "credit_sale" | "payment" | "adjustment" | string;
+  amount: number;
+  note?: string | null;
+  created_at?: string;
+};
+
+type LoyaltyTransaction = {
+  id: number;
+  restaurant_id?: number;
+  customer_id: number;
+  order_id?: number | null;
+  transaction_type: string;
+  points?: number | null;
+  note?: string | null;
+  created_at?: string;
+};
+
+type CustomerTimelineEvent = {
+  id: string;
+  date: string;
+  title: string;
+  subtitle?: string;
+  amount?: number;
+  tableNumber?: string | null;
+  paymentMethod?: string | null;
+  remainingDue?: number | null;
+  points?: number | null;
+  note?: string | null;
+  tone: "paid" | "credit" | "payment" | "loyalty";
+};
+
+type CustomerFavoriteItem = {
+  itemName: string;
+  quantity: number;
+};
+
+type CustomerStats = {
+  highestBill: number;
+  averageBill: number;
+  paidOrders: number;
+  creditOrders: number;
+  totalOrders: number;
+};
+
+type CustomerProfileData = {
+  customerId: number;
+  orders: OrderRow[];
+  creditLedger: CustomerCreditLedger[];
+  payments: CustomerPayment[];
+  loyaltyTransactions: LoyaltyTransaction[];
+  timeline: CustomerTimelineEvent[];
+  favoriteItems: CustomerFavoriteItem[];
+  stats: CustomerStats;
+};
+
+type CustomerRewardRule = {
+  id: number;
+  restaurant_id?: number;
+  title: string;
+  required_visits: number;
+  reward_type: "free_item" | "discount_percent" | "discount_amount" | string;
+  reward_value?: number | null;
+  reward_item_name?: string | null;
+  is_active?: boolean | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
 type SalesTrendPoint = {
   label: string;
   fullLabel: string;
@@ -433,7 +549,14 @@ type LocalOrderRow = {
   waiter_cleared?: boolean | null;
   is_paid?: boolean | null;
   payment_method?: string | null;
+  payment_status?: string | null;
   paid_at?: string | null;
+  customer_id?: number | null;
+  customer_name?: string | null;
+  customer_phone?: string | null;
+  credit_amount?: number | null;
+  loyalty_points_used?: number | null;
+  loyalty_points_earned?: number | null;
   subtotal?: number | null;
   discount_enabled?: boolean | null;
   discount_percent?: number | null;
@@ -1373,9 +1496,115 @@ function getInventoryTransactionSignedText(tx: InventoryTransaction) {
   const [showDashboardLowStockModal, setShowDashboardLowStockModal] = useState(false);
   const [localPendingPaymentOrders, setLocalPendingPaymentOrders] = useState<OrderRow[]>([]);
   const [tablePaymentMethods, setTablePaymentMethods] = useState<
-    Record<string, "cash" | "qr" | "card">
+    Record<string, PaymentMethod>
   >({});
   const [tableDiscountPercents, setTableDiscountPercents] = useState<Record<string, string>>({});
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [customerPayments, setCustomerPayments] = useState<CustomerPayment[]>([]);
+  const [customerCreditLedger, setCustomerCreditLedger] = useState<CustomerCreditLedger[]>([]);
+  const [customerRewardRules, setCustomerRewardRules] = useState<CustomerRewardRule[]>([]);
+  const [loadingCustomerRewardRules, setLoadingCustomerRewardRules] = useState(false);
+  const [selectedRewardByTable, setSelectedRewardByTable] = useState<Record<string, number | null>>({});
+  const [editingRewardRuleId, setEditingRewardRuleId] = useState<number | null>(null);
+  const [rewardRuleTitle, setRewardRuleTitle] = useState("");
+  const [rewardRuleRequiredVisits, setRewardRuleRequiredVisits] = useState("");
+  const [rewardRuleType, setRewardRuleType] = useState<"free_item" | "discount_percent" | "discount_amount">("free_item");
+  const [rewardRuleValue, setRewardRuleValue] = useState("");
+  const [rewardRuleItemName, setRewardRuleItemName] = useState("");
+  const [savingRewardRule, setSavingRewardRule] = useState(false);
+  const [loadingCustomers, setLoadingCustomers] = useState(false);
+  const [savingCustomer, setSavingCustomer] = useState(false);
+  const [showAddCustomerForm, setShowAddCustomerForm] = useState(false);
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [selectedCustomerByTable, setSelectedCustomerByTable] = useState<Record<string, string>>({});
+  const [billingCustomerSearchByTable, setBillingCustomerSearchByTable] = useState<Record<string, string>>({});
+  const [quickCustomerNameByTable, setQuickCustomerNameByTable] = useState<Record<string, string>>({});
+  const [quickCustomerPhoneByTable, setQuickCustomerPhoneByTable] = useState<Record<string, string>>({});
+  const [customerPickerTable, setCustomerPickerTable] = useState<string | null>(null);
+  const [customerPickerMode, setCustomerPickerMode] = useState<"billing" | "credit" | null>(null);
+  const [newCustomerName, setNewCustomerName] = useState("");
+  const [newCustomerPhone, setNewCustomerPhone] = useState("");
+  const [newCustomerAddress, setNewCustomerAddress] = useState("");
+  const [newCustomerCreditLimit, setNewCustomerCreditLimit] = useState("");
+  const [newCustomerNote, setNewCustomerNote] = useState("");
+  const [receivePaymentCustomerId, setReceivePaymentCustomerId] = useState("");
+  const [receiveCustomerPaymentAmount, setReceiveCustomerPaymentAmount] = useState("");
+  const [receiveCustomerPaymentMethod, setReceiveCustomerPaymentMethod] = useState<"cash" | "qr" | "card">("cash");
+  const [receiveCustomerPaymentNote, setReceiveCustomerPaymentNote] = useState("");
+  const [creditCustomerSheetTableNo, setCreditCustomerSheetTableNo] = useState<string | null>(null);
+  const [creditCustomerSearch, setCreditCustomerSearch] = useState("");
+  const [creditCustomerName, setCreditCustomerName] = useState("");
+  const [creditCustomerPhone, setCreditCustomerPhone] = useState("");
+  const [creditCustomerLimit, setCreditCustomerLimit] = useState("");
+  const [creditCustomerNote, setCreditCustomerNote] = useState("");
+  const [savingCreditCustomer, setSavingCreditCustomer] = useState(false);
+  const [editingCustomerId, setEditingCustomerId] = useState<number | null>(null);
+  const [selectedCustomerProfileId, setSelectedCustomerProfileId] = useState<number | null>(null);
+  const [customerProfileData, setCustomerProfileData] = useState<CustomerProfileData | null>(null);
+  const [loadingCustomerProfile, setLoadingCustomerProfile] = useState(false);
+  const [expandedCustomerTimeline, setExpandedCustomerTimeline] = useState<Record<string, boolean>>({});
+  const [mergeFromCustomerId, setMergeFromCustomerId] = useState("");
+  const [mergeToCustomerId, setMergeToCustomerId] = useState("");
+  const [mergingCustomers, setMergingCustomers] = useState(false);
+  const [showCustomerAdvanced, setShowCustomerAdvanced] = useState(false);
+
+  const customerFinancialsById = useMemo(() => {
+    const map = new Map<number, { creditTotal: number; paidBack: number; creditLeft: number; loyaltyPoints: number; creditOrderCount: number }>();
+
+    customers.forEach((customer) => {
+      map.set(Number(customer.id), {
+        creditTotal: 0,
+        paidBack: 0,
+        creditLeft: 0,
+        loyaltyPoints: Number(customer.loyalty_points || 0),
+        creditOrderCount: 0,
+      });
+    });
+
+    customerCreditLedger.forEach((entry) => {
+      const customerId = Number(entry.customer_id || 0);
+      if (!customerId) return;
+      const existing = map.get(customerId) || { creditTotal: 0, paidBack: 0, creditLeft: 0, loyaltyPoints: 0, creditOrderCount: 0 };
+      const amount = Number(entry.amount || 0);
+      if (entry.entry_type === "credit_sale") {
+        existing.creditTotal += amount;
+        existing.creditLeft += amount;
+        existing.creditOrderCount += 1;
+      } else if (entry.entry_type === "payment") {
+        existing.paidBack += amount;
+        existing.creditLeft -= amount;
+      } else if (entry.entry_type === "adjustment") {
+        existing.creditLeft += amount;
+      }
+      map.set(customerId, existing);
+    });
+
+    // Backward compatibility for payments created before payment ledger entries existed.
+    customerPayments.forEach((payment) => {
+      const customerId = Number(payment.customer_id || 0);
+      const hasLedgerPayment = customerCreditLedger.some((entry) => {
+        if (Number(entry.customer_id || 0) !== customerId || entry.entry_type !== "payment") return false;
+        if (entry.payment_id) return Number(entry.payment_id) === Number(payment.id);
+        return (
+          Number(entry.amount || 0) === Number(payment.amount || 0) &&
+          String(entry.created_at || "").slice(0, 16) === String(payment.created_at || "").slice(0, 16)
+        );
+      });
+      if (hasLedgerPayment) return;
+      const existing = map.get(customerId) || { creditTotal: 0, paidBack: 0, creditLeft: 0, loyaltyPoints: 0, creditOrderCount: 0 };
+      const amount = Number(payment.amount || 0);
+      existing.paidBack += amount;
+      existing.creditLeft -= amount;
+      map.set(customerId, existing);
+    });
+
+    map.forEach((value) => {
+      value.creditLeft = Math.max(0, value.creditLeft);
+    });
+
+    return map;
+  }, [customers, customerPayments, customerCreditLedger]);
+
 
   const [dashboardMobileTab, setDashboardMobileTab] = useState<"unpaid" | "paid" | "activity">(
     "unpaid"
@@ -1396,6 +1625,7 @@ function getInventoryTransactionSignedText(tx: InventoryTransaction) {
   const contentScrollRef = useRef<HTMLDivElement | null>(null);
   const paymentInFlightTableNumbersRef = useRef<Set<string>>(new Set());
   const inventoryDeductionInFlightOrderIdsRef = useRef<Set<number>>(new Set());
+  const customerSummaryColumnsRef = useRef<Set<string> | null>(null);
   const ordersRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const menuRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const staffRefreshInFlightRef = useRef(false);
@@ -1452,6 +1682,25 @@ function getInventoryTransactionSignedText(tx: InventoryTransaction) {
     if (typeof window === "undefined" || !restaurantId) return;
     setLastPaymentSyncTime(localStorage.getItem(`servex:lastPaymentSync:${restaurantId}`));
   }, [restaurantId]);
+
+  useEffect(() => {
+    if (!restaurantId || popupView !== "customers") return;
+    fetchCustomersData();
+  }, [restaurantId, popupView]);
+
+  useEffect(() => {
+    if (!restaurantId) return;
+    fetchCustomerRewardRules();
+  }, [restaurantId]);
+
+  useEffect(() => {
+    if (!selectedCustomerProfileId) {
+      setCustomerProfileData(null);
+      setExpandedCustomerTimeline({});
+      return;
+    }
+    loadCustomerProfile(Number(selectedCustomerProfileId));
+  }, [selectedCustomerProfileId, restaurantId]);
 
   function rememberPaymentSyncSuccess() {
     if (typeof window === "undefined" || !restaurantId) return;
@@ -3597,7 +3846,14 @@ async function uploadRestaurantLogoImage(file: File) {
       waiter_cleared: localOrder.waiter_cleared ?? false,
       is_paid: localOrder.is_paid ?? false,
       payment_method: localOrder.payment_method || null,
+      payment_status: localOrder.payment_status || null,
       paid_at: localOrder.paid_at || null,
+      customer_id: localOrder.customer_id ?? null,
+      customer_name: localOrder.customer_name ?? null,
+      customer_phone: localOrder.customer_phone ?? null,
+      credit_amount: localOrder.credit_amount ?? null,
+      loyalty_points_used: localOrder.loyalty_points_used ?? null,
+      loyalty_points_earned: localOrder.loyalty_points_earned ?? null,
       subtotal: Number(localOrder.subtotal || 0),
       discount_enabled: Boolean(localOrder.discount_enabled),
       discount_percent: Number(localOrder.discount_percent || 0),
@@ -4224,10 +4480,35 @@ async function syncPaymentForLocalOrder(localOrder: LocalOrderRow) {
       localOrderId: localOrder.id,
     });
 
+    if (localOrder.customer_id) {
+      const localCustomer: Customer = {
+        id: Number(localOrder.customer_id),
+        restaurant_id: restaurantId || undefined,
+        name: localOrder.customer_name || "Customer",
+        phone: localOrder.customer_phone || null,
+        loyalty_points: customers.find((customer) => Number(customer.id) === Number(localOrder.customer_id))?.loyalty_points || 0,
+        is_active: true,
+      };
+
+      try {
+        await attachCustomerToOrders([remoteOrderId], localCustomer);
+        await awardPaidVisitLoyaltyOnce(localCustomer, remoteOrderId, {
+          note: "Paid visit loyalty",
+          addVisit: true,
+          addTotalSpent: Number(localOrder.grand_total || 0),
+        });
+      } catch (loyaltyError) {
+        console.warn("Pending payment customer loyalty failed:", loyaltyError);
+      }
+    }
+
     await localOrdersTable.update(localOrder.id, {
       server_id: remoteOrderId,
       is_paid: true,
       payment_method: actualPaymentMethod,
+      customer_id: localOrder.customer_id ?? null,
+      customer_name: localOrder.customer_name ?? null,
+      customer_phone: localOrder.customer_phone ?? null,
       paid_at: actualPaidAt,
       updated_at: new Date().toISOString(),
       sync_status: "synced",
@@ -4437,6 +4718,7 @@ async function refreshPendingPaymentQueue() {
         // Preserve local paid state so the UI can show it as paid locally.
         is_paid: order.is_paid ?? false,
         payment_method: order.payment_method ?? null,
+        payment_status: order.payment_status ?? null,
         paid_at: order.paid_at ?? null,
         subtotal: order.subtotal ?? null,
         discount_enabled: order.discount_enabled ?? false,
@@ -5320,12 +5602,12 @@ async function submitTakeOrder() {
       .filter((order) => {
         const sameTable = String(order.table_number || "").trim() === tableNo;
         const isTodayOrder = getLocalDateString(order.created_at) === todayLocalDate;
-        return sameTable && isTodayOrder && order.is_paid !== true && order.sync_status !== "pending_payment";
+        return sameTable && isTodayOrder && isActiveUnpaidOrder(order);
       })
       .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
 
     const normalUnpaidOrders = relatedTodayUnpaidOrders.filter(
-      (order) => order.is_paid !== true && order.sync_status !== "pending_payment"
+      (order) => isActiveUnpaidOrder(order)
     );
     const pendingSyncOrders = relatedTodayUnpaidOrders.filter(
       (order) => order.sync_status === "pending_payment"
@@ -6789,6 +7071,8 @@ function shouldKeepOrderOnFastScreens(order: OrderRow) {
 
   if (isOrderCancelled(order)) return false;
 
+  if (isOrderCreditDue(order)) return false;
+
   if (order.is_paid !== true) return true;
 
   const twoDaysAgo = addDays(startOfDay(new Date()), -2).getTime();
@@ -6798,6 +7082,14 @@ function shouldKeepOrderOnFastScreens(order: OrderRow) {
 
 function isOrderCancelled(order: Pick<OrderRow, "cancelled" | "status"> | Pick<LocalOrderRow, "cancelled" | "status"> | null | undefined) {
   return order?.cancelled === true || String(order?.status || "").toLowerCase() === "cancelled";
+}
+
+function isOrderCreditDue(order: Pick<OrderRow, "payment_method" | "status"> | Pick<LocalOrderRow, "payment_method" | "status"> | null | undefined) {
+  return String(order?.payment_method || "").toLowerCase() === "credit" || String(order?.status || "").toLowerCase() === "credit_due";
+}
+
+function isActiveUnpaidOrder(order: OrderRow) {
+  return !isOrderCancelled(order) && !isOrderCreditDue(order) && order.is_paid !== true && order.sync_status !== "pending_payment";
 }
 
 function getOrderStableKey(order: OrderRow) {
@@ -6966,7 +7258,14 @@ async function cacheRemoteOrderLocally(order: OrderRow) {
       waiter_cleared: order.waiter_cleared ?? false,
       is_paid: order.is_paid ?? false,
       payment_method: order.payment_method || null,
+      payment_status: order.payment_status || null,
       paid_at: order.paid_at || null,
+      customer_id: order.customer_id ?? null,
+      customer_name: order.customer_name ?? null,
+      customer_phone: order.customer_phone ?? null,
+      credit_amount: order.credit_amount ?? null,
+      loyalty_points_used: order.loyalty_points_used ?? null,
+      loyalty_points_earned: order.loyalty_points_earned ?? null,
       cancelled: order.cancelled === true,
       cancelled_at: order.cancelled_at || null,
       cancel_reason: order.cancel_reason || null,
@@ -7044,7 +7343,14 @@ async function cacheRemoteOrderLocally(order: OrderRow) {
     waiter_cleared: order.waiter_cleared ?? false,
     is_paid: order.is_paid ?? false,
     payment_method: order.payment_method || null,
+    payment_status: order.payment_status || null,
     paid_at: order.paid_at || null,
+    customer_id: order.customer_id ?? null,
+    customer_name: order.customer_name ?? null,
+    customer_phone: order.customer_phone ?? null,
+    credit_amount: order.credit_amount ?? null,
+    loyalty_points_used: order.loyalty_points_used ?? null,
+    loyalty_points_earned: order.loyalty_points_earned ?? null,
     cancelled: order.cancelled === true,
     cancelled_at: order.cancelled_at || null,
     cancel_reason: order.cancel_reason || null,
@@ -7104,7 +7410,7 @@ async function fetchSingleRemoteOrder(orderId: number, delayMs = 0) {
   const { data, error } = await supabase
     .from("orders")
     .select(
-      "id, client_create_id, restaurant_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, subtotal, discount_enabled, discount_percent, discount_amount, tax_enabled, tax_percent, tax_amount, grand_total, remarks, inventory_deducted, cancelled, cancelled_at, cancel_reason, order_items(id, client_item_id, item_name, menu_item_id, quantity, unit_price, status, menu_item_variant_id, kot_printed, kot_printed_at, voided, voided_at, void_reason)"
+      "id, client_create_id, restaurant_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, payment_status, paid_at, subtotal, discount_enabled, discount_percent, discount_amount, tax_enabled, tax_percent, tax_amount, grand_total, customer_id, customer_name, customer_phone, credit_amount, loyalty_points_used, loyalty_points_earned, remarks, inventory_deducted, cancelled, cancelled_at, cancel_reason, order_items(id, client_item_id, item_name, menu_item_id, quantity, unit_price, status, menu_item_variant_id, kot_printed, kot_printed_at, voided, voided_at, void_reason)"
     )
     .eq("restaurant_id", restaurantId)
     .eq("id", orderId)
@@ -7155,6 +7461,7 @@ async function fetchOrders(options: { fullHistory?: boolean } = {}) {
     return {
       is_paid: isPaid,
       payment_method: source.payment_method || fallback.payment_method || null,
+      payment_status: source.payment_status || fallback.payment_status || null,
       paid_at: source.paid_at || fallback.paid_at || null,
       subtotal: source.subtotal ?? fallback.subtotal ?? null,
       discount_enabled: source.discount_enabled ?? fallback.discount_enabled ?? false,
@@ -7164,6 +7471,12 @@ async function fetchOrders(options: { fullHistory?: boolean } = {}) {
       tax_percent: source.tax_percent ?? fallback.tax_percent ?? 0,
       tax_amount: source.tax_amount ?? fallback.tax_amount ?? 0,
       grand_total: source.grand_total ?? fallback.grand_total ?? null,
+      customer_id: source.customer_id ?? fallback.customer_id ?? null,
+      customer_name: source.customer_name ?? fallback.customer_name ?? null,
+      customer_phone: source.customer_phone ?? fallback.customer_phone ?? null,
+      credit_amount: source.credit_amount ?? fallback.credit_amount ?? null,
+      loyalty_points_used: source.loyalty_points_used ?? fallback.loyalty_points_used ?? null,
+      loyalty_points_earned: source.loyalty_points_earned ?? fallback.loyalty_points_earned ?? null,
       inventory_deducted: inventoryDeducted,
       sync_status: syncStatus,
     };
@@ -7227,7 +7540,7 @@ async function fetchOrders(options: { fullHistory?: boolean } = {}) {
   const dashboardCutoff = addDays(startOfDay(new Date()), -2).toISOString();
 
   const ordersSelect =
-    "id, client_create_id, restaurant_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, paid_at, subtotal, discount_enabled, discount_percent, discount_amount, tax_enabled, tax_percent, tax_amount, grand_total, remarks, inventory_deducted, cancelled, cancelled_at, cancel_reason, order_items(id, client_item_id, item_name, menu_item_id, quantity, unit_price, status, menu_item_variant_id, kot_printed, kot_printed_at, voided, voided_at, void_reason)";
+    "id, client_create_id, restaurant_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, payment_status, paid_at, subtotal, discount_enabled, discount_percent, discount_amount, tax_enabled, tax_percent, tax_amount, grand_total, customer_id, customer_name, customer_phone, credit_amount, loyalty_points_used, loyalty_points_earned, remarks, inventory_deducted, cancelled, cancelled_at, cancel_reason, order_items(id, client_item_id, item_name, menu_item_id, quantity, unit_price, status, menu_item_variant_id, kot_printed, kot_printed_at, voided, voided_at, void_reason)";
   let data: OrderRow[] | null = null;
   let error: unknown = null;
 
@@ -11579,7 +11892,7 @@ showToast("Menu item added", "success");
   const occupiedTableNumbers = useMemo(() => {
     return new Set(
       orders
-        .filter((order) => !isOrderCancelled(order) && order.is_paid !== true && order.sync_status !== "pending_payment")
+        .filter((order) => isActiveUnpaidOrder(order))
         .map((order) => String(order.table_number || "").trim())
         .filter(Boolean)
     );
@@ -12114,7 +12427,12 @@ const todayPaymentBreakdown = useMemo(() => {
     };
 
     const unpaidOnly = orders.filter(
-      (order) => !isOrderCancelled(order) && order.is_paid !== true && order.sync_status !== "pending_payment"
+      (order) =>
+        !isOrderCancelled(order) &&
+        order.is_paid !== true &&
+        order.sync_status !== "pending_payment" &&
+        order.payment_method !== "credit" &&
+        order.status !== "credit_due"
     );
     const map: Record<string, GroupedTableOrder> = {};
 
@@ -12208,9 +12526,7 @@ const todayPaymentBreakdown = useMemo(() => {
     };
 
     // Active tables represent unpaid/open tables regardless of creation date.
-    const activeUnpaidOrders = orders.filter(
-      (order) => !isOrderCancelled(order) && order.is_paid !== true && order.sync_status !== "pending_payment"
-    );
+    const activeUnpaidOrders = orders.filter((order) => isActiveUnpaidOrder(order));
 
     const map: Record<string, GroupedTableOrder> = {};
 
@@ -12347,7 +12663,7 @@ const todayPaymentBreakdown = useMemo(() => {
         status.pendingPaymentOrders.push(order);
       }
 
-      if (order.is_paid !== true && order.sync_status !== "pending_payment") {
+      if (isActiveUnpaidOrder(order)) {
         status.normalUnpaidOrders.push(order);
       }
     });
@@ -12369,8 +12685,7 @@ const kitchenQueue = useMemo(() => {
         .filter(
           (order) =>
             String(order.table_number || "").trim() === table.table_number &&
-            order.is_paid !== true &&
-            order.sync_status !== "pending_payment"
+            isActiveUnpaidOrder(order)
         )
         .sort(
           (a, b) =>
@@ -12394,9 +12709,1552 @@ const kitchenQueue = useMemo(() => {
       return aTime - bTime;
     });
 }, [groupedTableOrders, orders, kitchenStatusFilter]);
+async function fetchCustomersData() {
+  if (!restaurantId || !isOwnerMode) return;
+  setLoadingCustomers(true);
+  try {
+    const [customerResult, paymentResult, ledgerResult] = await Promise.all([
+      supabase
+        .from("customers")
+        .select("id, restaurant_id, name, phone, address, credit_limit, loyalty_points, visits, total_spent, last_visit, note, is_active, created_at, updated_at")
+        .eq("restaurant_id", restaurantId)
+        .neq("is_active", false)
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("customer_payments")
+        .select("id, restaurant_id, customer_id, amount, payment_method, note, created_at")
+        .eq("restaurant_id", restaurantId)
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("customer_credit_ledger")
+        .select("id, restaurant_id, customer_id, order_id, payment_id, entry_type, amount, note, created_at")
+        .eq("restaurant_id", restaurantId)
+        .order("created_at", { ascending: false }),
+    ]);
+
+    if (customerResult.error) throw customerResult.error;
+    if (paymentResult.error) throw paymentResult.error;
+    if (ledgerResult.error) throw ledgerResult.error;
+
+    setCustomers((customerResult.data || []) as Customer[]);
+    setCustomerPayments((paymentResult.data || []) as CustomerPayment[]);
+    setCustomerCreditLedger((ledgerResult.data || []) as CustomerCreditLedger[]);
+  } catch (error) {
+    console.error("fetchCustomersData failed:", error);
+    showToast("Customer tables missing. Run customer SQL first.", "error");
+  } finally {
+    setLoadingCustomers(false);
+  }
+}
+
+async function fetchCustomerRewardRules() {
+  if (!restaurantId) return;
+  setLoadingCustomerRewardRules(true);
+  try {
+    const { data, error } = await supabase
+      .from("customer_reward_rules")
+      .select("id, restaurant_id, title, required_visits, reward_type, reward_value, reward_item_name, is_active, created_at, updated_at")
+      .eq("restaurant_id", restaurantId)
+      .order("required_visits", { ascending: true })
+      .order("created_at", { ascending: false });
+
+    if (error) throw error;
+    setCustomerRewardRules((data || []) as CustomerRewardRule[]);
+  } catch (error) {
+    console.error("fetchCustomerRewardRules failed:", error);
+    setCustomerRewardRules([]);
+  } finally {
+    setLoadingCustomerRewardRules(false);
+  }
+}
+
+function resetRewardRuleForm() {
+  setEditingRewardRuleId(null);
+  setRewardRuleTitle("");
+  setRewardRuleRequiredVisits("");
+  setRewardRuleType("free_item");
+  setRewardRuleValue("");
+  setRewardRuleItemName("");
+}
+
+function startEditRewardRule(rule: CustomerRewardRule) {
+  setEditingRewardRuleId(Number(rule.id));
+  setRewardRuleTitle(rule.title || "");
+  setRewardRuleRequiredVisits(String(rule.required_visits ?? ""));
+  setRewardRuleType(
+    rule.reward_type === "discount_percent" || rule.reward_type === "discount_amount"
+      ? rule.reward_type
+      : "free_item"
+  );
+  setRewardRuleValue(String(rule.reward_value ?? ""));
+  setRewardRuleItemName(rule.reward_item_name || "");
+}
+
+async function saveCustomerRewardRule() {
+  if (!restaurantId) return;
+  const title = rewardRuleTitle.trim();
+  const requiredVisits = Math.max(1, Math.floor(Number(rewardRuleRequiredVisits || 0)));
+  const rewardValue = Math.max(0, Number(rewardRuleValue || 0));
+  if (!title || !requiredVisits) {
+    showToast("Reward title and paid visits required", "error");
+    return;
+  }
+
+  setSavingRewardRule(true);
+  try {
+    const payload = {
+      restaurant_id: restaurantId,
+      title,
+      required_visits: requiredVisits,
+      reward_type: rewardRuleType,
+      reward_value: rewardValue,
+      reward_item_name: rewardRuleItemName.trim() || null,
+      is_active: true,
+    };
+
+    if (editingRewardRuleId) {
+      const { error } = await supabase
+        .from("customer_reward_rules")
+        .update(payload)
+        .eq("restaurant_id", restaurantId)
+        .eq("id", editingRewardRuleId);
+      if (error) throw error;
+      showToast("Reward rule updated", "success");
+    } else {
+      const { error } = await supabase.from("customer_reward_rules").insert(payload);
+      if (error) throw error;
+      showToast("Reward rule added", "success");
+    }
+
+    resetRewardRuleForm();
+    await fetchCustomerRewardRules();
+  } catch (error) {
+    console.error("saveCustomerRewardRule failed:", error);
+    showToast(getReadableError(error) || "Reward rule save failed", "error");
+  } finally {
+    setSavingRewardRule(false);
+  }
+}
+
+async function deactivateCustomerRewardRule(rule: CustomerRewardRule) {
+  if (!restaurantId || !rule?.id) return;
+  setSavingRewardRule(true);
+  try {
+    const { error } = await supabase
+      .from("customer_reward_rules")
+      .update({ is_active: false })
+      .eq("restaurant_id", restaurantId)
+      .eq("id", Number(rule.id));
+    if (error) throw error;
+    setSelectedRewardByTable((prev) => {
+      const next = { ...prev };
+      Object.entries(next).forEach(([tableNo, rewardId]) => {
+        if (Number(rewardId || 0) === Number(rule.id)) next[tableNo] = null;
+      });
+      return next;
+    });
+    await fetchCustomerRewardRules();
+    showToast("Reward rule deactivated", "success");
+  } catch (error) {
+    console.error("deactivateCustomerRewardRule failed:", error);
+    showToast(getReadableError(error) || "Reward deactivate failed", "error");
+  } finally {
+    setSavingRewardRule(false);
+  }
+}
+
+function resetCustomerForm() {
+  setEditingCustomerId(null);
+  setNewCustomerName("");
+  setNewCustomerPhone("");
+  setNewCustomerAddress("");
+  setNewCustomerCreditLimit("");
+  setNewCustomerNote("");
+}
+
+function startEditCustomer(customer: Customer) {
+  setEditingCustomerId(Number(customer.id));
+  setNewCustomerName(customer.name || "");
+  setNewCustomerPhone(customer.phone || "");
+  setNewCustomerAddress(customer.address || "");
+  setNewCustomerCreditLimit(String(customer.credit_limit ?? ""));
+  setNewCustomerNote(customer.note || "");
+  setShowAddCustomerForm(true);
+}
+
+async function saveCustomer() {
+  if (!restaurantId) return;
+  const name = newCustomerName.trim();
+  const phone = newCustomerPhone.trim();
+  if (!name) {
+    showToast("Customer name required", "error");
+    return;
+  }
+
+  setSavingCustomer(true);
+  try {
+    const payload = {
+      restaurant_id: restaurantId,
+      name,
+      phone: phone || null,
+      address: newCustomerAddress.trim() || null,
+      credit_limit: Number(newCustomerCreditLimit || 0),
+      note: newCustomerNote.trim() || null,
+      loyalty_points: 0,
+      is_active: true,
+    };
+
+    if (editingCustomerId) {
+      const { error } = await supabase
+        .from("customers")
+        .update({
+          name: payload.name,
+          phone: payload.phone,
+          address: payload.address,
+          credit_limit: payload.credit_limit,
+          note: payload.note,
+          is_active: true,
+        })
+        .eq("restaurant_id", restaurantId)
+        .eq("id", editingCustomerId);
+      if (error) throw error;
+      showToast("Customer updated", "success");
+    } else {
+      const { error } = await supabase.from("customers").insert(payload);
+      if (error) throw error;
+      showToast("Customer saved", "success");
+    }
+
+    resetCustomerForm();
+    setShowAddCustomerForm(false);
+    await fetchCustomersData();
+  } catch (error) {
+    console.error("saveCustomer failed:", error);
+    showToast(getReadableError(error) || "Customer save failed", "error");
+  } finally {
+    setSavingCustomer(false);
+  }
+}
+
+async function archiveCustomer(customer: Customer) {
+  if (!restaurantId) return;
+  const totals = customerFinancialsById.get(Number(customer.id));
+  if ((totals?.creditLeft || 0) > 0) {
+    showToast("Clear due before archiving customer", "error");
+    return;
+  }
+  const ok = await askConfirm(`Archive ${customer.name}?`, "Archive", "Cancel");
+  if (!ok) return;
+  try {
+    const { error } = await supabase
+      .from("customers")
+      .update({ is_active: false })
+      .eq("restaurant_id", restaurantId)
+      .eq("id", Number(customer.id));
+    if (error) throw error;
+    if (selectedCustomerProfileId === Number(customer.id)) setSelectedCustomerProfileId(null);
+    await fetchCustomersData();
+    showToast("Customer archived", "success");
+  } catch (error) {
+    console.error("archiveCustomer failed:", error);
+    showToast(getReadableError(error) || "Archive failed", "error");
+  }
+}
+
+async function mergeCustomers() {
+  if (!restaurantId) return;
+  const fromId = Number(mergeFromCustomerId || 0);
+  const toId = Number(mergeToCustomerId || 0);
+  if (!fromId || !toId || fromId === toId) {
+    showToast("Select two different customers", "error");
+    return;
+  }
+  const fromCustomer = customers.find((customer) => Number(customer.id) === fromId);
+  const toCustomer = customers.find((customer) => Number(customer.id) === toId);
+  if (!fromCustomer || !toCustomer) {
+    showToast("Customer not found", "error");
+    return;
+  }
+  const ok = await askConfirm(`Merge ${fromCustomer.name} into ${toCustomer.name}?`, "Merge", "Cancel");
+  if (!ok) return;
+
+  setMergingCustomers(true);
+  try {
+    const updates = await Promise.all([
+      supabase.from("orders").update({ customer_id: toId, customer_name: toCustomer.name, customer_phone: toCustomer.phone || null }).eq("restaurant_id", restaurantId).eq("customer_id", fromId),
+      supabase.from("customer_credit_ledger").update({ customer_id: toId }).eq("restaurant_id", restaurantId).eq("customer_id", fromId),
+      supabase.from("customer_payments").update({ customer_id: toId }).eq("restaurant_id", restaurantId).eq("customer_id", fromId),
+      supabase.from("loyalty_transactions").update({ customer_id: toId }).eq("restaurant_id", restaurantId).eq("customer_id", fromId),
+      supabase.from("customers").update({ is_active: false, note: `Merged into ${toCustomer.name} (#${toId})` }).eq("restaurant_id", restaurantId).eq("id", fromId),
+    ]);
+
+    const failed = updates.find((result) => result.error);
+    if (failed?.error) throw failed.error;
+
+    setMergeFromCustomerId("");
+    setMergeToCustomerId("");
+    setSelectedCustomerProfileId(toId);
+    await fetchCustomersData();
+    await fetchOrders();
+    showToast("Customers merged", "success");
+  } catch (error) {
+    console.error("mergeCustomers failed:", error);
+    showToast(getReadableError(error) || "Merge failed", "error");
+  } finally {
+    setMergingCustomers(false);
+  }
+}
+
+async function receiveCustomerPayment() {
+  if (!restaurantId) return;
+  const customerId = Number(receivePaymentCustomerId || 0);
+  const amount = Number(receiveCustomerPaymentAmount || 0);
+  if (!customerId || amount <= 0) {
+    showToast("Customer and amount required", "error");
+    return;
+  }
+
+  try {
+    const { data: insertedPayment, error } = await supabase.from("customer_payments").insert({
+      restaurant_id: restaurantId,
+      customer_id: customerId,
+      amount,
+      payment_method: receiveCustomerPaymentMethod,
+      note: receiveCustomerPaymentNote.trim() || null,
+    }).select("id").single();
+    if (error) throw error;
+
+    const { error: ledgerError } = await supabase.from("customer_credit_ledger").insert({
+      restaurant_id: restaurantId,
+      customer_id: customerId,
+      payment_id: insertedPayment?.id || null,
+      entry_type: "payment",
+      amount,
+      note: receiveCustomerPaymentNote.trim() || `Due payment - ${receiveCustomerPaymentMethod.toUpperCase()}`,
+    });
+    if (ledgerError) throw ledgerError;
+
+    try {
+      await awardFullySettledCreditLoyalty(customerId);
+    } catch (loyaltyError) {
+      console.warn("Credit settlement loyalty failed:", loyaltyError);
+      showToast("Payment saved, but credit loyalty needs retry", "info");
+    }
+
+    setReceivePaymentCustomerId("");
+    setReceiveCustomerPaymentAmount("");
+    setReceiveCustomerPaymentNote("");
+    await fetchCustomersData();
+    showToast("Due payment received", "success");
+  } catch (error) {
+    console.error("receiveCustomerPayment failed:", error);
+    showToast(getReadableError(error) || "Payment save failed", "error");
+  }
+}
+
+function calculateFavouriteItems(profileOrders: OrderRow[]): CustomerFavoriteItem[] {
+  const itemMap = new Map<string, number>();
+
+  profileOrders.forEach((order) => {
+    (order.order_items || []).forEach((item) => {
+      if (item.voided === true) return;
+      const itemName = String(item.item_name || "").trim();
+      if (!itemName) return;
+      itemMap.set(itemName, (itemMap.get(itemName) || 0) + Number(item.quantity || 0));
+    });
+  });
+
+  return Array.from(itemMap.entries())
+    .map(([itemName, quantity]) => ({ itemName, quantity }))
+    .sort((a, b) => b.quantity - a.quantity || a.itemName.localeCompare(b.itemName))
+    .slice(0, 5);
+}
+
+function calculateCustomerStats(profileOrders: OrderRow[]): CustomerStats {
+  const billAmounts = profileOrders.map((order) => Number(order.grand_total || getOrderAmount(order) || 0));
+  const totalAmount = billAmounts.reduce((sum, amount) => sum + amount, 0);
+  const paidOrders = profileOrders.filter((order) => order.is_paid === true).length;
+  const creditOrders = profileOrders.filter((order) => isOrderCreditDue(order)).length;
+
+  return {
+    highestBill: billAmounts.length > 0 ? Math.max(...billAmounts) : 0,
+    averageBill: billAmounts.length > 0 ? Math.round(totalAmount / billAmounts.length) : 0,
+    paidOrders,
+    creditOrders,
+    totalOrders: profileOrders.length,
+  };
+}
+
+function loadCustomerTimeline(
+  profileOrders: OrderRow[],
+  profileCreditLedger: CustomerCreditLedger[],
+  profilePayments: CustomerPayment[],
+  profileLoyaltyTransactions: LoyaltyTransaction[]
+): CustomerTimelineEvent[] {
+  const orderById = new Map(profileOrders.map((order) => [Number(order.id), order]));
+  const paymentMatches = [...profilePayments];
+  const timeline: CustomerTimelineEvent[] = [];
+
+  profileOrders
+    .filter((order) => order.is_paid === true)
+    .forEach((order) => {
+      timeline.push({
+        id: `paid-${order.id}`,
+        date: order.paid_at || order.created_at,
+        title: "Paid",
+        subtitle: formatPaymentMethod(order.payment_method),
+        amount: Number(order.grand_total || getOrderAmount(order) || 0),
+        tableNumber: order.table_number,
+        paymentMethod: order.payment_method,
+        points: Number(order.loyalty_points_earned || 0) > 0 ? Number(order.loyalty_points_earned || 0) : null,
+        tone: "paid",
+      });
+    });
+
+  let runningDue = 0;
+  [...profileCreditLedger]
+    .sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime())
+    .forEach((entry) => {
+      const amount = Number(entry.amount || 0);
+      if (entry.entry_type === "credit_sale") {
+        runningDue += amount;
+        const order = entry.order_id ? orderById.get(Number(entry.order_id)) : null;
+        timeline.push({
+          id: `credit-${entry.id}`,
+          date: entry.created_at || order?.created_at || "",
+          title: "Credit Created",
+          amount: amount || Number(order?.credit_amount || order?.grand_total || 0),
+          tableNumber: order?.table_number || null,
+          remainingDue: Math.max(runningDue, 0),
+          tone: "credit",
+        });
+      } else if (entry.entry_type === "payment") {
+        runningDue = Math.max(runningDue - amount, 0);
+        const paymentIndex = paymentMatches.findIndex((payment) => {
+          if (entry.payment_id) return Number(payment.id) === Number(entry.payment_id);
+          return (
+            Math.abs(Number(payment.amount || 0) - amount) < 0.01 &&
+            String(payment.created_at || "").slice(0, 16) === String(entry.created_at || "").slice(0, 16)
+          );
+        });
+        const payment = paymentIndex >= 0 ? paymentMatches.splice(paymentIndex, 1)[0] : null;
+        timeline.push({
+          id: `credit-payment-${entry.id}`,
+          date: entry.created_at || payment?.created_at || "",
+          title: "Credit Payment",
+          subtitle: payment?.payment_method ? formatPaymentMethod(payment.payment_method) : undefined,
+          amount,
+          remainingDue: runningDue,
+          note: runningDue <= 0 ? "Credit Closed" : null,
+          tone: "payment",
+        });
+      }
+    });
+
+  profileLoyaltyTransactions
+    .filter((entry) => String(entry.transaction_type || "").toLowerCase() !== "visit")
+    .forEach((entry) => {
+      timeline.push({
+        id: `loyalty-${entry.id}`,
+        date: entry.created_at || "",
+        title: String(entry.transaction_type || "loyalty").replace(/_/g, " "),
+        points: Number(entry.points || 0),
+        note: entry.note || null,
+        tone: "loyalty",
+      });
+    });
+
+  return timeline.sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());
+}
+
+async function loadCustomerProfile(customerId: number) {
+  if (!restaurantId || !customerId) return;
+
+  setLoadingCustomerProfile(true);
+  setExpandedCustomerTimeline({});
+  try {
+    const [orderResult, ledgerResult, paymentResult, loyaltyResult] = await Promise.all([
+      supabase
+        .from("orders")
+        .select("id, client_create_id, restaurant_id, table_number, status, created_at, waiter_cleared, is_paid, payment_method, payment_status, paid_at, subtotal, discount_enabled, discount_percent, discount_amount, tax_enabled, tax_percent, tax_amount, grand_total, customer_id, customer_name, customer_phone, credit_amount, loyalty_points_used, loyalty_points_earned, remarks, inventory_deducted, cancelled, cancelled_at, cancel_reason, order_items(id, client_item_id, item_name, menu_item_id, quantity, unit_price, status, menu_item_variant_id, kot_printed, kot_printed_at, voided, voided_at, void_reason)")
+        .eq("restaurant_id", restaurantId)
+        .eq("customer_id", customerId)
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("customer_credit_ledger")
+        .select("id, restaurant_id, customer_id, order_id, payment_id, entry_type, amount, note, created_at")
+        .eq("restaurant_id", restaurantId)
+        .eq("customer_id", customerId)
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("customer_payments")
+        .select("id, restaurant_id, customer_id, amount, payment_method, note, created_at")
+        .eq("restaurant_id", restaurantId)
+        .eq("customer_id", customerId)
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("loyalty_transactions")
+        .select("id, restaurant_id, customer_id, order_id, transaction_type, points, note, created_at")
+        .eq("restaurant_id", restaurantId)
+        .eq("customer_id", customerId)
+        .order("created_at", { ascending: false }),
+    ]);
+
+    if (orderResult.error) throw orderResult.error;
+    if (ledgerResult.error) throw ledgerResult.error;
+    if (paymentResult.error) throw paymentResult.error;
+    if (loyaltyResult.error) throw loyaltyResult.error;
+
+    const profileOrders = (orderResult.data || []) as OrderRow[];
+    const profileCreditLedger = (ledgerResult.data || []) as CustomerCreditLedger[];
+    const profilePayments = (paymentResult.data || []) as CustomerPayment[];
+    const profileLoyaltyTransactions = (loyaltyResult.data || []) as LoyaltyTransaction[];
+
+    setCustomerProfileData({
+      customerId,
+      orders: profileOrders,
+      creditLedger: profileCreditLedger,
+      payments: profilePayments,
+      loyaltyTransactions: profileLoyaltyTransactions,
+      timeline: loadCustomerTimeline(profileOrders, profileCreditLedger, profilePayments, profileLoyaltyTransactions),
+      favoriteItems: calculateFavouriteItems(profileOrders),
+      stats: calculateCustomerStats(profileOrders),
+    });
+  } catch (error) {
+    console.error("loadCustomerProfile failed:", error);
+    showToast(getReadableError(error) || "Customer profile failed to load", "error");
+    setCustomerProfileData(null);
+  } finally {
+    setLoadingCustomerProfile(false);
+  }
+}
+
+function getSelectedCustomerForTable(tableNo: string) {
+  const id = Number(selectedCustomerByTable[String(tableNo || "").trim()] || 0);
+  return customers.find((customer) => Number(customer.id) === id) || null;
+}
+
+function normalizeCustomerPhone(phone: string) {
+  return String(phone || "").replace(/[^\d+]/g, "").trim();
+}
+
+function findExistingCustomerByPhone(phone: string) {
+  const normalizedPhone = normalizeCustomerPhone(phone);
+  if (!normalizedPhone) return null;
+
+  return customers.find(
+    (customer) =>
+      customer.is_active !== false &&
+      normalizeCustomerPhone(customer.phone || "") === normalizedPhone
+  ) || null;
+}
+
+async function resolveOrCreateBillingCustomer(tableNo: string) {
+  if (!restaurantId) return null;
+
+  const normalizedTableNo = String(tableNo || "").trim();
+  if (!normalizedTableNo) return null;
+
+  const selectedCustomer = getSelectedCustomerForTable(normalizedTableNo);
+  if (selectedCustomer) return selectedCustomer;
+
+  const name = String(quickCustomerNameByTable[normalizedTableNo] || "").trim();
+  const phone = String(quickCustomerPhoneByTable[normalizedTableNo] || "").trim();
+  const normalizedPhone = normalizeCustomerPhone(phone);
+
+  if (!name && !normalizedPhone) return null;
+
+  if (normalizedPhone) {
+    const stateMatch = findExistingCustomerByPhone(normalizedPhone);
+    if (stateMatch) {
+      setSelectedCustomerByTable((prev) => ({ ...prev, [normalizedTableNo]: String(stateMatch.id) }));
+      return stateMatch;
+    }
+
+    const { data, error } = await supabase
+      .from("customers")
+      .select("id, restaurant_id, name, phone, address, credit_limit, loyalty_points, visits, total_spent, last_visit, note, is_active, created_at, updated_at")
+      .eq("restaurant_id", restaurantId)
+      .eq("phone", phone)
+      .neq("is_active", false)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (data) {
+      const existingCustomer = data as Customer;
+      setCustomers((prev) => [existingCustomer, ...prev.filter((customer) => Number(customer.id) !== Number(existingCustomer.id))]);
+      setSelectedCustomerByTable((prev) => ({ ...prev, [normalizedTableNo]: String(existingCustomer.id) }));
+      return existingCustomer;
+    }
+  }
+
+  if (!name) {
+    showToast("Customer name required to save new customer", "error");
+    return null;
+  }
+
+  // Phone is preferred for customer reuse; name-only customers are allowed for quick billing.
+  const { data, error } = await supabase
+    .from("customers")
+    .insert({
+      restaurant_id: restaurantId,
+      name,
+      phone: phone || null,
+      loyalty_points: 0,
+      is_active: true,
+    })
+    .select("id, restaurant_id, name, phone, address, credit_limit, loyalty_points, visits, total_spent, last_visit, note, is_active, created_at, updated_at")
+    .single();
+
+  if (error) throw error;
+
+  const savedCustomer = data as Customer;
+  setCustomers((prev) => [savedCustomer, ...prev.filter((customer) => Number(customer.id) !== Number(savedCustomer.id))]);
+  setSelectedCustomerByTable((prev) => ({ ...prev, [normalizedTableNo]: String(savedCustomer.id) }));
+  setQuickCustomerNameByTable((prev) => ({ ...prev, [normalizedTableNo]: "" }));
+  setQuickCustomerPhoneByTable((prev) => ({ ...prev, [normalizedTableNo]: "" }));
+  fetchCustomersData().catch((refreshError) => console.warn("Customer refresh after billing quick add failed:", refreshError));
+
+  return savedCustomer;
+}
+
+async function attachCustomerToOrders(orderIds: number[], customer: Customer) {
+  if (!restaurantId || !customer?.id) return;
+
+  const normalizedOrderIds = Array.from(
+    new Set(
+      orderIds
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id) && id > 0)
+    )
+  );
+  if (normalizedOrderIds.length === 0) return;
+
+  const { error } = await supabase
+    .from("orders")
+    .update({
+      customer_id: Number(customer.id),
+      customer_name: customer.name,
+      customer_phone: customer.phone || null,
+    })
+    .eq("restaurant_id", restaurantId)
+    .in("id", normalizedOrderIds);
+
+  if (error) throw error;
+}
+
+function getMissingCustomerSummaryColumn(error: unknown) {
+  const maybeError = error as { message?: unknown; details?: unknown; hint?: unknown; code?: unknown };
+  const text = [
+    typeof maybeError?.message === "string" ? maybeError.message : "",
+    typeof maybeError?.details === "string" ? maybeError.details : "",
+    typeof maybeError?.hint === "string" ? maybeError.hint : "",
+  ].join(" ");
+
+  const quotedColumn = text.match(/'([a-z_]+)' column/i)?.[1];
+  if (quotedColumn) return quotedColumn;
+
+  const missingColumn = text.match(/column customers\.([a-z_]+) does not exist/i)?.[1];
+  return missingColumn || null;
+}
+
+async function getAvailableCustomerSummaryColumns() {
+  if (customerSummaryColumnsRef.current) return customerSummaryColumnsRef.current;
+
+  const candidateColumns = new Set(["visits", "last_visit", "total_spent"]);
+
+  while (candidateColumns.size > 0) {
+    const selectColumns = ["id", ...Array.from(candidateColumns)].join(", ");
+    const { error } = await supabase.from("customers").select(selectColumns).limit(1);
+
+    if (!error) {
+      customerSummaryColumnsRef.current = candidateColumns;
+      return candidateColumns;
+    }
+
+    const missingColumn = getMissingCustomerSummaryColumn(error);
+    if (missingColumn && candidateColumns.has(missingColumn)) {
+      candidateColumns.delete(missingColumn);
+      continue;
+    }
+
+    console.warn("Customer summary column probe failed:", error);
+    customerSummaryColumnsRef.current = new Set();
+    return customerSummaryColumnsRef.current;
+  }
+
+  customerSummaryColumnsRef.current = candidateColumns;
+  return candidateColumns;
+}
+
+async function updateCustomerSummaryFieldsSafely(
+  customerId: number,
+  options: { addVisit?: boolean; addTotalSpent?: number; lastVisitAt?: string } = {}
+) {
+  if (!restaurantId || !customerId) return;
+
+  const availableColumns = await getAvailableCustomerSummaryColumns();
+  const summaryColumns = Array.from(availableColumns);
+  if (summaryColumns.length === 0) return;
+
+  const { data, error } = await supabase
+    .from("customers")
+    .select(["id", ...summaryColumns].join(", "))
+    .eq("restaurant_id", restaurantId)
+    .eq("id", customerId)
+    .maybeSingle();
+
+  if (error || !data) {
+    if (error) console.warn("Customer summary read skipped:", error);
+    return;
+  }
+
+  const summaryRow = data as unknown as Record<string, unknown>;
+  const updatePayload: Record<string, number | string> = {};
+  if (options.addVisit && availableColumns.has("visits")) {
+    updatePayload.visits = Number(summaryRow.visits || 0) + 1;
+  }
+  if (options.lastVisitAt && availableColumns.has("last_visit")) {
+    updatePayload.last_visit = options.lastVisitAt;
+  }
+  if (options.addTotalSpent && availableColumns.has("total_spent")) {
+    updatePayload.total_spent = Number(summaryRow.total_spent || 0) + Number(options.addTotalSpent || 0);
+  }
+
+  if (Object.keys(updatePayload).length === 0) return;
+
+  const { error: updateError } = await supabase
+    .from("customers")
+    .update(updatePayload)
+    .eq("restaurant_id", restaurantId)
+    .eq("id", customerId);
+
+  if (updateError) {
+    const missingColumn = getMissingCustomerSummaryColumn(updateError);
+    if (missingColumn && customerSummaryColumnsRef.current?.has(missingColumn)) {
+      customerSummaryColumnsRef.current.delete(missingColumn);
+      return updateCustomerSummaryFieldsSafely(customerId, options);
+    }
+    console.warn("Customer summary update skipped:", updateError);
+  }
+}
+
+async function addCustomerVisitOnce(customer: Customer, orderId: number, options: { addTotalSpent?: number } = {}) {
+  if (!restaurantId || !customer?.id || !orderId) return;
+  const normalizedOrderId = Number(orderId);
+  if (!Number.isFinite(normalizedOrderId) || normalizedOrderId <= 0) return;
+
+  const customerId = Number(customer.id);
+  const { data: existingVisit, error: existingVisitError } = await supabase
+    .from("loyalty_transactions")
+    .select("id")
+    .eq("restaurant_id", restaurantId)
+    .eq("customer_id", customerId)
+    .eq("order_id", normalizedOrderId)
+    .eq("transaction_type", "visit")
+    .maybeSingle();
+
+  if (existingVisitError) throw existingVisitError;
+  if (existingVisit) return;
+
+  const { error: visitGuardError } = await supabase.from("loyalty_transactions").insert({
+    restaurant_id: restaurantId,
+    customer_id: customerId,
+    order_id: normalizedOrderId,
+    transaction_type: "visit",
+    points: 0,
+    note: "Customer visit",
+  });
+  if (visitGuardError) throw visitGuardError;
+
+  await updateCustomerSummaryFieldsSafely(Number(customer.id), {
+    addVisit: true,
+    lastVisitAt: new Date().toISOString(),
+    addTotalSpent: options.addTotalSpent,
+  });
+}
+
+async function awardPaidVisitLoyaltyOnce(
+  customer: Customer,
+  anchorOrderId: number,
+  options: { note?: string; addVisit?: boolean; addTotalSpent?: number } = {}
+) {
+  if (!restaurantId || !customer?.id || !anchorOrderId) return;
+
+  const customerId = Number(customer.id);
+  const orderId = Number(anchorOrderId);
+  if (!Number.isFinite(customerId) || customerId <= 0 || !Number.isFinite(orderId) || orderId <= 0) return;
+
+  const { data: orderState, error: orderStateError } = await supabase
+    .from("orders")
+    .select("loyalty_points_earned")
+    .eq("restaurant_id", restaurantId)
+    .eq("id", orderId)
+    .maybeSingle();
+
+  if (orderStateError) throw orderStateError;
+  if (Number(orderState?.loyalty_points_earned || 0) > 0) return;
+
+  const { data: existing, error: existingError } = await supabase
+    .from("loyalty_transactions")
+    .select("id")
+    .eq("restaurant_id", restaurantId)
+    .eq("customer_id", customerId)
+    .eq("order_id", orderId)
+    .eq("transaction_type", "earned")
+    .maybeSingle();
+
+  if (existingError) throw existingError;
+  if (existing) return;
+
+  const { error: insertError } = await supabase.from("loyalty_transactions").insert({
+    restaurant_id: restaurantId,
+    customer_id: customerId,
+    order_id: orderId,
+    transaction_type: "earned",
+    points: 1,
+    note: options.note || "Paid visit loyalty",
+  });
+  if (insertError) throw insertError;
+
+  const { data: currentCustomer, error: currentCustomerError } = await supabase
+    .from("customers")
+    .select("loyalty_points")
+    .eq("restaurant_id", restaurantId)
+    .eq("id", customerId)
+    .maybeSingle();
+  if (currentCustomerError) throw currentCustomerError;
+
+  const currentPoints = Number(currentCustomer?.loyalty_points ?? customer.loyalty_points ?? 0) || 0;
+  const { error: customerError } = await supabase
+    .from("customers")
+    .update({ loyalty_points: currentPoints + 1 })
+    .eq("restaurant_id", restaurantId)
+    .eq("id", customerId);
+  if (customerError) throw customerError;
+
+  const { error: orderError } = await supabase
+    .from("orders")
+    .update({ loyalty_points_earned: 1 })
+    .eq("restaurant_id", restaurantId)
+    .eq("id", orderId);
+  if (orderError) throw orderError;
+
+  if (options.addVisit || options.addTotalSpent) {
+    await updateCustomerSummaryFieldsSafely(customerId, {
+      addVisit: options.addVisit,
+      lastVisitAt: options.addVisit ? new Date().toISOString() : undefined,
+      addTotalSpent: options.addTotalSpent,
+    });
+  }
+
+  setCustomers((prev) =>
+    prev.map((entry) =>
+      Number(entry.id) === customerId
+        ? { ...entry, loyalty_points: currentPoints + 1 }
+        : entry
+    )
+  );
+  fetchCustomersData().catch((refreshError) => console.warn("Customer refresh after loyalty failed:", refreshError));
+}
+
+async function awardFullySettledCreditLoyalty(customerId: number) {
+  if (!restaurantId || !customerId) return;
+
+  const { data: ledgerRows, error: ledgerError } = await supabase
+    .from("customer_credit_ledger")
+    .select("id, restaurant_id, customer_id, order_id, payment_id, entry_type, amount, note, created_at")
+    .eq("restaurant_id", restaurantId)
+    .eq("customer_id", customerId)
+    .order("created_at", { ascending: true });
+
+  if (ledgerError) throw ledgerError;
+
+  const ledger = (ledgerRows || []) as CustomerCreditLedger[];
+  const creditSales = ledger
+    .filter((entry) => entry.entry_type === "credit_sale" && Number(entry.order_id || 0) > 0)
+    .sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+
+  if (creditSales.length === 0) return;
+
+  const totalPaid = ledger
+    .filter((entry) => entry.entry_type === "payment")
+    .reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+
+  let runningCredit = 0;
+  const settledCreditSales = creditSales.filter((entry) => {
+    runningCredit += Number(entry.amount || 0);
+    return totalPaid + 0.0001 >= runningCredit;
+  });
+
+  if (settledCreditSales.length === 0) return;
+
+  const settledOrderIds = settledCreditSales
+    .map((entry) => Number(entry.order_id || 0))
+    .filter((id) => Number.isFinite(id) && id > 0);
+
+  const { data: orderRows, error: orderError } = await supabase
+    .from("orders")
+    .select("id, customer_id, customer_name, customer_phone, credit_amount, grand_total, loyalty_points_earned, payment_method, status")
+    .eq("restaurant_id", restaurantId)
+    .in("id", settledOrderIds);
+
+  if (orderError) throw orderError;
+
+  const orderById = new Map((orderRows || []).map((order) => [Number(order.id), order as OrderRow]));
+  const customer = customers.find((entry) => Number(entry.id) === customerId);
+
+  for (const creditSale of settledCreditSales) {
+    const orderId = Number(creditSale.order_id || 0);
+    const order = orderById.get(orderId);
+    if (!order || Number(order.loyalty_points_earned || 0) > 0) continue;
+
+    await awardPaidVisitLoyaltyOnce(
+      {
+        id: customerId,
+        restaurant_id: restaurantId,
+        name: order.customer_name || customer?.name || "Customer",
+        phone: order.customer_phone || customer?.phone || null,
+        loyalty_points: customer?.loyalty_points || 0,
+        is_active: true,
+      },
+      orderId,
+      {
+        note: "Credit bill fully paid",
+        addVisit: false,
+        addTotalSpent: Number(order.credit_amount || order.grand_total || creditSale.amount || 0),
+      }
+    );
+  }
+}
+
+function getRewardRuleLabel(rule: CustomerRewardRule) {
+  if (rule.reward_type === "free_item") return rule.reward_item_name || rule.title || "Free item";
+  if (rule.reward_type === "discount_percent") return `${formatReceiptMoney(Number(rule.reward_value || 0))}% off`;
+  if (rule.reward_type === "discount_amount") return `Rs. ${formatReceiptMoney(Number(rule.reward_value || 0))} off`;
+  return rule.title || "Reward";
+}
+
+function getEligibleRewards(customer?: Customer | null) {
+  if (!customer) return [];
+  const loyaltyPoints = Number(customer.loyalty_points || 0);
+  return customerRewardRules
+    .filter((rule) => rule.is_active !== false && loyaltyPoints >= Number(rule.required_visits || 0))
+    .sort((a, b) => Number(a.required_visits || 0) - Number(b.required_visits || 0));
+}
+
+function getSelectedRewardForTable(tableNo: string, customer?: Customer | null) {
+  const rewardId = Number(selectedRewardByTable[String(tableNo || "").trim()] || 0);
+  if (!rewardId || !customer) return null;
+  return getEligibleRewards(customer).find((rule) => Number(rule.id) === rewardId) || null;
+}
+
+function getRewardDiscountAmount(rule: CustomerRewardRule | null | undefined, subtotalAfterManualDiscount: number) {
+  if (!rule) return 0;
+  const cappedBase = Math.max(0, Number(subtotalAfterManualDiscount || 0));
+  const rewardValue = Math.max(0, Number(rule.reward_value || 0));
+  let rewardDiscount = 0;
+
+  if (rule.reward_type === "discount_percent") {
+    rewardDiscount = roundMoney((cappedBase * rewardValue) / 100);
+  } else if (rule.reward_type === "discount_amount" || rule.reward_type === "free_item") {
+    rewardDiscount = rewardValue;
+  }
+
+  return roundMoney(Math.min(cappedBase, Math.max(0, rewardDiscount)));
+}
+
+async function redeemCustomerRewardOnce(
+  customer: Customer | null,
+  rule: CustomerRewardRule | null,
+  orderId: number,
+  discountAmount: number
+) {
+  if (!restaurantId || !customer?.id || !rule?.id || !orderId) return;
+  const customerId = Number(customer.id);
+  const rewardRuleId = Number(rule.id);
+  const normalizedOrderId = Number(orderId);
+  if (!Number.isFinite(customerId) || !Number.isFinite(rewardRuleId) || !Number.isFinite(normalizedOrderId)) return;
+
+  const { data: existing, error: existingError } = await supabase
+    .from("customer_reward_redemptions")
+    .select("id")
+    .eq("restaurant_id", restaurantId)
+    .eq("customer_id", customerId)
+    .eq("order_id", normalizedOrderId)
+    .eq("reward_rule_id", rewardRuleId)
+    .maybeSingle();
+  if (existingError) throw existingError;
+  if (existing) return;
+
+  const { error } = await supabase.from("customer_reward_redemptions").insert({
+    restaurant_id: restaurantId,
+    customer_id: customerId,
+    reward_rule_id: rewardRuleId,
+    order_id: normalizedOrderId,
+    visits_used: Number(rule.required_visits || 0),
+    discount_amount: roundMoney(discountAmount),
+    note: rule.title || getRewardRuleLabel(rule),
+  });
+  if (error) throw error;
+}
+
+function renderBillingCustomerChip(tableNo: string) {
+  const normalizedTableNo = String(tableNo || "").trim();
+  const selectedCustomer = getSelectedCustomerForTable(normalizedTableNo);
+
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2">
+      {selectedCustomer ? (
+        <>
+          <button
+            type="button"
+            onClick={() => {
+              setCustomerPickerTable(normalizedTableNo);
+              setCustomerPickerMode("billing");
+            }}
+            className="min-w-0 flex-1 truncate text-left text-xs font-black text-slate-800"
+          >
+            Customer: {selectedCustomer.name}{selectedCustomer.phone ? ` - ${selectedCustomer.phone}` : ""}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedCustomerByTable((prev) => {
+                const next = { ...prev };
+                delete next[normalizedTableNo];
+                return next;
+              });
+            }}
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-sm font-black text-slate-500"
+            aria-label="Clear customer"
+          >
+            x
+          </button>
+        </>
+      ) : (
+        <button
+          type="button"
+          onClick={() => {
+            setCustomerPickerTable(normalizedTableNo);
+            setCustomerPickerMode("billing");
+            if (customers.length === 0) fetchCustomersData().catch((error) => console.warn("Billing customer refresh failed:", error));
+          }}
+          className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white"
+        >
+          Add Customer
+        </button>
+      )}
+    </div>
+  );
+}
+
+function renderRewardSelector(tableNo: string, paymentMethod: PaymentMethod, subtotalValue: number) {
+  const normalizedTableNo = String(tableNo || "").trim();
+  const selectedCustomer = getSelectedCustomerForTable(normalizedTableNo);
+  if (!selectedCustomer) return null;
+
+  const eligibleRewards = getEligibleRewards(selectedCustomer);
+  const selectedReward = paymentMethod === "credit" ? null : getSelectedRewardForTable(normalizedTableNo, selectedCustomer);
+  const manualBreakdown = getPaymentBreakdown(subtotalValue, normalizedTableNo);
+  const subtotalAfterManualDiscount = Math.max(
+    0,
+    Number(manualBreakdown.subtotal || 0) - Number(manualBreakdown.discount_amount || 0)
+  );
+  const selectedRewardDiscount = getRewardDiscountAmount(selectedReward, subtotalAfterManualDiscount);
+
+  if (paymentMethod === "credit") {
+    return (
+      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-500">
+        Rewards are not available for credit bills.
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs font-black uppercase tracking-[0.14em] text-amber-700">Rewards</p>
+        {selectedReward ? <p className="text-xs font-black text-emerald-700">- Rs. {formatReceiptMoney(selectedRewardDiscount)}</p> : null}
+      </div>
+      {loadingCustomerRewardRules ? (
+        <p className="mt-2 text-xs font-bold text-amber-700">Loading rewards...</p>
+      ) : eligibleRewards.length === 0 ? (
+        <p className="mt-2 text-xs font-bold text-amber-700">No rewards eligible yet</p>
+      ) : (
+        <div className="mt-2 grid gap-2">
+          <button
+            type="button"
+            onClick={() => setSelectedRewardByTable((prev) => ({ ...prev, [normalizedTableNo]: null }))}
+            className={`rounded-xl px-3 py-2 text-left text-xs font-black ${
+              !selectedReward ? "bg-white text-slate-950 ring-1 ring-amber-200" : "bg-amber-100 text-amber-800"
+            }`}
+          >
+            No reward
+          </button>
+          {eligibleRewards.map((rule) => (
+            <button
+              key={`reward-option-${normalizedTableNo}-${rule.id}`}
+              type="button"
+              onClick={() => setSelectedRewardByTable((prev) => ({ ...prev, [normalizedTableNo]: Number(rule.id) }))}
+              className={`rounded-xl px-3 py-2 text-left text-xs font-black ${
+                selectedReward && Number(selectedReward.id) === Number(rule.id)
+                  ? "bg-white text-slate-950 ring-1 ring-amber-300"
+                  : "bg-amber-100 text-amber-800"
+              }`}
+            >
+              {rule.title} - {getRewardRuleLabel(rule)}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function renderEligibleCustomerRewards(customer: Customer) {
+  const eligibleRewards = getEligibleRewards(customer);
+  if (eligibleRewards.length === 0) return null;
+
+  return (
+    <div className="mt-2 rounded-2xl bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800 ring-1 ring-amber-100">
+      <p className="font-black text-amber-900">Eligible Rewards</p>
+      <p className="mt-0.5 text-[11px] font-bold text-amber-700">Loyalty: {formatReceiptMoney(Number(customer.loyalty_points || 0))}</p>
+      <div className="mt-1 flex flex-wrap gap-1.5">
+        {eligibleRewards.slice(0, 3).map((rule) => (
+          <span key={`eligible-reward-${customer.id}-${rule.id}`} className="rounded-full bg-white px-2 py-1 ring-1 ring-amber-100" title={`Eligible when loyalty >= ${Number(rule.required_visits || 0)} paid visits`}>
+            Gift {rule.title}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function renderCustomerPickerSheet() {
+  if (!customerPickerTable) return null;
+
+  const normalizedTableNo = String(customerPickerTable || "").trim();
+  const selectedCustomer = getSelectedCustomerForTable(normalizedTableNo);
+  const search = String(billingCustomerSearchByTable[normalizedTableNo] || "").trim().toLowerCase();
+  const quickName = quickCustomerNameByTable[normalizedTableNo] || "";
+  const quickPhone = quickCustomerPhoneByTable[normalizedTableNo] || "";
+  const matchingCustomers = customers
+    .filter((customer) => {
+      if (customer.is_active === false) return false;
+      if (!search) return true;
+      return (
+        String(customer.name || "").toLowerCase().includes(search) ||
+        String(customer.phone || "").toLowerCase().includes(search)
+      );
+    })
+    .slice(0, 5);
+
+  const closePicker = () => {
+    setCustomerPickerTable(null);
+    setCustomerPickerMode(null);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[170] flex items-end bg-black/45 px-3 pb-3 sm:items-center sm:justify-center">
+      <div className="max-h-[88vh] w-full max-w-lg overflow-y-auto rounded-[30px] bg-white p-5 shadow-2xl">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-black uppercase tracking-[0.18em] text-red-500">
+              {customerPickerMode === "credit" ? "Credit customer" : "Bill customer"}
+            </p>
+            <h3 className="mt-1 text-2xl font-black text-slate-950">Table {normalizedTableNo}</h3>
+            <p className="mt-1 text-xs font-semibold text-slate-500">
+              {customerPickerMode === "credit" ? "Customer is required for credit." : "Customer is optional for Cash, QR and Card."}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={closePicker}
+            className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-lg font-black text-slate-700"
+            aria-label="Close customer picker"
+          >
+            x
+          </button>
+        </div>
+
+        {selectedCustomer ? (
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedCustomerByTable((prev) => {
+                const next = { ...prev };
+                delete next[normalizedTableNo];
+                return next;
+              });
+            }}
+            className="mt-4 rounded-2xl border border-slate-200 px-3 py-2 text-xs font-black text-slate-600"
+          >
+            Clear selected customer
+          </button>
+        ) : null}
+
+        {selectedCustomer ? (
+          <div className="mt-4 rounded-2xl bg-emerald-50 px-3 py-3 ring-1 ring-emerald-100">
+            <p className="text-sm font-black text-emerald-900">{selectedCustomer.name}</p>
+            <p className="mt-0.5 text-xs font-bold text-emerald-700">{selectedCustomer.phone || "No phone"}</p>
+          </div>
+        ) : null}
+
+        <input
+          type="text"
+          value={billingCustomerSearchByTable[normalizedTableNo] || ""}
+          onFocus={() => {
+            if (customers.length === 0) fetchCustomersData().catch((error) => console.warn("Billing customer refresh failed:", error));
+          }}
+          onChange={(event) =>
+            setBillingCustomerSearchByTable((prev) => ({
+              ...prev,
+              [normalizedTableNo]: event.target.value,
+            }))
+          }
+          placeholder="Search customer name or phone"
+          className="mt-5 w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold outline-none focus:border-red-500"
+        />
+
+        {matchingCustomers.length > 0 ? (
+          <div className="mt-3 grid gap-2">
+            {matchingCustomers.map((customer) => (
+              <button
+                key={`billing-customer-${normalizedTableNo}-${customer.id}`}
+                type="button"
+                onClick={() => {
+                  setSelectedCustomerByTable((prev) => ({ ...prev, [normalizedTableNo]: String(customer.id) }));
+                  setBillingCustomerSearchByTable((prev) => ({ ...prev, [normalizedTableNo]: "" }));
+                  closePicker();
+                }}
+                className={`rounded-2xl border px-3 py-2 text-left transition ${
+                  selectedCustomer && Number(selectedCustomer.id) === Number(customer.id)
+                    ? "border-emerald-200 bg-emerald-50"
+                    : "border-slate-200 bg-slate-50"
+                }`}
+              >
+                <p className="text-sm font-black text-slate-900">{customer.name}</p>
+                <p className="mt-0.5 text-xs font-semibold text-slate-500">{customer.phone || "No phone"}</p>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-3 rounded-2xl bg-slate-50 px-3 py-3 text-xs font-bold text-slate-400">No matching customer.</p>
+        )}
+
+        <div className="mt-4 rounded-[24px] bg-slate-50 p-3 ring-1 ring-slate-200">
+          <p className="text-sm font-black text-slate-900">Quick add</p>
+          <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <input
+              type="text"
+              value={quickName}
+              onChange={(event) =>
+                setQuickCustomerNameByTable((prev) => ({
+                  ...prev,
+                  [normalizedTableNo]: event.target.value,
+                }))
+              }
+              placeholder="New customer name"
+              className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold outline-none focus:border-red-500"
+            />
+            <input
+              type="tel"
+              value={quickPhone}
+              onChange={(event) =>
+                setQuickCustomerPhoneByTable((prev) => ({
+                  ...prev,
+                  [normalizedTableNo]: event.target.value,
+                }))
+              }
+              placeholder="Phone preferred"
+              className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold outline-none focus:border-red-500"
+            />
+          </div>
+        </div>
+
+        <div className="mt-5 grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={closePicker}
+            className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-700"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              resolveOrCreateBillingCustomer(normalizedTableNo)
+                .then((customer) => {
+                  if (customer) {
+                    showToast("Customer attached to bill", "success");
+                    closePicker();
+                  }
+                })
+                .catch((error) => {
+                  console.error("Billing customer save failed:", error);
+                  showToast(getReadableError(error) || "Customer save failed", "error");
+                })
+            }
+            className="rounded-2xl bg-slate-900 px-4 py-3 text-sm font-black text-white"
+          >
+            Save & Use
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function openCreditCustomerSheet(tableNo: string) {
+  const normalizedTableNo = String(tableNo || "").trim();
+  if (!normalizedTableNo) return;
+  setCreditCustomerSheetTableNo(normalizedTableNo);
+  setCreditCustomerSearch("");
+  setCreditCustomerName("");
+  setCreditCustomerPhone("");
+  setCreditCustomerLimit("");
+  setCreditCustomerNote("");
+  if (customers.length === 0) {
+    fetchCustomersData().catch((error) => console.warn("Credit customer refresh failed", error));
+  }
+}
+
+function closeCreditCustomerSheet() {
+  setCreditCustomerSheetTableNo(null);
+  setCreditCustomerSearch("");
+  setCreditCustomerName("");
+  setCreditCustomerPhone("");
+  setCreditCustomerLimit("");
+  setCreditCustomerNote("");
+}
+
+async function saveCreditCustomerAndAddCredit() {
+  if (!restaurantId || !creditCustomerSheetTableNo) return;
+  const name = creditCustomerName.trim();
+  const phone = creditCustomerPhone.trim();
+  if (!name) {
+    showToast("Customer name required", "error");
+    return;
+  }
+
+  setSavingCreditCustomer(true);
+  try {
+    if (phone) {
+      const existingCustomer = findExistingCustomerByPhone(phone);
+      if (existingCustomer) {
+        setSelectedCustomerByTable((prev) => ({ ...prev, [creditCustomerSheetTableNo]: String(existingCustomer.id) }));
+        const targetTableNo = creditCustomerSheetTableNo;
+        closeCreditCustomerSheet();
+        await markGroupedTableAsCredit(targetTableNo, existingCustomer);
+        return;
+      }
+
+      const { data: remoteExistingCustomer, error: remoteExistingError } = await supabase
+        .from("customers")
+        .select("id, restaurant_id, name, phone, address, credit_limit, loyalty_points, visits, total_spent, last_visit, note, is_active, created_at, updated_at")
+        .eq("restaurant_id", restaurantId)
+        .eq("phone", phone)
+        .neq("is_active", false)
+        .maybeSingle();
+      if (remoteExistingError) throw remoteExistingError;
+      if (remoteExistingCustomer) {
+        const existingRemoteCustomer = remoteExistingCustomer as Customer;
+        setCustomers((prev) => [existingRemoteCustomer, ...prev.filter((customer) => Number(customer.id) !== Number(existingRemoteCustomer.id))]);
+        setSelectedCustomerByTable((prev) => ({ ...prev, [creditCustomerSheetTableNo]: String(existingRemoteCustomer.id) }));
+        const targetTableNo = creditCustomerSheetTableNo;
+        closeCreditCustomerSheet();
+        await markGroupedTableAsCredit(targetTableNo, existingRemoteCustomer);
+        return;
+      }
+    }
+
+    const { data, error } = await supabase
+      .from("customers")
+      .insert({
+        restaurant_id: restaurantId,
+        name,
+        phone: phone || null,
+        credit_limit: Number(creditCustomerLimit || 0),
+        note: creditCustomerNote.trim() || null,
+        loyalty_points: 0,
+        is_active: true,
+      })
+      .select("id, restaurant_id, name, phone, address, credit_limit, loyalty_points, visits, total_spent, last_visit, note, is_active, created_at, updated_at")
+      .single();
+
+    if (error) throw error;
+    const savedCustomer = data as Customer;
+    setCustomers((prev) => [savedCustomer, ...prev.filter((customer) => Number(customer.id) !== Number(savedCustomer.id))]);
+    setSelectedCustomerByTable((prev) => ({ ...prev, [creditCustomerSheetTableNo]: String(savedCustomer.id) }));
+    const targetTableNo = creditCustomerSheetTableNo;
+    closeCreditCustomerSheet();
+    await markGroupedTableAsCredit(targetTableNo, savedCustomer);
+  } catch (error) {
+    console.error("saveCreditCustomerAndAddCredit failed:", error);
+    showToast(getReadableError(error) || "Customer credit save failed", "error");
+  } finally {
+    setSavingCreditCustomer(false);
+  }
+}
+
+async function markGroupedTableAsCredit(tableNo: string, customerOverride?: Customer | null) {
+  if (!restaurantId) return;
+  const normalizedTableNo = tableNo.trim();
+  const customer = customerOverride || getSelectedCustomerForTable(normalizedTableNo);
+  if (!customer) {
+    setCustomerPickerTable(normalizedTableNo);
+    setCustomerPickerMode("credit");
+    if (customers.length === 0) fetchCustomersData().catch((error) => console.warn("Credit customer refresh failed", error));
+    showToast("Customer required for credit", "info");
+    return;
+  }
+
+  const unpaidOrdersForTable = orders.filter(
+    (order) =>
+      String(order.table_number).trim() === normalizedTableNo &&
+      order.is_paid !== true &&
+      order.sync_status !== "pending_payment" &&
+      order.payment_method !== "credit" &&
+      order.status !== "credit_due"
+  );
+  if (unpaidOrdersForTable.length === 0) {
+    showToast("No unpaid order found", "error");
+    return;
+  }
+
+  const newCreditTotal = unpaidOrdersForTable.reduce(
+    (sum, order) => sum + Number(getOrderPaymentBreakdown(order, normalizedTableNo).grand_total || 0),
+    0
+  );
+  const currentDue = customerFinancialsById.get(Number(customer.id))?.creditLeft || 0;
+  const creditLimit = Number(customer.credit_limit || 0);
+  if (creditLimit > 0 && currentDue + newCreditTotal > creditLimit) {
+    showToast(`Credit limit exceeded. Due Rs. ${formatReceiptMoney(currentDue)} + new Rs. ${formatReceiptMoney(newCreditTotal)}`, "error");
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const previousOrders = orders;
+  setMarkingPaidTable(normalizedTableNo);
+
+  try {
+    const localOrders = await localOrdersTable.where("restaurant_id").equals(restaurantId).toArray();
+    const creditedRemoteOrderIds: number[] = [];
+    await Promise.all(
+      unpaidOrdersForTable.map(async (order) => {
+        const breakdown = getOrderPaymentBreakdown(order, normalizedTableNo);
+        const remoteOrderId = Number(order.server_id || order.id || 0);
+        if (isOnline && remoteOrderId > 0 && remoteOrderId < 1000000000000) {
+          const { error } = await supabase
+            .from("orders")
+            .update({
+              status: "credit_due",
+              is_paid: false,
+              payment_method: "credit",
+              payment_status: "credit_due",
+              paid_at: null,
+              customer_id: Number(customer.id),
+              customer_name: customer.name,
+              customer_phone: customer.phone || null,
+              credit_amount: Number(breakdown.grand_total || 0),
+              loyalty_points_used: 0,
+              loyalty_points_earned: 0,
+              ...breakdown,
+            })
+            .eq("restaurant_id", restaurantId)
+            .eq("id", remoteOrderId);
+          if (error) throw error;
+          creditedRemoteOrderIds.push(remoteOrderId);
+
+          const { error: ledgerError } = await supabase.from("customer_credit_ledger").insert({
+            restaurant_id: restaurantId,
+            customer_id: Number(customer.id),
+            order_id: remoteOrderId,
+            entry_type: "credit_sale",
+            amount: Number(breakdown.grand_total || 0),
+            note: `Credit sale - Table ${normalizedTableNo}`,
+          });
+          if (ledgerError) console.warn("Credit ledger insert failed:", ledgerError);
+
+          await runInventoryDeductionAndCostLock(remoteOrderId, { throwOnError: false });
+        }
+
+        const targetLocalOrder = await getLocalOrderForUiOrder(order, localOrders);
+        if (targetLocalOrder?.id) {
+          await localOrdersTable.update(targetLocalOrder.id, {
+            status: "credit_due",
+            is_paid: false,
+            payment_method: "credit",
+            payment_status: "credit_due",
+            paid_at: null,
+            customer_id: Number(customer.id),
+            customer_name: customer.name,
+            customer_phone: customer.phone || null,
+            credit_amount: Number(breakdown.grand_total || 0),
+            loyalty_points_used: 0,
+            loyalty_points_earned: 0,
+            inventory_deducted: isOnline ? true : targetLocalOrder.inventory_deducted ?? false,
+            ...breakdown,
+            updated_at: now,
+            sync_status: isOnline ? "synced" : "pending_update",
+          });
+        }
+      })
+    );
+
+    if (creditedRemoteOrderIds.length > 0) {
+      addCustomerVisitOnce(customer, creditedRemoteOrderIds[0]).catch((visitError) => {
+        console.warn("Credit visit summary update failed:", visitError);
+      });
+    }
+
+    setOrders((prev) =>
+      prev.map((order) => {
+        if (String(order.table_number).trim() !== normalizedTableNo || order.is_paid === true) return order;
+        const breakdown = getOrderPaymentBreakdown(order, normalizedTableNo);
+        return {
+          ...order,
+          status: "credit_due",
+          is_paid: false,
+          payment_method: "credit",
+          payment_status: "credit_due",
+          paid_at: null,
+          customer_id: Number(customer.id),
+          customer_name: customer.name,
+          customer_phone: customer.phone || null,
+          credit_amount: Number(breakdown.grand_total || 0),
+          loyalty_points_used: 0,
+          loyalty_points_earned: 0,
+          inventory_deducted: isOnline ? true : order.inventory_deducted ?? false,
+          ...breakdown,
+          sync_status: isOnline ? "synced" : "pending_update",
+        };
+      })
+    );
+    setSelectedPaidOrder(null);
+    setReportOrder(null);
+    setSelectedCustomerByTable((prev) => {
+      const next = { ...prev };
+      delete next[normalizedTableNo];
+      return next;
+    });
+    setSelectedRewardByTable((prev) => ({ ...prev, [normalizedTableNo]: null }));
+    closeCreditCustomerSheet();
+    showToast("Added to customer credit. Table cleared.", "success");
+    fetchOrders().catch((error) => console.warn("Post-credit refresh failed", error));
+  } catch (error) {
+    console.error("markGroupedTableAsCredit failed:", error);
+    setOrders(previousOrders);
+    showToast(getReadableError(error) || "Credit save failed", "error");
+  } finally {
+    setMarkingPaidTable(null);
+  }
+}
+
 async function markGroupedTableAsPaid(
   tableNo: string,
-  paymentMethod: "cash" | "qr" | "card"
+  paymentMethod: PaymentMethod
 ) {
   if (!restaurantId) {
     showToast("Invalid restaurant link", "error");
@@ -12406,6 +14264,19 @@ async function markGroupedTableAsPaid(
   const normalizedTableNo = tableNo.trim();
   if (!normalizedTableNo) {
     showToast("Invalid table number", "error");
+    return;
+  }
+
+  if (paymentMethod === "credit") {
+    setSelectedRewardByTable((prev) => ({ ...prev, [normalizedTableNo]: null }));
+    if (!getSelectedCustomerForTable(normalizedTableNo)) {
+      setCustomerPickerTable(normalizedTableNo);
+      setCustomerPickerMode("credit");
+      if (customers.length === 0) fetchCustomersData().catch((error) => console.warn("Credit customer refresh failed", error));
+      showToast("Customer required for credit", "info");
+      return;
+    }
+    await markGroupedTableAsCredit(normalizedTableNo);
     return;
   }
 
@@ -12425,7 +14296,9 @@ async function markGroupedTableAsPaid(
     (order) =>
       String(order.table_number).trim() === normalizedTableNo &&
       order.is_paid !== true &&
-      order.sync_status !== "pending_payment"
+      order.sync_status !== "pending_payment" &&
+      order.payment_method !== "credit" &&
+      order.status !== "credit_due"
   );
 
   if (isOnline) {
@@ -12477,6 +14350,59 @@ async function markGroupedTableAsPaid(
   if (!confirmPay) {
     return;
   }
+
+  let billingCustomer: Customer | null = null;
+  try {
+    billingCustomer = await resolveOrCreateBillingCustomer(normalizedTableNo);
+  } catch (customerError) {
+    console.warn("Billing customer resolution failed; continuing payment without customer:", customerError);
+    showToast("Payment will continue, but customer attach failed", "info");
+  }
+
+  const selectedReward =
+    billingCustomer
+      ? getSelectedRewardForTable(normalizedTableNo, billingCustomer)
+      : null;
+  const combinedPaymentSubtotal = unpaidOrdersForTable.reduce((sum, order) => sum + getOrderTotal(order), 0);
+  const combinedManualBreakdown = getPaymentBreakdown(combinedPaymentSubtotal, normalizedTableNo);
+  const combinedRewardBreakdown = getRewardAdjustedPaymentBreakdown(
+    combinedPaymentSubtotal,
+    normalizedTableNo,
+    billingCustomer,
+    paymentMethod
+  );
+  const selectedRewardDiscount = selectedReward
+    ? Math.max(0, Number(combinedRewardBreakdown.discount_amount || 0) - Number(combinedManualBreakdown.discount_amount || 0))
+    : 0;
+  const orderRewardDiscountByKey = new Map<string, number>();
+  if (selectedRewardDiscount > 0) {
+    const weightedOrders = unpaidOrdersForTable.map((order) => {
+      const orderSubtotal = getOrderTotal(order);
+      const manualBreakdown = getPaymentBreakdown(orderSubtotal, normalizedTableNo);
+      return {
+        key: getOrderStableKey(order),
+        weight: Math.max(0, Number(manualBreakdown.subtotal || 0) - Number(manualBreakdown.discount_amount || 0)),
+      };
+    });
+    const totalWeight = weightedOrders.reduce((sum, entry) => sum + entry.weight, 0);
+    let allocated = 0;
+    weightedOrders.forEach((entry, index) => {
+      const isLast = index === weightedOrders.length - 1;
+      const discount = isLast
+        ? roundMoney(selectedRewardDiscount - allocated)
+        : roundMoney(totalWeight > 0 ? selectedRewardDiscount * (entry.weight / totalWeight) : 0);
+      allocated = roundMoney(allocated + discount);
+      orderRewardDiscountByKey.set(entry.key, Math.max(0, discount));
+    });
+  }
+  const getRewardedOrderPaymentBreakdown = (order: OrderRow) =>
+    getRewardAdjustedPaymentBreakdown(
+      getOrderTotal(order),
+      normalizedTableNo,
+      billingCustomer,
+      paymentMethod,
+      orderRewardDiscountByKey.get(getOrderStableKey(order)) || 0
+    );
 
   const now = new Date().toISOString();
   const previousOrders = orders;
@@ -12539,6 +14465,9 @@ async function markGroupedTableAsPaid(
     const browserOnline =
       typeof navigator !== "undefined" ? navigator.onLine : isOnline;
     const shouldQueuePaymentLocally = !browserOnline;
+    if (selectedReward && shouldQueuePaymentLocally) {
+      showToast("Reward will not be consumed for offline pending payment", "info");
+    }
 
     const savePaymentsLocally = async (pairs = orderLocalPairs) => {
       for (const { order, targetLocalOrder } of pairs) {
@@ -12546,12 +14475,22 @@ async function markGroupedTableAsPaid(
           throw new Error(`Local order not found for table ${normalizedTableNo}`);
         }
 
-        const orderPaymentBreakdown = getOrderPaymentBreakdown(order, normalizedTableNo);
+        const orderPaymentBreakdown = shouldQueuePaymentLocally
+          ? getOrderPaymentBreakdown(order, normalizedTableNo)
+          : getRewardedOrderPaymentBreakdown(order);
+        const customerFields = billingCustomer
+          ? {
+              customer_id: Number(billingCustomer.id),
+              customer_name: billingCustomer.name,
+              customer_phone: billingCustomer.phone || null,
+            }
+          : {};
 
         await localOrdersTable.update(targetLocalOrder.id, {
           is_paid: true,
           payment_method: paymentMethod,
           paid_at: now,
+          ...customerFields,
           ...orderPaymentBreakdown,
           updated_at: now,
           sync_status: "pending_payment",
@@ -12602,7 +14541,7 @@ async function markGroupedTableAsPaid(
 
           try {
             remoteOrderId = await ensureRemoteOrderIdForPayment(Number(order.id), targetLocalOrder || null);
-            const orderPaymentBreakdown = getOrderPaymentBreakdown(order, normalizedTableNo);
+            const orderPaymentBreakdown = getRewardedOrderPaymentBreakdown(order);
 
             const { data: remoteState, error: remoteStateError } = await supabase
               .from("orders")
@@ -12634,6 +14573,13 @@ async function markGroupedTableAsPaid(
                 is_paid: true,
                 payment_method: actualPaymentMethod,
                 paid_at: actualPaidAt,
+                ...(billingCustomer
+                  ? {
+                      customer_id: Number(billingCustomer.id),
+                      customer_name: billingCustomer.name,
+                      customer_phone: billingCustomer.phone || null,
+                    }
+                  : {}),
                 ...actualPaymentBreakdown,
                 inventory_deducted: remoteInventoryDeducted,
                 sync_status: remoteInventoryDeducted ? "synced" : "pending_payment",
@@ -12643,11 +14589,19 @@ async function markGroupedTableAsPaid(
 
               if (targetLocalOrder?.id) {
                 try {
+                  const customerFields = billingCustomer
+                    ? {
+                        customer_id: Number(billingCustomer.id),
+                        customer_name: billingCustomer.name,
+                        customer_phone: billingCustomer.phone || null,
+                      }
+                    : {};
                   await localOrdersTable.update(targetLocalOrder.id, {
                     server_id: remoteOrderId,
                     is_paid: true,
                     payment_method: actualPaymentMethod,
                     paid_at: actualPaidAt,
+                    ...customerFields,
                     ...actualPaymentBreakdown,
                     inventory_deducted: remoteInventoryDeducted,
                     updated_at: now,
@@ -12725,6 +14679,13 @@ async function markGroupedTableAsPaid(
                 is_paid: true,
                 payment_method: actualPaymentMethod,
                 paid_at: actualPaidAt,
+                ...(billingCustomer
+                  ? {
+                      customer_id: Number(billingCustomer.id),
+                      customer_name: billingCustomer.name,
+                      customer_phone: billingCustomer.phone || null,
+                    }
+                  : {}),
                 ...actualPaymentBreakdown,
                 inventory_deducted: remoteInventoryDeducted,
                 sync_status: remoteInventoryDeducted ? "synced" : "pending_payment",
@@ -12732,11 +14693,19 @@ async function markGroupedTableAsPaid(
 
               if (targetLocalOrder?.id) {
                 try {
+                  const customerFields = billingCustomer
+                    ? {
+                        customer_id: Number(billingCustomer.id),
+                        customer_name: billingCustomer.name,
+                        customer_phone: billingCustomer.phone || null,
+                      }
+                    : {};
                   await localOrdersTable.update(targetLocalOrder.id, {
                     server_id: remoteOrderId,
                     is_paid: true,
                     payment_method: actualPaymentMethod,
                     paid_at: actualPaidAt,
+                    ...customerFields,
                     ...actualPaymentBreakdown,
                     inventory_deducted: remoteInventoryDeducted,
                     updated_at: now,
@@ -12767,11 +14736,19 @@ async function markGroupedTableAsPaid(
               // Keep this local row in pending_payment as a retry queue until
               // runInventoryDeductionAndCostLock succeeds and flips it to synced.
               try {
+                const customerFields = billingCustomer
+                  ? {
+                      customer_id: Number(billingCustomer.id),
+                      customer_name: billingCustomer.name,
+                      customer_phone: billingCustomer.phone || null,
+                    }
+                  : {};
                 await localOrdersTable.update(targetLocalOrder.id, {
                   server_id: remoteOrderId,
                   is_paid: true,
                   payment_method: paymentMethod,
                   paid_at: now,
+                  ...customerFields,
                   ...orderPaymentBreakdown,
                   inventory_deducted: false,
                   updated_at: now,
@@ -12827,6 +14804,30 @@ async function markGroupedTableAsPaid(
       orderLocalPairs.forEach(({ order }) => queuedOrderKeys.add(getOrderStableKey(order)));
     }
 
+    if (billingCustomer && succeededOrderIds.length > 0) {
+      const anchorOrderId = succeededOrderIds[0];
+      try {
+        const paidVisitTotal = unpaidOrdersForTable
+          .filter((order) => succeededOrderKeys.has(getOrderStableKey(order)))
+          .reduce((sum, order) => sum + Number(getRewardedOrderPaymentBreakdown(order).grand_total || 0), 0);
+        await attachCustomerToOrders(succeededOrderIds, billingCustomer);
+        await awardPaidVisitLoyaltyOnce(billingCustomer, anchorOrderId, {
+          note: "Paid visit loyalty",
+          addVisit: true,
+          addTotalSpent: paidVisitTotal,
+        });
+        if (selectedReward) {
+          const redeemedRewardDiscount = unpaidOrdersForTable
+            .filter((order) => succeededOrderKeys.has(getOrderStableKey(order)))
+            .reduce((sum, order) => sum + Number(orderRewardDiscountByKey.get(getOrderStableKey(order)) || 0), 0);
+          await redeemCustomerRewardOnce(billingCustomer, selectedReward, anchorOrderId, redeemedRewardDiscount);
+        }
+      } catch (loyaltyError) {
+        console.warn("Paid customer attach/loyalty failed after payment:", loyaltyError);
+        showToast("Payment saved, but customer loyalty needs retry", "info");
+      }
+    }
+
     setOrders((prev) =>
       prev.map((order) => {
         if (
@@ -12851,7 +14852,17 @@ async function markGroupedTableAsPaid(
           is_paid: true,
           payment_method: paymentMethod,
           paid_at: now,
-          ...getOrderPaymentBreakdown(order, normalizedTableNo),
+          ...(billingCustomer
+            ? {
+                customer_id: Number(billingCustomer.id),
+                customer_name: billingCustomer.name,
+                customer_phone: billingCustomer.phone || null,
+                loyalty_points_earned: succeededOrderIds[0] && Number(order.server_id || order.id) === Number(succeededOrderIds[0]) ? 1 : order.loyalty_points_earned,
+              }
+            : {}),
+          ...(queuedOrderKeys.has(orderKey) && !succeededOrderKeys.has(orderKey)
+            ? getOrderPaymentBreakdown(order, normalizedTableNo)
+            : getRewardedOrderPaymentBreakdown(order)),
           // Online payments also stay pending until inventory deduction/cost lock succeeds.
           // This prevents app-close/background-fail stock mismatch.
           sync_status: "pending_payment",
@@ -12876,7 +14887,9 @@ async function markGroupedTableAsPaid(
         }))
       );
       const combinedSubtotal = paidOrdersForReceipt.reduce((sum, order) => sum + getOrderTotal(order), 0);
-      const combinedBreakdown = getPaymentBreakdown(combinedSubtotal, normalizedTableNo);
+      const combinedBreakdown = queuedOrderKeys.size > 0 && succeededOrderIds.length === 0
+        ? getPaymentBreakdown(combinedSubtotal, normalizedTableNo)
+        : getRewardAdjustedPaymentBreakdown(combinedSubtotal, normalizedTableNo, billingCustomer, paymentMethod);
 
       setSelectedPaidOrder({
         ...paidBillBaseOrder,
@@ -12884,6 +14897,14 @@ async function markGroupedTableAsPaid(
         is_paid: true,
         payment_method: actualAlreadyPaidBaseOrder?.payment_method || paymentMethod,
         paid_at: actualAlreadyPaidBaseOrder?.paid_at || now,
+        ...(billingCustomer
+          ? {
+              customer_id: Number(billingCustomer.id),
+              customer_name: billingCustomer.name,
+              customer_phone: billingCustomer.phone || null,
+              loyalty_points_earned: succeededOrderIds[0] ? 1 : paidBillBaseOrder.loyalty_points_earned,
+            }
+          : {}),
         ...(actualAlreadyPaidBaseOrder
           ? {
               subtotal: actualAlreadyPaidBaseOrder.subtotal,
@@ -12901,6 +14922,16 @@ async function markGroupedTableAsPaid(
         sync_status: actualAlreadyPaidBaseOrder?.sync_status || "pending_payment",
       });
     }
+
+    setSelectedCustomerByTable((prev) => {
+      const next = { ...prev };
+      delete next[normalizedTableNo];
+      return next;
+    });
+    setSelectedRewardByTable((prev) => ({ ...prev, [normalizedTableNo]: null }));
+    setBillingCustomerSearchByTable((prev) => ({ ...prev, [normalizedTableNo]: "" }));
+    setQuickCustomerNameByTable((prev) => ({ ...prev, [normalizedTableNo]: "" }));
+    setQuickCustomerPhoneByTable((prev) => ({ ...prev, [normalizedTableNo]: "" }));
 
     if (paidRemotePairs.length > 0) {
       runPostPaymentBackgroundTasks(paidRemotePairs);
@@ -13126,7 +15157,7 @@ async function updateKitchenTableStatus(
 
   const activeOrders = useMemo(() => {
     return orders
-      .filter((order) => !isOrderCancelled(order) && order.is_paid !== true && order.sync_status !== "pending_payment")
+      .filter((order) => isActiveUnpaidOrder(order))
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   }, [orders]);
 
@@ -15240,7 +17271,7 @@ function renderDesktopTopbar() {
   );
 }
 
-  function paymentButtonClass(tableNo: string, method: "cash" | "qr" | "card") {
+  function paymentButtonClass(tableNo: string, method: PaymentMethod) {
     const selected = tablePaymentMethods[tableNo] || "cash";
 
     return `py-2.5 rounded-2xl text-sm font-semibold border ${
@@ -15274,6 +17305,50 @@ function renderDesktopTopbar() {
     return {
       subtotal,
       discount_enabled: Boolean(enableDiscount),
+      discount_percent: discountPercent,
+      discount_amount: discountAmount,
+      tax_enabled: Boolean(enableTax),
+      tax_percent: taxPercent,
+      tax_amount: taxAmount,
+      grand_total: grandTotal,
+    };
+  }
+
+  function getRewardAdjustedPaymentBreakdown(
+    subtotalValue: number,
+    tableNo: string,
+    customer?: Customer | null,
+    paymentMethod?: PaymentMethod,
+    rewardDiscountOverride?: number
+  ) {
+    const subtotal = roundMoney(Math.max(0, Number(subtotalValue || 0)));
+    const discountPercent = getTableDiscountPercent(tableNo);
+    const manualDiscountAmount = enableDiscount ? roundMoney((subtotal * discountPercent) / 100) : 0;
+    const subtotalAfterManualDiscount = roundMoney(Math.max(0, subtotal - manualDiscountAmount));
+    const selectedReward =
+      paymentMethod && paymentMethod !== "credit"
+        ? getSelectedRewardForTable(tableNo, customer)
+        : null;
+    const rewardDiscountAmount = roundMoney(
+      Math.min(
+        subtotalAfterManualDiscount,
+        Math.max(
+          0,
+          typeof rewardDiscountOverride === "number"
+            ? rewardDiscountOverride
+            : getRewardDiscountAmount(selectedReward, subtotalAfterManualDiscount)
+        )
+      )
+    );
+    const discountAmount = roundMoney(manualDiscountAmount + rewardDiscountAmount);
+    const taxableAmount = roundMoney(Math.max(0, subtotal - discountAmount));
+    const taxPercent = enableTax ? Math.max(0, Number(defaultTaxPercent || 0)) : 0;
+    const taxAmount = enableTax ? roundMoney((taxableAmount * taxPercent) / 100) : 0;
+    const grandTotal = roundMoney(taxableAmount + taxAmount);
+
+    return {
+      subtotal,
+      discount_enabled: Boolean(enableDiscount || rewardDiscountAmount > 0),
       discount_percent: discountPercent,
       discount_amount: discountAmount,
       tax_enabled: Boolean(enableTax),
@@ -17061,6 +19136,7 @@ function renderDashboardView() {
         items: [
           { label: "Reports", subtitle: "Weekly/Monthly", icon: "reports", action: () => changeView("report") },
           { label: "Payment History", subtitle: "Paid bills", icon: "payments", action: () => changeView("paymentHistory") },
+          { label: "Customers", subtitle: "Credit & loyalty", icon: "customer", action: () => { setPopupView("customers"); scrollMainContentToTop(); } },
         ],
       },
       {
@@ -17081,7 +19157,7 @@ function renderDashboardView() {
     function getManageIconBubbleClass(icon: string) {
       const inventoryIconNames = new Set(["inventory", "recipe", "unit", "group", "restock", "cost", "supplier", "history"]);
       if (inventoryIconNames.has(icon)) return "bg-white text-slate-950 ring-slate-300 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.04)]";
-      if (icon === "payments") return "bg-slate-100 text-slate-800 ring-slate-200";
+      if (icon === "payments" || icon === "customer") return "bg-slate-100 text-slate-800 ring-slate-200";
       if (icon === "qr") return "bg-amber-50 text-amber-700 ring-amber-100";
       if (icon === "settings") return "bg-indigo-50 text-indigo-700 ring-indigo-100";
       return "bg-slate-100 text-slate-950 ring-slate-200";
@@ -17412,7 +19488,7 @@ function renderDashboardView() {
 
         <div className="space-y-3 pb-4 lg:hidden">
         <div className="rounded-[26px] border border-slate-200/80 bg-white p-2 shadow-[0_10px_28px_rgba(15,23,42,0.05)]">
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-4 gap-2">
             <button
               type="button"
               onClick={() => {
@@ -17917,7 +19993,10 @@ function renderBillingView() {
             {filteredTableOrders.map((table) => {
               const selectedPaymentMethod =
                 tablePaymentMethods[table.table_number] || "cash";
-              const paymentBreakdown = getPaymentBreakdown(Number(table.total || 0), table.table_number);
+              const selectedCustomer = getSelectedCustomerForTable(table.table_number);
+              const manualPaymentBreakdown = getPaymentBreakdown(Number(table.total || 0), table.table_number);
+              const paymentBreakdown = getRewardAdjustedPaymentBreakdown(Number(table.total || 0), table.table_number, selectedCustomer, selectedPaymentMethod);
+              const rewardDiscountAmount = Math.max(0, Number(paymentBreakdown.discount_amount || 0) - Number(manualPaymentBreakdown.discount_amount || 0));
               const tablePaymentStatus = paymentStatusByTable.get(table.table_number);
               const tablePendingPaymentOrders = tablePaymentStatus?.pendingPaymentOrders || [];
               const tableHasPendingPaymentSync = tablePendingPaymentOrders.length > 0;
@@ -17999,6 +20078,9 @@ function renderBillingView() {
                     </div>
                   )}
 
+                  {renderBillingCustomerChip(table.table_number)}
+                  {renderRewardSelector(table.table_number, selectedPaymentMethod, Number(table.total || 0))}
+
                   <div className="space-y-2">
                     <label className="block text-sm font-semibold text-slate-700">
                       Payment Method
@@ -18048,6 +20130,26 @@ function renderBillingView() {
                         className={`${paymentButtonClass(table.table_number, "card")} disabled:opacity-60`}
                       >
                         Card
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={markingPaidTable === table.table_number}
+                        onClick={() => {
+                          if (markingPaidTable === table.table_number) return;
+                          setTablePaymentMethods((prev) => ({
+                            ...prev,
+                            [table.table_number]: "credit",
+                          }));
+                          if (!getSelectedCustomerForTable(table.table_number)) {
+                            setCustomerPickerTable(table.table_number);
+                            setCustomerPickerMode("credit");
+                            if (customers.length === 0) fetchCustomersData().catch((error) => console.warn("Credit customer refresh failed", error));
+                          }
+                        }}
+                        className={`${paymentButtonClass(table.table_number, "credit")} disabled:opacity-60`}
+                      >
+                        Credit
                       </button>
                     </div>
                   </div>
@@ -18108,9 +20210,15 @@ function renderBillingView() {
                         {enableDiscount && (
                           <div className="flex items-center justify-between text-sm">
                             <span className="font-bold text-slate-600">Discount</span>
-                            <span className="font-black text-rose-600">- Rs. {paymentBreakdown.discount_amount}</span>
+                            <span className="font-black text-rose-600">- Rs. {manualPaymentBreakdown.discount_amount}</span>
                           </div>
                         )}
+                        {rewardDiscountAmount > 0 ? (
+                          <div className="flex items-center justify-between text-sm">
+                            <span className="font-bold text-amber-700">Reward</span>
+                            <span className="font-black text-amber-700">- Rs. {formatReceiptMoney(rewardDiscountAmount)}</span>
+                          </div>
+                        ) : null}
                         {enableTax && (
                           <div className="flex items-center justify-between text-sm">
                             <span className="font-bold text-slate-600">Tax ({paymentBreakdown.tax_percent}%)</span>
@@ -20167,7 +22275,7 @@ function renderBillingView() {
                     <div className="space-y-2.5">
                       <label className="text-[17px] font-black text-slate-950">Opening Stock</label>
                       <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
-                        <div className="grid grid-cols-3 gap-3">
+                        <div className="grid grid-cols-4 gap-3">
                           <div className="space-y-2">
                             <label className="text-sm font-black text-slate-950">Quantity</label>
                             <input
@@ -21136,7 +23244,7 @@ function renderBillingView() {
                     </div>
 
                     <div className="rounded-[24px] border border-slate-200 bg-slate-50/70 p-3 shadow-inner">
-                      <div className="grid grid-cols-3 gap-2">
+                      <div className="grid grid-cols-4 gap-2">
                         <div className="space-y-2">
                           <label className="text-xs font-black text-slate-900">Quantity</label>
                           <input type="number" min="0" step="0.01" value={restockQuantity} onChange={(e) => setRestockQuantity(e.target.value)} placeholder="0.00" className="h-14 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-900 shadow-sm outline-none placeholder:text-slate-300 focus:border-slate-400 focus:ring-4 focus:ring-slate-100" />
@@ -22281,6 +24389,298 @@ function renderBillingView() {
     );
   }
 
+  function renderCustomersPopup() {
+    const searchText = customerSearch.trim().toLowerCase();
+    const visibleCustomers = customers.filter((customer) => {
+      if (!searchText) return true;
+      return `${customer.name} ${customer.phone || ""} ${customer.address || ""} ${customer.note || ""}`.toLowerCase().includes(searchText);
+    });
+
+    let totalCustomerDue = 0;
+    customerFinancialsById.forEach((value) => {
+      totalCustomerDue += value.creditLeft;
+    });
+
+    const selectedProfile = selectedCustomerProfileId
+      ? customers.find((customer) => Number(customer.id) === Number(selectedCustomerProfileId)) || null
+      : null;
+    const selectedProfileTotals = selectedProfile
+      ? customerFinancialsById.get(Number(selectedProfile.id)) || { creditTotal: 0, paidBack: 0, creditLeft: 0, loyaltyPoints: Number(selectedProfile.loyalty_points || 0), creditOrderCount: 0 }
+      : null;
+    const selectedProfileData = selectedProfile && customerProfileData?.customerId === Number(selectedProfile.id)
+      ? customerProfileData
+      : null;
+    const selectedProfileLedger = selectedProfile
+      ? customerCreditLedger.filter((entry) => Number(entry.customer_id) === Number(selectedProfile.id)).slice(0, 20)
+      : [];
+    const selectedProfilePayments = selectedProfile
+      ? customerPayments.filter((payment) => Number(payment.customer_id) === Number(selectedProfile.id)).slice(0, 20)
+      : [];
+    const formatCustomerLastVisit = (value?: string | null) => {
+      if (!value) return "-";
+      const visitDate = new Date(value);
+      if (Number.isNaN(visitDate.getTime())) return "-";
+      const timeText = visitDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      const visitDay = getLocalDateString(value);
+      if (visitDay === todayLocalDate) return `Today ${timeText}`;
+      if (visitDay === getDateWithOffset(-1)) return `Yesterday ${timeText}`;
+      return visitDate.toLocaleString();
+    };
+    const formatCustomerTimelineDate = (value?: string | null) => {
+      if (!value) return "-";
+      const eventDate = new Date(value);
+      if (Number.isNaN(eventDate.getTime())) return "-";
+      const eventDay = getLocalDateString(value);
+      if (eventDay === todayLocalDate) return "Today";
+      if (eventDay === getDateWithOffset(-1)) return "Yesterday";
+      return eventDate.toLocaleDateString([], { day: "numeric", month: "short" });
+    };
+
+    return (
+      <div className="manage-subpage-slide mx-auto max-w-5xl space-y-4 pb-10 text-slate-950">
+        <div className="sticky top-0 z-20 -mx-1 bg-white/95 px-1 py-3 backdrop-blur-xl lg:static lg:bg-transparent lg:px-0">
+          <div className="flex items-center gap-3">
+            <button type="button" onClick={() => setPopupView(null)} className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-2xl text-slate-700 shadow-sm" aria-label="Back">‹</button>
+            <div className="min-w-0 flex-1">
+              <h2 className="truncate text-2xl font-black tracking-tight text-slate-950">Customers</h2>
+              <p className="text-xs font-bold text-slate-400">Phase 1: customer, credit, profile, merge</p>
+            </div>
+            <button type="button" onClick={() => { resetCustomerForm(); setShowAddCustomerForm((prev) => !prev); }} className="rounded-2xl bg-red-600 px-4 py-2.5 text-sm font-black text-white shadow-sm">+ Add</button>
+          </div>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-sm"><p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400">Customers</p><p className="mt-2 text-2xl font-black text-slate-950">{customers.length}</p></div>
+          <div className="rounded-[24px] border border-amber-200 bg-amber-50 p-4 shadow-sm"><p className="text-[11px] font-black uppercase tracking-[0.16em] text-amber-600">Total Due</p><p className="mt-2 text-2xl font-black text-amber-800">Rs. {formatReceiptMoney(totalCustomerDue)}</p></div>
+          <div className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-sm"><p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400">Rule</p><p className="mt-2 text-sm font-black text-slate-950">Credit clears table. Payment settles ledger. Archive only after due is zero.</p></div>
+        </div>
+
+        {showAddCustomerForm ? (
+          <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-lg font-black text-slate-950">{editingCustomerId ? "Edit Customer" : "Add Customer"}</h3>
+              {editingCustomerId ? <button type="button" onClick={resetCustomerForm} className="rounded-2xl border border-slate-200 px-3 py-2 text-xs font-black text-slate-600">Cancel edit</button> : null}
+            </div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <input value={newCustomerName} onChange={(e) => setNewCustomerName(e.target.value)} placeholder="Name *" className="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold outline-none focus:border-red-500" />
+              <input value={newCustomerPhone} onChange={(e) => setNewCustomerPhone(e.target.value)} placeholder="Phone" className="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold outline-none focus:border-red-500" />
+              <input value={newCustomerAddress} onChange={(e) => setNewCustomerAddress(e.target.value)} placeholder="Address" className="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold outline-none focus:border-red-500" />
+              <input type="number" value={newCustomerCreditLimit} onChange={(e) => setNewCustomerCreditLimit(e.target.value)} placeholder="Credit limit" className="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold outline-none focus:border-red-500" />
+              <input value={newCustomerNote} onChange={(e) => setNewCustomerNote(e.target.value)} placeholder="Note" className="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold outline-none focus:border-red-500 sm:col-span-2" />
+            </div>
+            <button type="button" onClick={saveCustomer} disabled={savingCustomer} className="mt-4 rounded-2xl bg-slate-900 px-5 py-3 text-sm font-black text-white disabled:opacity-60">{savingCustomer ? "Saving..." : editingCustomerId ? "Update Customer" : "Save Customer"}</button>
+          </div>
+        ) : null}
+
+        <div className="rounded-[28px] border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
+          <h3 className="text-lg font-black text-slate-950">Receive Due Payment</h3>
+          <div className="mt-4 grid gap-3 sm:grid-cols-4">
+            <select value={receivePaymentCustomerId} onChange={(e) => setReceivePaymentCustomerId(e.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold outline-none focus:border-red-500 sm:col-span-2"><option value="">Select customer</option>{customers.map((customer) => { const totals = customerFinancialsById.get(Number(customer.id)); return <option key={`receive-customer-${customer.id}`} value={customer.id}>{customer.name} {customer.phone ? `(${customer.phone})` : ""} - Due Rs. {formatReceiptMoney(totals?.creditLeft || 0)}</option>; })}</select>
+            <input type="number" value={receiveCustomerPaymentAmount} onChange={(e) => setReceiveCustomerPaymentAmount(e.target.value)} placeholder="Amount" className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold outline-none focus:border-red-500" />
+            <select value={receiveCustomerPaymentMethod} onChange={(e) => setReceiveCustomerPaymentMethod(e.target.value as "cash" | "qr" | "card")} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold outline-none focus:border-red-500"><option value="cash">Cash</option><option value="qr">QR</option><option value="card">Card</option></select>
+            <input value={receiveCustomerPaymentNote} onChange={(e) => setReceiveCustomerPaymentNote(e.target.value)} placeholder="Note" className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold outline-none focus:border-red-500 sm:col-span-3" />
+            <button type="button" onClick={receiveCustomerPayment} className="rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-black text-white">Receive</button>
+          </div>
+        </div>
+
+        <div className="rounded-[28px] border border-amber-200 bg-white p-4 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-lg font-black text-slate-950">Reward Rules</h3>
+              <p className="mt-1 text-xs font-bold text-slate-400">Paid-visit rewards for attached customers.</p>
+            </div>
+            <button type="button" onClick={fetchCustomerRewardRules} className="rounded-2xl border border-slate-200 px-3 py-2 text-xs font-black text-slate-600">Refresh</button>
+          </div>
+          <div className="mt-4 grid gap-2 sm:grid-cols-5">
+            <input value={rewardRuleTitle} onChange={(e) => setRewardRuleTitle(e.target.value)} placeholder="Title" className="rounded-2xl border border-slate-200 px-3 py-2 text-sm font-bold outline-none focus:border-red-500 sm:col-span-2" />
+            <input type="number" min="1" value={rewardRuleRequiredVisits} onChange={(e) => setRewardRuleRequiredVisits(e.target.value)} placeholder="Required Paid Visits" className="rounded-2xl border border-slate-200 px-3 py-2 text-sm font-bold outline-none focus:border-red-500" />
+            <select value={rewardRuleType} onChange={(e) => setRewardRuleType(e.target.value as "free_item" | "discount_percent" | "discount_amount")} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold outline-none focus:border-red-500">
+              <option value="free_item">Free item</option>
+              <option value="discount_percent">% Discount</option>
+              <option value="discount_amount">Rs. Discount</option>
+            </select>
+            <input type="number" min="0" value={rewardRuleValue} onChange={(e) => setRewardRuleValue(e.target.value)} placeholder="Value" className="rounded-2xl border border-slate-200 px-3 py-2 text-sm font-bold outline-none focus:border-red-500" />
+            <input value={rewardRuleItemName} onChange={(e) => setRewardRuleItemName(e.target.value)} placeholder="Reward item name" className="rounded-2xl border border-slate-200 px-3 py-2 text-sm font-bold outline-none focus:border-red-500 sm:col-span-3" />
+            <button type="button" onClick={saveCustomerRewardRule} disabled={savingRewardRule} className="rounded-2xl bg-amber-600 px-4 py-2 text-sm font-black text-white disabled:opacity-60 sm:col-span-1">{savingRewardRule ? "Saving..." : editingRewardRuleId ? "Update" : "Add Rule"}</button>
+            {editingRewardRuleId ? <button type="button" onClick={resetRewardRuleForm} className="rounded-2xl border border-slate-200 px-4 py-2 text-sm font-black text-slate-600">Cancel</button> : null}
+          </div>
+          <div className="mt-4 space-y-2">
+            {loadingCustomerRewardRules ? <p className="text-sm font-bold text-slate-400">Loading reward rules...</p> : customerRewardRules.length === 0 ? <p className="text-sm font-bold text-slate-400">No reward rules yet.</p> : customerRewardRules.map((rule) => (
+              <div key={`reward-rule-${rule.id}`} className={`flex flex-wrap items-center justify-between gap-2 rounded-2xl px-3 py-2 ring-1 ${rule.is_active === false ? "bg-slate-50 text-slate-400 ring-slate-100" : "bg-amber-50 text-slate-900 ring-amber-100"}`}>
+                <div className="min-w-0">
+                  <p className="text-sm font-black">{rule.title} <span className="text-xs font-bold text-slate-500">after {formatReceiptMoney(Number(rule.required_visits || 0))} paid visits</span></p>
+                  <p className="mt-0.5 text-xs font-bold text-slate-500">{getRewardRuleLabel(rule)}</p>
+                </div>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => startEditRewardRule(rule)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700">Edit</button>
+                  {rule.is_active !== false ? <button type="button" onClick={() => deactivateCustomerRewardRule(rule)} className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-black text-rose-700">Deactivate</button> : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {selectedProfile ? (
+          <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+              <div><p className="text-[11px] font-black uppercase tracking-[0.16em] text-red-500">Customer Profile</p><h3 className="mt-1 text-xl font-black text-slate-950">{selectedProfile.name}</h3><p className="mt-1 text-xs font-bold text-slate-500">{selectedProfile.phone || "No phone"} {selectedProfile.address ? `• ${selectedProfile.address}` : ""}</p></div>
+              <button type="button" onClick={() => setSelectedCustomerProfileId(null)} className="rounded-2xl border border-slate-200 px-3 py-2 text-xs font-black text-slate-600">Close</button>
+            </div>
+            {selectedProfile.note ? <p className="mt-3 rounded-2xl bg-slate-50 p-3 text-sm font-bold text-slate-600">Note: {selectedProfile.note}</p> : null}
+            <div className="mt-4 grid grid-cols-2 gap-2 text-center text-xs font-black sm:grid-cols-3 lg:grid-cols-6">
+              <div className="rounded-2xl bg-slate-50 px-2 py-3 ring-1 ring-slate-100">Visits<br />{formatReceiptMoney(Number(selectedProfile.visits || 0))}</div>
+              <div className="rounded-2xl bg-slate-50 px-2 py-3 ring-1 ring-slate-100">Loyalty<br />{formatReceiptMoney(Number(selectedProfile.loyalty_points || 0))}</div>
+              <div className="rounded-2xl bg-slate-50 px-2 py-3 ring-1 ring-slate-100">Total Spent<br />Rs. {formatReceiptMoney(Number(selectedProfile.total_spent || 0))}</div>
+              <div className="rounded-2xl bg-slate-50 px-2 py-3 ring-1 ring-slate-100">Credit Due<br />Rs. {formatReceiptMoney(selectedProfileTotals?.creditLeft || 0)}</div>
+              <div className="rounded-2xl bg-slate-50 px-2 py-3 ring-1 ring-slate-100 sm:col-span-2">Last Visit<br />{formatCustomerLastVisit(selectedProfile.last_visit)}</div>
+            </div>
+            {renderEligibleCustomerRewards(selectedProfile)}
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button type="button" onClick={() => startEditCustomer(selectedProfile)} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700">Edit</button>
+              {(selectedProfileTotals?.creditLeft || 0) > 0 ? <button type="button" onClick={() => { setReceivePaymentCustomerId(String(selectedProfile.id)); setReceiveCustomerPaymentAmount(String(selectedProfileTotals?.creditLeft || "")); }} className="rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-700">Receive</button> : null}
+              <button type="button" onClick={() => archiveCustomer(selectedProfile)} className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-black text-rose-700">Archive</button>
+            </div>
+            {loadingCustomerProfile ? (
+              <p className="mt-5 rounded-2xl bg-slate-50 px-4 py-6 text-center text-sm font-black text-slate-400">Loading customer history...</p>
+            ) : selectedProfileData ? (
+              <div className="mt-5 space-y-4">
+                <div className="rounded-2xl border border-slate-100 p-3">
+                  <p className="text-sm font-black text-slate-950">Quick Statistics</p>
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-center text-xs font-black sm:grid-cols-5">
+                    <div className="rounded-2xl bg-slate-50 px-2 py-3 ring-1 ring-slate-100">Highest Bill<br />Rs. {formatReceiptMoney(selectedProfileData.stats.highestBill)}</div>
+                    <div className="rounded-2xl bg-slate-50 px-2 py-3 ring-1 ring-slate-100">Average Bill<br />Rs. {formatReceiptMoney(selectedProfileData.stats.averageBill)}</div>
+                    <div className="rounded-2xl bg-slate-50 px-2 py-3 ring-1 ring-slate-100">Paid Orders<br />{formatReceiptMoney(selectedProfileData.stats.paidOrders)}</div>
+                    <div className="rounded-2xl bg-slate-50 px-2 py-3 ring-1 ring-slate-100">Credit Orders<br />{formatReceiptMoney(selectedProfileData.stats.creditOrders)}</div>
+                    <div className="rounded-2xl bg-slate-50 px-2 py-3 ring-1 ring-slate-100">Total Orders<br />{formatReceiptMoney(selectedProfileData.stats.totalOrders)}</div>
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-slate-100 p-3">
+                  <p className="text-sm font-black text-slate-950">Timeline</p>
+                  <div className="mt-3 space-y-2">
+                    {selectedProfileData.timeline.length === 0 ? (
+                      <p className="rounded-2xl bg-slate-50 px-4 py-6 text-center text-sm font-bold text-slate-400">No customer activity yet.</p>
+                    ) : selectedProfileData.timeline.map((event) => {
+                      const isExpanded = expandedCustomerTimeline[event.id] === true;
+                      const toneClass = event.tone === "paid"
+                        ? "border-emerald-100 bg-emerald-50"
+                        : event.tone === "credit"
+                          ? "border-amber-100 bg-amber-50"
+                          : event.tone === "payment"
+                            ? "border-sky-100 bg-sky-50"
+                            : "border-fuchsia-100 bg-fuchsia-50";
+                      return (
+                        <button
+                          key={event.id}
+                          type="button"
+                          onClick={() => setExpandedCustomerTimeline((prev) => ({ ...prev, [event.id]: !prev[event.id] }))}
+                          className={`w-full rounded-2xl border p-3 text-left ${toneClass}`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="text-[11px] font-black uppercase tracking-[0.14em] text-slate-500">{formatCustomerTimelineDate(event.date)}</p>
+                              <p className="mt-1 text-sm font-black capitalize text-slate-950">{event.title}</p>
+                              {event.subtitle ? <p className="mt-0.5 text-xs font-bold text-slate-500">{event.subtitle}</p> : null}
+                            </div>
+                            <div className="shrink-0 text-right text-xs font-black text-slate-950">
+                              {event.amount ? <p>Rs. {formatReceiptMoney(event.amount)}</p> : null}
+                              {event.points ? <p className={event.points > 0 ? "text-emerald-700" : "text-rose-700"}>Loyalty {event.points > 0 ? "+" : ""}{formatReceiptMoney(event.points)}</p> : null}
+                            </div>
+                          </div>
+                          {isExpanded ? (
+                            <div className="mt-3 grid gap-2 rounded-2xl bg-white/75 p-3 text-xs font-bold text-slate-600 sm:grid-cols-2">
+                              <p>Date: <span className="font-black text-slate-950">{formatCustomerLastVisit(event.date)}</span></p>
+                              {event.paymentMethod ? <p>Payment: <span className="font-black text-slate-950">{formatPaymentMethod(event.paymentMethod)}</span></p> : null}
+                              {event.tableNumber ? <p>Table: <span className="font-black text-slate-950">{event.tableNumber}</span></p> : null}
+                              {event.remainingDue !== null && event.remainingDue !== undefined ? <p>Remaining: <span className="font-black text-slate-950">{event.remainingDue <= 0 ? "Credit Closed" : `Rs. ${formatReceiptMoney(event.remainingDue)}`}</span></p> : null}
+                              {event.note ? <p className="sm:col-span-2">Note: <span className="font-black text-slate-950">{event.note}</span></p> : null}
+                            </div>
+                          ) : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-slate-100 p-3">
+                  <p className="text-sm font-black text-slate-950">Favourite Items</p>
+                  <div className="mt-3 space-y-2">
+                    {selectedProfileData.favoriteItems.length === 0 ? (
+                      <p className="rounded-2xl bg-slate-50 px-4 py-4 text-center text-sm font-bold text-slate-400">No item history yet.</p>
+                    ) : selectedProfileData.favoriteItems.map((item) => (
+                      <div key={`favorite-${item.itemName}`} className="flex items-center justify-between rounded-2xl bg-slate-50 px-3 py-2 text-sm font-black ring-1 ring-slate-100">
+                        <span className="truncate text-slate-950">{item.itemName}</span>
+                        <span className="ml-3 shrink-0 text-slate-500">{formatReceiptMoney(item.quantity)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <p className="mt-5 rounded-2xl bg-slate-50 px-4 py-6 text-center text-sm font-black text-slate-400">Customer history could not be loaded.</p>
+            )}
+            <div className="hidden">
+              <div className="rounded-2xl border border-slate-100 p-3"><p className="text-sm font-black text-slate-950">Credit Ledger</p><div className="mt-2 space-y-2">{selectedProfileLedger.length === 0 ? <p className="text-xs font-bold text-slate-400">No ledger yet.</p> : selectedProfileLedger.map((entry) => <div key={`ledger-${entry.id}`} className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2 text-xs font-bold"><span>{entry.entry_type} {entry.note ? `• ${entry.note}` : ""}</span><span className={entry.entry_type === "credit_sale" ? "text-amber-700" : "text-emerald-700"}>Rs. {formatReceiptMoney(Number(entry.amount || 0))}</span></div>)}</div></div>
+              <div className="rounded-2xl border border-slate-100 p-3"><p className="text-sm font-black text-slate-950">Payment History</p><div className="mt-2 space-y-2">{selectedProfilePayments.length === 0 ? <p className="text-xs font-bold text-slate-400">No payment yet.</p> : selectedProfilePayments.map((payment) => <div key={`payment-${payment.id}`} className="flex items-center justify-between rounded-xl bg-emerald-50 px-3 py-2 text-xs font-bold"><span>{payment.payment_method || "payment"} {payment.note ? `• ${payment.note}` : ""}</span><span className="text-emerald-700">Rs. {formatReceiptMoney(Number(payment.amount || 0))}</span></div>)}</div></div>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex items-center gap-3"><input value={customerSearch} onChange={(e) => setCustomerSearch(e.target.value)} placeholder="Search name, phone, address, note" className="min-w-0 flex-1 rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold outline-none focus:border-red-500" /><button type="button" onClick={fetchCustomersData} className="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-black text-slate-700">Refresh</button></div>
+          <div className="mt-4 space-y-3">
+            {loadingCustomers ? <p className="py-6 text-center text-sm font-bold text-slate-400">Loading customers...</p> : visibleCustomers.length === 0 ? <p className="py-6 text-center text-sm font-bold text-slate-400">No customers yet.</p> : visibleCustomers.map((customer) => {
+              const totals = customerFinancialsById.get(Number(customer.id)) || { creditTotal: 0, paidBack: 0, creditLeft: 0, loyaltyPoints: Number(customer.loyalty_points || 0), creditOrderCount: 0 };
+              return (
+                <div key={`customer-card-${customer.id}`} className="rounded-[20px] border border-slate-100 bg-slate-50 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-base font-black text-slate-950">{customer.name}</p>
+                      <p className="mt-0.5 text-xs font-bold text-slate-500">{customer.phone || "No phone"}</p>
+                      {customer.address ? <p className="mt-1 line-clamp-1 text-xs font-bold text-slate-500">{customer.address}</p> : null}
+                      {customer.note ? <p className="mt-1 line-clamp-1 text-xs font-bold text-slate-400">Note: {customer.note}</p> : null}
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <p className={`text-sm font-black ${totals.creditLeft > 0 ? "text-amber-700" : "text-emerald-700"}`}>Rs. {formatReceiptMoney(totals.creditLeft)} due</p>
+                      {Number(customer.credit_limit || 0) > 0 ? <p className="mt-1 text-[11px] font-bold text-slate-400">Limit Rs. {formatReceiptMoney(Number(customer.credit_limit || 0))}</p> : null}
+                    </div>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-center text-xs font-black sm:grid-cols-4"><div className="rounded-2xl bg-white px-2 py-3 ring-1 ring-slate-100">Credit Due<br />Rs. {formatReceiptMoney(totals.creditLeft)}</div><div className="rounded-2xl bg-white px-2 py-3 ring-1 ring-slate-100">Total Spent<br />Rs. {formatReceiptMoney(Number(customer.total_spent || 0))}</div><div className="rounded-2xl bg-white px-2 py-3 ring-1 ring-slate-100">Loyalty<br />{formatReceiptMoney(Number(customer.loyalty_points || 0))}</div><div className="rounded-2xl bg-white px-2 py-3 ring-1 ring-slate-100">Visits<br />{formatReceiptMoney(Number(customer.visits || 0))}</div></div>
+                  <p className="mt-2 rounded-2xl bg-white px-3 py-2 text-xs font-bold text-slate-500 ring-1 ring-slate-100">Last Visit: <span className="font-black text-slate-900">{formatCustomerLastVisit(customer.last_visit)}</span></p>
+                  {renderEligibleCustomerRewards(customer)}
+                  <div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => setSelectedCustomerProfileId(Number(customer.id))} className="rounded-2xl bg-slate-900 px-3 py-2 text-xs font-black text-white">Profile</button><button type="button" onClick={() => startEditCustomer(customer)} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700">Edit</button>{totals.creditLeft > 0 ? <button type="button" onClick={() => { setReceivePaymentCustomerId(String(customer.id)); setReceiveCustomerPaymentAmount(String(totals.creditLeft || "")); }} className="rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-700">Receive</button> : null}<button type="button" onClick={() => archiveCustomer(customer)} className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-black text-rose-700">Archive</button></div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="rounded-[24px] border border-slate-200 bg-white p-3 shadow-sm">
+          <button
+            type="button"
+            onClick={() => setShowCustomerAdvanced((prev) => !prev)}
+            className="flex w-full items-center justify-between gap-3 rounded-2xl px-2 py-2 text-left"
+          >
+            <span>
+              <span className="block text-sm font-black text-slate-950">Advanced</span>
+              <span className="mt-0.5 block text-xs font-bold text-slate-400">Merge duplicate customers</span>
+            </span>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{showCustomerAdvanced ? "Hide" : "Show"}</span>
+          </button>
+          {showCustomerAdvanced ? (
+            <div className="mt-3 rounded-[22px] bg-slate-50 p-3 ring-1 ring-slate-100">
+              <h3 className="text-sm font-black text-slate-950">Merge Duplicate Customers</h3>
+              <p className="mt-1 text-xs font-bold text-slate-500">Use only when the same customer was created twice. This moves orders, credit ledger, payments and loyalty to the target.</p>
+              <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                <select value={mergeFromCustomerId} onChange={(e) => setMergeFromCustomerId(e.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold outline-none focus:border-red-500"><option value="">Merge from</option>{customers.map((customer) => <option key={`merge-from-${customer.id}`} value={customer.id}>{customer.name} {customer.phone ? `(${customer.phone})` : ""}</option>)}</select>
+                <select value={mergeToCustomerId} onChange={(e) => setMergeToCustomerId(e.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold outline-none focus:border-red-500"><option value="">Merge into</option>{customers.map((customer) => <option key={`merge-to-${customer.id}`} value={customer.id}>{customer.name} {customer.phone ? `(${customer.phone})` : ""}</option>)}</select>
+                <button type="button" onClick={mergeCustomers} disabled={mergingCustomers} className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-black text-white disabled:opacity-60">{mergingCustomers ? "Merging..." : "Merge"}</button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
   function renderTaxDiscountPopup() {
     return (
       <div className="manage-subpage-slide mx-auto w-full max-w-md space-y-4 pb-24">
@@ -22390,6 +24790,13 @@ function renderBillingView() {
 
     if (popupView === "inventory") {
       return renderInventoryPopup();
+    }
+
+    if (popupView === "customers") {
+      if (isStaffMode) {
+        return renderDashboardView();
+      }
+      return renderCustomersPopup();
     }
 
     if (popupView === "settings") {
@@ -22720,7 +25127,7 @@ if (showSplash) {
                           </button>
                         </div>
 
-                        <div className="grid grid-cols-3 gap-2">
+                        <div className="grid grid-cols-4 gap-2">
                           {takeOrderVisibleTables.map((tableNumber) => {
                             const isOccupied = occupiedTableNumbers.has(tableNumber);
                             const isSelected = takeOrderTableNumber === tableNumber;
@@ -22785,7 +25192,7 @@ if (showSplash) {
                             </div>
                           </div>
 
-                          <div className="grid grid-cols-3 gap-2">
+                          <div className="grid grid-cols-4 gap-2">
                             {takeOrderVisibleCabins.map((cabinNumber) => {
                               const isOccupied = occupiedTableNumbers.has(cabinNumber);
                               const isSelected = takeOrderTableNumber === cabinNumber;
@@ -23652,7 +26059,11 @@ if (showSplash) {
                           (table) => String(table.table_number || "").trim() === String(tableNo || "").trim()
                         );
                         const selectedSubtotal = selectedTable ? Number(selectedTable.total || 0) : getOrderTotal(reportOrder);
-                        const paymentBreakdown = getPaymentBreakdown(selectedSubtotal, tableNo);
+                        const selectedMethod = tablePaymentMethods[tableNo] || "cash";
+                        const selectedCustomer = getSelectedCustomerForTable(tableNo);
+                        const manualPaymentBreakdown = getPaymentBreakdown(selectedSubtotal, tableNo);
+                        const paymentBreakdown = getRewardAdjustedPaymentBreakdown(selectedSubtotal, tableNo, selectedCustomer, selectedMethod);
+                        const rewardDiscountAmount = Math.max(0, Number(paymentBreakdown.discount_amount || 0) - Number(manualPaymentBreakdown.discount_amount || 0));
 
                         return (
                           <div className="mt-6 space-y-4 rounded-[24px] border border-slate-200 bg-slate-50 p-4">
@@ -23720,9 +26131,15 @@ if (showSplash) {
                               {enableDiscount && (
                                 <div className="flex items-center justify-between text-sm">
                                   <span className="font-bold text-slate-600">Discount ({paymentBreakdown.discount_percent}%)</span>
-                                  <span className="font-black text-rose-600">- Rs. {paymentBreakdown.discount_amount}</span>
+                                  <span className="font-black text-rose-600">- Rs. {manualPaymentBreakdown.discount_amount}</span>
                                 </div>
                               )}
+                              {rewardDiscountAmount > 0 ? (
+                                <div className="flex items-center justify-between text-sm">
+                                  <span className="font-bold text-amber-700">Reward</span>
+                                  <span className="font-black text-amber-700">- Rs. {formatReceiptMoney(rewardDiscountAmount)}</span>
+                                </div>
+                              ) : null}
                               {enableTax && (
                                 <div className="flex items-center justify-between text-sm">
                                   <span className="font-bold text-slate-600">Tax ({paymentBreakdown.tax_percent}%)</span>
@@ -23744,12 +26161,20 @@ if (showSplash) {
                 <div className="shrink-0 border-t border-slate-200 bg-white px-4 pb-4 pt-3">
                   {reportMode === "pay" && reportOrder.is_paid !== true && reportOrder.sync_status !== "pending_payment" ? (
                     <div className="space-y-3">
+                      {renderBillingCustomerChip(reportOrder.table_number)}
+                      {renderRewardSelector(reportOrder.table_number, tablePaymentMethods[reportOrder.table_number] || "cash", (() => {
+                        const selectedTable = groupedTableOrders.find(
+                          (table) => String(table.table_number || "").trim() === String(reportOrder.table_number || "").trim()
+                        );
+                        return selectedTable ? Number(selectedTable.total || 0) : getOrderTotal(reportOrder);
+                      })())}
+
                       <div className="rounded-[22px] bg-slate-100 p-2">
                         <p className="px-1 pb-2 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
                           Payment Method
                         </p>
-                        <div className="grid grid-cols-3 gap-2">
-                          {(["cash", "qr", "card"] as const).map((method) => {
+                        <div className="grid grid-cols-4 gap-2">
+                          {(["cash", "qr", "card", "credit"] as const).map((method) => {
                             const selectedMethod = tablePaymentMethods[reportOrder.table_number] || "cash";
 
                             return (
@@ -23757,12 +26182,17 @@ if (showSplash) {
                                 key={`report-payment-method-${method}`}
                                 type="button"
                                 disabled={markingPaidTable === reportOrder.table_number}
-                                onClick={() =>
+                                onClick={() => {
                                   setTablePaymentMethods((prev) => ({
                                     ...prev,
                                     [reportOrder.table_number]: method,
-                                  }))
-                                }
+                                  }));
+                                  if (method === "credit" && !getSelectedCustomerForTable(reportOrder.table_number)) {
+                                    setCustomerPickerTable(reportOrder.table_number);
+                                    setCustomerPickerMode("credit");
+                                    if (customers.length === 0) fetchCustomersData().catch((error) => console.warn("Credit customer refresh failed", error));
+                                  }
+                                }}
                                 className={`rounded-[16px] px-3 py-3 text-sm font-bold transition disabled:opacity-60 ${
                                   selectedMethod === method
                                     ? "bg-white text-slate-900 shadow-sm ring-1 ring-slate-200"
@@ -23844,8 +26274,11 @@ if (showSplash) {
               }));
 
           const billSubtotal = billItems.reduce((sum, item) => sum + Number(item.total || 0), 0);
+          const selectedMethod = tablePaymentMethods[tableNo] || "cash";
+          const selectedCustomer = getSelectedCustomerForTable(tableNo);
+          const manualLiveBreakdown = getPaymentBreakdown(billSubtotal, tableNo);
           const liveBreakdown = isPayableBill
-            ? getPaymentBreakdown(billSubtotal, tableNo)
+            ? getRewardAdjustedPaymentBreakdown(billSubtotal, tableNo, selectedCustomer, selectedMethod)
             : {
                 subtotal: Number(selectedPaidOrder.subtotal || billSubtotal),
                 discount_enabled: Boolean(selectedPaidOrder.discount_enabled),
@@ -23865,7 +26298,9 @@ if (showSplash) {
                 ),
               };
 
-          const selectedMethod = tablePaymentMethods[tableNo] || "cash";
+          const rewardDiscountAmount = isPayableBill
+            ? Math.max(0, Number(liveBreakdown.discount_amount || 0) - Number(manualLiveBreakdown.discount_amount || 0))
+            : 0;
           const billGrandTotal = Number(liveBreakdown.grand_total || billSubtotal);
           const paidAmount = isPaidLocalBill ? billGrandTotal : 0;
           const dueAmount = isPaidLocalBill ? 0 : Math.max(0, billGrandTotal - paidAmount);
@@ -24050,6 +26485,12 @@ if (showSplash) {
                           <span>- Rs. {formatReceiptMoney(liveBreakdown.discount_amount)}</span>
                         </div>
                       ) : null}
+                      {rewardDiscountAmount > 0 ? (
+                        <div className="mt-4 flex items-center justify-between gap-5 rounded-[22px] bg-amber-50 px-4 py-4 text-sm font-black leading-6 text-amber-800">
+                          <span>Reward</span>
+                          <span>- Rs. {formatReceiptMoney(rewardDiscountAmount)}</span>
+                        </div>
+                      ) : null}
 
                       <div className="mt-8 space-y-5 border-t border-dashed border-slate-300 pt-6">
                         <div className="flex items-center justify-between gap-5 py-1 text-xl font-black text-red-600">
@@ -24076,19 +26517,26 @@ if (showSplash) {
                     {isPayableBill ? (
                       <section className="space-y-3">
                         <h3 className="text-2xl font-black text-slate-950">Payments</h3>
+                        {renderBillingCustomerChip(tableNo)}
+                        {renderRewardSelector(tableNo, selectedMethod, billSubtotal)}
                         <div className="rounded-[28px] bg-white p-4 shadow-sm ring-1 ring-slate-100">
-                          <div className="grid grid-cols-3 gap-2">
-                            {(["cash", "qr", "card"] as const).map((method) => (
+                          <div className="grid grid-cols-4 gap-2">
+                            {(["cash", "qr", "card", "credit"] as const).map((method) => (
                               <button
                                 key={`${tableNo}-reference-payment-method-${method}`}
                                 type="button"
                                 disabled={markingPaidTable === tableNo}
-                                onClick={() =>
+                                onClick={() => {
                                   setTablePaymentMethods((prev) => ({
                                     ...prev,
                                     [tableNo]: method,
-                                  }))
-                                }
+                                  }));
+                                  if (method === "credit" && !getSelectedCustomerForTable(tableNo)) {
+                                    setCustomerPickerTable(tableNo);
+                                    setCustomerPickerMode("credit");
+                                    if (customers.length === 0) fetchCustomersData().catch((error) => console.warn("Credit customer refresh failed", error));
+                                  }
+                                }}
                                 className={`rounded-[18px] px-3 py-4 text-sm font-black transition disabled:opacity-60 ${
                                   selectedMethod === method
                                     ? "bg-red-600 text-white shadow-[0_12px_24px_rgba(220,38,38,0.22)]"
@@ -24144,6 +26592,100 @@ if (showSplash) {
                         </button>
                       </section>
                     )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {renderCustomerPickerSheet()}
+
+        {creditCustomerSheetTableNo && (() => {
+          const search = creditCustomerSearch.trim().toLowerCase();
+          const filteredCreditCustomers = customers
+            .filter((customer) => {
+              if (!search) return true;
+              return (
+                String(customer.name || "").toLowerCase().includes(search) ||
+                String(customer.phone || "").toLowerCase().includes(search)
+              );
+            })
+            .slice(0, 8);
+
+          return (
+            <div className="fixed inset-0 z-[160] flex items-end bg-black/45 px-3 pb-3 sm:items-center sm:justify-center">
+              <div className="max-h-[88vh] w-full max-w-lg overflow-y-auto rounded-[32px] bg-white p-5 shadow-2xl">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-black uppercase tracking-[0.18em] text-red-500">Credit customer</p>
+                    <h3 className="mt-1 text-2xl font-black text-slate-950">Table {creditCustomerSheetTableNo}</h3>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">Search old customer first. If not found, create new and add this bill to credit.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeCreditCustomerSheet}
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-lg font-black text-slate-700"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <div className="mt-5 space-y-4">
+                  <input
+                    type="text"
+                    value={creditCustomerSearch}
+                    onChange={(event) => setCreditCustomerSearch(event.target.value)}
+                    placeholder="Search by name or phone"
+                    className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold outline-none focus:border-red-500"
+                  />
+
+                  {filteredCreditCustomers.length > 0 ? (
+                    <div className="space-y-2">
+                      {filteredCreditCustomers.map((customer) => {
+                        const totals = customerFinancialsById.get(Number(customer.id)) || { creditLeft: 0, loyaltyPoints: Number(customer.loyalty_points || 0), creditTotal: 0, paidBack: 0, creditOrderCount: 0 };
+                        return (
+                          <button
+                            key={`credit-customer-pick-${customer.id}`}
+                            type="button"
+                            disabled={markingPaidTable === creditCustomerSheetTableNo}
+                            onClick={async () => {
+                              setSelectedCustomerByTable((prev) => ({ ...prev, [creditCustomerSheetTableNo]: String(customer.id) }));
+                              await markGroupedTableAsCredit(creditCustomerSheetTableNo, customer);
+                            }}
+                            className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left shadow-sm disabled:opacity-60"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="text-sm font-black text-slate-950">{customer.name}</p>
+                                <p className="mt-0.5 text-xs font-semibold text-slate-500">{customer.phone || "No phone"}</p>
+                              </div>
+                              <div className="text-right text-xs font-black text-rose-600">Due Rs. {formatReceiptMoney(totals.creditLeft)}</div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm font-bold text-slate-500">No matching customer. Add new below.</div>
+                  )}
+
+                  <div className="rounded-[26px] bg-slate-50 p-4 ring-1 ring-slate-200">
+                    <p className="text-sm font-black text-slate-900">+ New Customer</p>
+                    <div className="mt-3 grid gap-3">
+                      <input type="text" value={creditCustomerName} onChange={(e) => setCreditCustomerName(e.target.value)} placeholder="Customer name *" className="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold outline-none focus:border-red-500" />
+                      <input type="tel" value={creditCustomerPhone} onChange={(e) => setCreditCustomerPhone(e.target.value)} placeholder="Phone number" className="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold outline-none focus:border-red-500" />
+                      <input type="number" value={creditCustomerLimit} onChange={(e) => setCreditCustomerLimit(e.target.value)} placeholder="Credit limit optional" className="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold outline-none focus:border-red-500" />
+                      <input type="text" value={creditCustomerNote} onChange={(e) => setCreditCustomerNote(e.target.value)} placeholder="Note optional" className="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold outline-none focus:border-red-500" />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={saveCreditCustomerAndAddCredit}
+                      disabled={savingCreditCustomer || markingPaidTable === creditCustomerSheetTableNo}
+                      className="mt-4 w-full rounded-2xl bg-red-600 py-3 text-sm font-black text-white disabled:opacity-60"
+                    >
+                      {savingCreditCustomer || markingPaidTable === creditCustomerSheetTableNo ? "Saving Credit..." : "Save Customer & Add Credit"}
+                    </button>
                   </div>
                 </div>
               </div>
@@ -24401,4 +26943,5 @@ if (showSplash) {
     </>
   );
 }
+
 
